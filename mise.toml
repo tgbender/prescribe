@@ -29,6 +29,10 @@ run = "prek install"
 description = "Sync Python deps with uv"
 run = "uv sync --all-extras"
 
+[tasks.uv-lock-refresh]
+description = "Upgrade and refresh the uv lockfile"
+run = "uv lock --upgrade"
+
 ### PRE-COMMIT
 [tasks.trufflehog-scan]
 description = "Scan git history for secrets (pre-commit)"
