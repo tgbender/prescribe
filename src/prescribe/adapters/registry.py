@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from config_helper.adapters.json5 import json5_adapter
-from config_helper.adapters.jsonc import jsonc_adapter
-from config_helper.adapters.line import line_adapter
-from config_helper.adapters.toml import toml_adapter
-from config_helper.adapters.yaml import yaml_adapter
+from prescribe.adapters.json5 import json5_adapter
+from prescribe.adapters.jsonc import jsonc_adapter
+from prescribe.adapters.line import line_adapter
+from prescribe.adapters.toml import toml_adapter
+from prescribe.adapters.yaml import yaml_adapter
 
 
 EXACT_NAME_ADAPTERS = {

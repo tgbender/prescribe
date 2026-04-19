@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from config_helper.adapters.line import LineAdapter
-from config_helper.adapters.toml import TomlAdapter
-from config_helper.core import DesiredState, Planner, detect_conflict, FileFingerprint
+from prescribe.adapters.line import LineAdapter
+from prescribe.adapters.toml import TomlAdapter
+from prescribe.core import DesiredState, Planner, detect_conflict, FileFingerprint
 
 
 def test_planner_detects_missing_and_different_toml_keys(make_text_file) -> None:
@@ -27,7 +27,7 @@ def test_planner_detects_missing_and_different_toml_keys(make_text_file) -> None
 def test_planner_detects_matching_line_block(make_text_file) -> None:
     source = make_text_file(
         ".env",
-        "# config-helper:begin managed\nalpha=1\nbeta=2\n# config-helper:end managed\n",
+        "# prescribe:begin managed\nalpha=1\nbeta=2\n# prescribe:end managed\n",
     )
 
     document = LineAdapter().load(source)

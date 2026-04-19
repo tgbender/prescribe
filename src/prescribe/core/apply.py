@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from config_helper._util import resolve_parent
-from config_helper.core.planner import PlannedOperation
+from prescribe._util import resolve_parent
+from prescribe.core.planner import PlannedOperation
 
 
 def apply_operations(document: Any, operations: list[PlannedOperation]) -> Any:

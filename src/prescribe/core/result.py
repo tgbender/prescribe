@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from config_helper.core.conflict import ConflictResult
+from prescribe.core.conflict import ConflictResult
 
 
 @dataclass(slots=True)

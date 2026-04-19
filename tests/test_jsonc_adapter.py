@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from config_helper.adapters.jsonc import JsoncAdapter
-from config_helper.jsonc import JsoncParseError, modify_text, parse_jsonc, parse_tree
-from config_helper.jsonc import _MISSING
+from prescribe.adapters.jsonc import JsoncAdapter
+from prescribe.jsonc import JsoncParseError, modify_text, parse_jsonc, parse_tree
+from prescribe.jsonc import _MISSING
 
 
 JSONC_SAMPLE = (
@@ -143,14 +143,14 @@ def test_jsonc_crlf_preserved_when_appending_array_item() -> None:
 
 
 def test_jsonc_indent_multiline_does_not_prefix_bare_newlines() -> None:
-    from config_helper.jsonc import _indent_multiline
+    from prescribe.jsonc import _indent_multiline
 
     result = _indent_multiline("{\n\n}", "  ")
     assert result.splitlines(True)[1] == "\n"
 
 
 def test_jsonc_render_value_respects_custom_indent() -> None:
-    from config_helper.jsonc import _render_value
+    from prescribe.jsonc import _render_value
 
     result = _render_value({"a": 1}, indent="    ")
     assert '    "a": 1' in result

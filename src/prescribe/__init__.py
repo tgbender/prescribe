@@ -1,6 +1,6 @@
 __version__ = "0.1.0"
 
-from config_helper.adapters import (
+from prescribe.adapters import (
     Json5Adapter,
     JsoncAdapter,
     TomlAdapter,
@@ -11,7 +11,7 @@ from config_helper.adapters import (
     toml_adapter,
     yaml_adapter,
 )
-from config_helper.core import (
+from prescribe.core import (
     ConflictResult,
     DesiredState,
     FileFingerprint,
@@ -24,15 +24,15 @@ from config_helper.core import (
     detect_conflict,
     file_fingerprint,
 )
-from config_helper.document import Adapter, Document
-from config_helper.orchestrator import (
+from prescribe.document import Adapter, Document
+from prescribe.orchestrator import (
     Orchestrator,
     current_machine,
     machine_matches,
     platform_matches,
 )
-from config_helper.spec import Spec, SpecError, SpecLoader, SpecTarget
-from config_helper.state import EventRecord, RunRecord, SnapshotRecord, StateStore
+from prescribe.spec import Spec, SpecError, SpecLoader, SpecTarget
+from prescribe.state import EventRecord, RunRecord, SnapshotRecord, StateStore
 
 __all__ = [
     "Adapter",

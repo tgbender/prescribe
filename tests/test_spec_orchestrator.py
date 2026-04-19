@@ -3,15 +3,15 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from config_helper.adapters.toml import TomlAdapter
-from config_helper.core import Planner
-from config_helper.orchestrator import (
+from prescribe.adapters.toml import TomlAdapter
+from prescribe.core import Planner
+from prescribe.orchestrator import (
     Orchestrator,
     current_machine,
     machine_matches,
     platform_matches,
 )
-from config_helper.spec import SpecLoader
+from prescribe.spec import SpecLoader
 
 
 def test_platform_matches_empty_list_is_always_true() -> None:
@@ -136,7 +136,7 @@ def test_spec_loader_and_orchestrator_apply_and_then_noop(
 
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "# config-helper:begin managed\nalpha=1\n# config-helper:end managed\n"
+        "# prescribe:begin managed\nalpha=1\n# prescribe:end managed\n"
     )
 
     spec_path = tmp_path / "spec.toml"
@@ -168,7 +168,7 @@ def test_spec_loader_and_orchestrator_apply_and_then_noop(
     assert [result.applied for result in first] == [True, True]
     assert config_toml.read_text() == "title = 'hello'\ncount = 2\nextra = true\n"
     assert env_file.read_text() == (
-        "# config-helper:begin managed\nalpha=1\nbeta=2\n# config-helper:end managed\n"
+        "# prescribe:begin managed\nalpha=1\nbeta=2\n# prescribe:end managed\n"
     )
 
     second = orchestrator.run(spec_path, tool_version="test")
@@ -606,7 +606,7 @@ def test_orchestrator_reports_corrupt_line_file(
 ) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "# config-helper:begin managed\nalpha=1\n# config-helper:end other\n"
+        "# prescribe:begin managed\nalpha=1\n# prescribe:end other\n"
     )
 
     spec_path = tmp_path / "spec.toml"
@@ -627,7 +627,7 @@ def test_orchestrator_reports_corrupt_line_file(
     assert results[0].error is not None
     assert "managed block mismatch" in results[0].error
     assert env_file.read_text() == (
-        "# config-helper:begin managed\nalpha=1\n# config-helper:end other\n"
+        "# prescribe:begin managed\nalpha=1\n# prescribe:end other\n"
     )
 
 

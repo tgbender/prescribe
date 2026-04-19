@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from config_helper.adapters.json5 import Json5Adapter
+from prescribe.adapters.json5 import Json5Adapter
 
 
 def test_json5_round_trip(make_text_file, json5_sample: str, fake_root: Path) -> None:

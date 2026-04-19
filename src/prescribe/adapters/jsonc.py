@@ -3,9 +3,9 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 
-from config_helper.atomic import atomic_write_text
-from config_helper.document import Document
-from config_helper.jsonc import (
+from prescribe.atomic import atomic_write_text
+from prescribe.document import Document
+from prescribe.jsonc import (
     JsoncParseError,
     diff_paths,
     modify_text,

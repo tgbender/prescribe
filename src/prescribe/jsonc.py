@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from config_helper._util import _MISSING
+from prescribe._util import _MISSING
 
 
 @dataclass(slots=True)

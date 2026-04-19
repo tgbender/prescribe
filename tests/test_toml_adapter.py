@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from config_helper.adapters.toml import TomlAdapter
+from prescribe.adapters.toml import TomlAdapter
 
 
 def test_toml_round_trip_preserves_comments(

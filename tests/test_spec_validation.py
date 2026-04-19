@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from config_helper.spec import SpecError, SpecLoader
+from prescribe.spec import SpecError, SpecLoader
 
 
 def test_spec_missing_targets_key(tmp_path: Path) -> None:

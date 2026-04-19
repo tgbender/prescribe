@@ -5,11 +5,11 @@ from pathlib import Path
 import re
 from typing import Iterable, Sequence
 
-from config_helper.atomic import atomic_write_text
-from config_helper.document import Document
+from prescribe.atomic import atomic_write_text
+from prescribe.document import Document
 
-_BEGIN_RE = re.compile(r"^# config-helper:begin (?P<block_id>\S+)\s*$")
-_END_RE = re.compile(r"^# config-helper:end (?P<block_id>\S+)\s*$")
+_BEGIN_RE = re.compile(r"^# prescribe:begin (?P<block_id>\S+)\s*$")
+_END_RE = re.compile(r"^# prescribe:end (?P<block_id>\S+)\s*$")
 
 
 @dataclass(slots=True)
@@ -54,8 +54,8 @@ class LineDocument:
             block = ManagedBlock(
                 block_id=block_id,
                 lines=normalized,
-                header=f"# config-helper:begin {block_id}{self.newline}",
-                footer=f"# config-helper:end {block_id}{self.newline}",
+                header=f"# prescribe:begin {block_id}{self.newline}",
+                footer=f"# prescribe:end {block_id}{self.newline}",
             )
             self.segments.append(block)
             return block

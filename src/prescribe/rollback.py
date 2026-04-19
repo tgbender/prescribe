@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from config_helper._util import (
+from prescribe._util import (
     _MISSING,
     delete_mapping_value,
     mapping_value,
@@ -11,10 +11,10 @@ from config_helper._util import (
     sha256_bytes,
 )
 
-from config_helper.adapters import adapter_for_path
-from config_helper.core.result import OrchestrationResult
-from config_helper.document import Document
-from config_helper.state import StateStore
+from prescribe.adapters import adapter_for_path
+from prescribe.core.result import OrchestrationResult
+from prescribe.document import Document
+from prescribe.state import StateStore
 
 
 def perform_rollback(
@@ -145,7 +145,7 @@ def perform_rollback_original(
         path.unlink()
         _record_rollback_event(
             state_store, path, "rollback-original",
-            "restored to pre-config-helper state (file deleted)",
+            "restored to pre-prescribe state (file deleted)",
             connection=connection,
         )
         return OrchestrationResult(status="rolled-back", applied=True, changed=True)
@@ -159,7 +159,7 @@ def perform_rollback_original(
     path.write_text(baseline.content_text, encoding="utf-8")
     _record_rollback_event(
         state_store, path, "rollback-original",
-        "restored to pre-config-helper baseline",
+        "restored to pre-prescribe baseline",
         connection=connection,
     )
     return OrchestrationResult(status="rolled-back", applied=True, changed=True)
@@ -214,7 +214,7 @@ def _record_rollback_event(
     *,
     connection=None,
 ) -> None:
-    from config_helper.state.sqlite import _utcnow
+    from prescribe.state.sqlite import _utcnow
 
     now = _utcnow()
     run_id = 0

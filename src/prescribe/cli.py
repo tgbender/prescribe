@@ -7,10 +7,10 @@ from typing import Optional
 
 import typer
 
-from config_helper import __version__
-from config_helper.orchestrator import Orchestrator
-from config_helper.spec import SpecError, SpecLoader
-from config_helper.state import StateStore
+from prescribe import __version__
+from prescribe.orchestrator import Orchestrator
+from prescribe.spec import SpecError, SpecLoader
+from prescribe.state import StateStore
 
 app = typer.Typer(help="Manage declarative config file changes.", add_completion=False)
 
@@ -33,7 +33,7 @@ def _display_status(status: str, changed: bool) -> str:
 
 def _version_callback(value: bool) -> None:
     if value:
-        typer.echo(f"config-helper {__version__}")
+        typer.echo(f"prescribe {__version__}")
         raise typer.Exit()
 
 
@@ -52,7 +52,7 @@ def _make_store(state: Optional[Path]) -> StateStore:
     env = os.environ.get("CONFIG_HELPER_STATE")
     if env:
         return StateStore(env)
-    return StateStore(Path.home() / ".local" / "share" / "config-helper" / "state.db")
+    return StateStore(Path.home() / ".local" / "share" / "prescribe" / "state.db")
 
 
 def _status_line(status: str, changed: bool, path: str, detail: str | None = None) -> str:
@@ -142,7 +142,7 @@ def list_managed(
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     state: Optional[Path] = typer.Option(None, "--state", envvar="CONFIG_HELPER_STATE", help="Path to state database."),
 ) -> None:
-    """List all config files managed by config-helper."""
+    """List all config files managed by prescribe."""
     store = _make_store(state)
     if not store.path.exists():
         if output_json:

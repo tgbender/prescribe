@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from config_helper.adapters import adapter_for_path
-from config_helper.orchestrator import Orchestrator
+from prescribe.adapters import adapter_for_path
+from prescribe.orchestrator import Orchestrator
 
 FORMATS = ("toml", "yaml", "json5", "jsonc", "line")
 MAPPING_VARIANTS = 3
@@ -324,21 +324,21 @@ def _line_initial_text(seed: int, variant: int) -> str:
         return (
             f"# seed {seed}\n"
             "header=keep\n"
-            "# config-helper:begin managed\n"
+            "# prescribe:begin managed\n"
             "alpha=1\n"
             "beta=2\n"
-            "# config-helper:end managed\n"
+            "# prescribe:end managed\n"
             "footer=keep\n"
         )
     if variant == 1:
         return (
             f"# seed {seed}\n"
             "prefix=keep\n"
-            "# config-helper:begin managed-alt\n"
+            "# prescribe:begin managed-alt\n"
             "alpha=1\n"
             "beta=2\n"
             "gamma=3\n"
-            "# config-helper:end managed-alt\n"
+            "# prescribe:end managed-alt\n"
             "postscript=keep\n"
         )
     raise ValueError(variant)

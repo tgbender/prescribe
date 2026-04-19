@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from config_helper.atomic import atomic_write_text
+from prescribe.atomic import atomic_write_text
 
 
 def test_atomic_write_text_replaces_file(tmp_path: Path) -> None:

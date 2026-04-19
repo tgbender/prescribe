@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from config_helper.adapters.yaml import YamlAdapter
+from prescribe.adapters.yaml import YamlAdapter
 
 
 def test_yaml_round_trip_preserves_comments(

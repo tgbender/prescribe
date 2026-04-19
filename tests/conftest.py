@@ -6,7 +6,7 @@ from typing import Callable
 
 import pytest
 
-from config_helper.state import StateStore
+from prescribe.state import StateStore
 
 
 TOML_SAMPLE = '# top comment\ntitle = "hello"\n[tool.demo]\n# keep this\nvalue = 1\n'
@@ -20,9 +20,9 @@ JSON5_SAMPLE = "// top comment\n{\n  title: 'hello',\n  nested: { value: 1, },\n
 LINE_SAMPLE = (
     "# header\n"
     "unmanaged before\n"
-    "# config-helper:begin managed\n"
+    "# prescribe:begin managed\n"
     "old=1\n"
-    "# config-helper:end managed\n"
+    "# prescribe:end managed\n"
     "unmanaged after\n"
 )
 

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from config_helper.adapters.toml import TomlAdapter
-from config_helper.adapters.yaml import YamlAdapter
-from config_helper.core import DesiredState, Planner
-from config_helper.core.apply import apply_operations
+from prescribe.adapters.toml import TomlAdapter
+from prescribe.adapters.yaml import YamlAdapter
+from prescribe.core import DesiredState, Planner
+from prescribe.core.apply import apply_operations
 
 
 def test_planner_detects_nested_set_and_update(tmp_path: Path) -> None:

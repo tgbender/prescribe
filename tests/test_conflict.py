@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from config_helper.core import FileFingerprint, detect_conflict
+from prescribe.core import FileFingerprint, detect_conflict
 
 
 def test_detect_conflict_ignores_identical_content(tmp_path: Path) -> None:

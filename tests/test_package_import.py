@@ -1,6 +1,6 @@
 def test_package_imports() -> None:
-    import config_helper
+    import prescribe
 
-    assert hasattr(config_helper, "Document")
-    assert hasattr(config_helper, "TomlAdapter")
-    assert hasattr(config_helper, "JsoncAdapter")
+    assert hasattr(prescribe, "Document")
+    assert hasattr(prescribe, "TomlAdapter")
+    assert hasattr(prescribe, "JsoncAdapter")

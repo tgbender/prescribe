@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from config_helper.adapters.line import LineAdapter
+from prescribe.adapters.line import LineAdapter
 
 
 def test_line_adapter_updates_managed_block_and_preserves_unmanaged_text(
@@ -22,10 +22,10 @@ def test_line_adapter_updates_managed_block_and_preserves_unmanaged_text(
     assert target.read_text() == (
         "# header\n"
         "unmanaged before\n"
-        "# config-helper:begin managed\n"
+        "# prescribe:begin managed\n"
         "alpha=1\n"
         "beta=2\n"
-        "# config-helper:end managed\n"
+        "# prescribe:end managed\n"
         "unmanaged after\n"
     )
 
@@ -43,10 +43,10 @@ def test_line_adapter_appends_missing_block(make_text_file, fake_root: Path) -> 
     assert target.read_text() == (
         ".venv/\n"
         "__pycache__/\n"
-        "# config-helper:begin managed\n"
+        "# prescribe:begin managed\n"
         "build/\n"
         "dist/\n"
-        "# config-helper:end managed\n"
+        "# prescribe:end managed\n"
     )
 
 
@@ -54,9 +54,9 @@ def test_line_adapter_removes_block(make_text_file, fake_root: Path) -> None:
     source = make_text_file(
         ".npmrc",
         "registry=https://example.invalid\n"
-        "# config-helper:begin managed\n"
+        "# prescribe:begin managed\n"
         "always-auth=true\n"
-        "# config-helper:end managed\n"
+        "# prescribe:end managed\n"
         "save-exact=true\n",
     )
 

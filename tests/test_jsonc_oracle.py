@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from config_helper.adapters.jsonc import JsoncAdapter
+from prescribe.adapters.jsonc import JsoncAdapter
 
 
 ORACLE_FIXTURE = Path("tests/fixtures/vscode_settings.jsonc")

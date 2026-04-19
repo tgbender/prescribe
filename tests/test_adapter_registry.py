@@ -2,12 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from config_helper.adapters.registry import adapter_for_path
-from config_helper.adapters.toml import TomlAdapter
-from config_helper.adapters.yaml import YamlAdapter
-from config_helper.adapters.json5 import Json5Adapter
-from config_helper.adapters.jsonc import JsoncAdapter
-from config_helper.adapters.line import LineAdapter
+from prescribe.adapters.registry import adapter_for_path
+from prescribe.adapters.toml import TomlAdapter
+from prescribe.adapters.yaml import YamlAdapter
+from prescribe.adapters.json5 import Json5Adapter
+from prescribe.adapters.jsonc import JsoncAdapter
+from prescribe.adapters.line import LineAdapter
 
 
 def test_adapter_registry_recognizes_supported_extensions() -> None:

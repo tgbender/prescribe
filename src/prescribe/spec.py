@@ -8,7 +8,7 @@ from typing import Any
 
 import tomlkit
 
-from config_helper.core.planner import DesiredState
+from prescribe.core.planner import DesiredState
 
 
 KNOWN_FORMATS = frozenset({"toml", "yaml", "json5", "jsonc", "line"})

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from config_helper.state import StateStore
+from prescribe.state import StateStore
 
 
 def test_state_store_records_checked_snapshot_and_event(

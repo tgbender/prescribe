@@ -4,8 +4,8 @@ from pathlib import Path
 
 import json5
 
-from config_helper.atomic import atomic_write_text
-from config_helper.document import Document
+from prescribe.atomic import atomic_write_text
+from prescribe.document import Document
 
 
 class Json5Adapter:

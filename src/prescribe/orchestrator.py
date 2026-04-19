@@ -6,22 +6,22 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from config_helper._util import _MISSING, mapping_value, sha256_bytes
+from prescribe._util import _MISSING, mapping_value, sha256_bytes
 
-from config_helper.adapters import adapter_for_path
-from config_helper.core import DesiredState, Planner, detect_conflict
-from config_helper.core.apply import apply_operations
-from config_helper.core.conflict import (
+from prescribe.adapters import adapter_for_path
+from prescribe.core import DesiredState, Planner, detect_conflict
+from prescribe.core.apply import apply_operations
+from prescribe.core.conflict import (
     ConflictResult,
     FileFingerprint,
     file_fingerprint,
 )
-from config_helper.core.planner import PlannedOperation
-from config_helper.core.result import OrchestrationResult
-from config_helper.document import Document
-from config_helper.rollback import perform_rollback
-from config_helper.spec import SpecTarget
-from config_helper.state import StateStore
+from prescribe.core.planner import PlannedOperation
+from prescribe.core.result import OrchestrationResult
+from prescribe.document import Document
+from prescribe.rollback import perform_rollback
+from prescribe.spec import SpecTarget
+from prescribe.state import StateStore
 
 
 PLATFORM_MATCHERS: dict[str, Callable[[], bool]] = {
@@ -65,7 +65,7 @@ class Orchestrator:
         tool_version: str | None = None,
         dry_run: bool = False,
     ) -> list[OrchestrationResult]:
-        from config_helper.spec import SpecLoader
+        from prescribe.spec import SpecLoader
 
         spec_path = Path(spec_path)
         spec = SpecLoader().load(spec_path)
@@ -95,7 +95,7 @@ class Orchestrator:
         dry_run: bool = False,
         connection=None,
     ) -> list[OrchestrationResult]:
-        from config_helper.spec import Spec
+        from prescribe.spec import Spec
 
         assert isinstance(spec, Spec)
         results: list[OrchestrationResult] = []
@@ -404,7 +404,7 @@ def _empty_document(path: Path, fmt: str) -> Document:
     if fmt in {"toml", "yaml", "json5", "jsonc"}:
         return Document(path=path, format=fmt, root={})
     if fmt == "line":
-        from config_helper.adapters.line import LineDocument
+        from prescribe.adapters.line import LineDocument
 
         return Document(path=path, format="line", root=LineDocument(path=path))
     raise ValueError(f"unsupported format for empty document: {fmt}")

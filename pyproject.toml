@@ -1,5 +1,5 @@
 [project]
-name = "config-helper"
+name = "prescribe"
 version = "0.1.0"
 authors = [
     { name = "Travis Bender", email = "travisgbender@gmail.com" }
@@ -15,7 +15,7 @@ dependencies = [
 cli = ["typer>=0.9,<1.0"]
 
 [project.scripts]
-config-helper = "config_helper.cli:main"
+prescribe = "prescribe.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.11.3,<0.12.0"]
