@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.12"
 
 [options]
-exclude-newer = "2026-04-18T03:38:23.531513Z"
+exclude-newer = "2026-04-18T04:04:07.112976Z"
 exclude-newer-span = "P1D"
 
 [[package]]
@@ -222,10 +222,6 @@ dependencies = [
     { name = "json5" },
     { name = "ruamel-yaml" },
     { name = "tomlkit" },
-]
-
-[package.optional-dependencies]
-cli = [
     { name = "typer" },
 ]
 
@@ -241,9 +237,8 @@ requires-dist = [
     { name = "json5", specifier = ">=0.12.1,<0.13.0" },
     { name = "ruamel-yaml", specifier = ">=0.19.1,<0.20.0" },
     { name = "tomlkit", specifier = ">=0.14.0,<0.15.0" },
-    { name = "typer", marker = "extra == 'cli'", specifier = ">=0.9,<1.0" },
+    { name = "typer", specifier = ">=0.9,<1.0" },
 ]
-provides-extras = ["cli"]
 
 [package.metadata.requires-dev]
 dev = [
