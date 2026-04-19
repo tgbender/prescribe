@@ -11,6 +11,12 @@ dependencies = [
     "tomlkit>=0.14.0,<0.15.0",
 ]
 
+[project.optional-dependencies]
+cli = ["typer>=0.9,<1.0"]
+
+[project.scripts]
+config-helper = "config_helper.cli:main"
+
 [build-system]
 requires = ["uv_build>=0.11.3,<0.12.0"]
 build-backend = "uv_build"
