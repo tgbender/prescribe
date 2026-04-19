@@ -1,0 +1,6 @@
+[tools]
+bun = "latest"
+
+[tasks.oracle-jsonc]
+description = "Render the JSONC oracle for the VS Code settings fixture"
+run = "bun scripts/jsonc_oracle.ts"

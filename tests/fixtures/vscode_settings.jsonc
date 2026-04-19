@@ -1,0 +1,99 @@
+{
+  // --- General Settings ---
+  // Included in the .vscode/settings.json for this template repo, but intended to be applied to the
+  // user's global settings.json file for consistency across all projects.
+
+  // General editor settings for a better coding experience
+  "editor.bracketPairColorization.enabled": true,
+  "editor.guides.bracketPairs": "active",
+  "editor.inlineSuggest.enabled": true,
+  "files.eol": "\n",
+
+  // --- Autosave Settings ---
+  // More granular control over the autosave feature
+  "files.autoSave": "onWindowChange",
+  "files.autoSaveDelay": 1000,
+  "files.autoSaveUntitled": true,
+  "files.defaultConflictResolution": "reload",
+  "workbench.editor.enablePreview": true,
+  "files.insertFinalNewline": true,
+
+  // --- Telemetry Settings ---
+  // Disable telemetry and crash reporting for privacy
+  "telemetry.enableTelemetry": false,
+  "telemetry.enableCrashReporter": false,
+  "telemetry.telemetryLevel": "off",
+  "sqldeveloper.telemetry.enabled": false,
+  "continue.telemetryEnabled": false,
+  "redhat.telemetry.enabled": false,
+  "redhat.telemetry.enableCrashReporter": false,
+  "tabby.usage.anonymousUsageTracking": false,
+  "amazonQ.telemetry": false,
+  "amazonQ.shareContentWithAWS": false,
+  "aws.telemetry": false,
+  "aws.enableTelemetry": false,
+
+  // Extension telemetry settings
+  "gitlens.telemetry.enabled": false,
+  "eslint.telemetry.enabled": false,
+  "prettier.telemetry.enabled": false,
+  "docker.telemetry.enabled": false,
+  "python.telemetry.enabled": false,
+  "typescript.tsserver.enableTelemetry": false,
+  "vscode-edge-devtools.telemetry.enabled": false,
+  "terminal.integrated.enableTelemetry": false,
+
+  // Additional telemetry controls
+  "workbench.settings.enableTelemetry": false,
+  "extensionsGallery.enableTelemetry": false,
+
+  // --- Window & Workbench Settings ---
+  "workbench.editor.revealIfOpen": true,
+  "window.openFoldersInNewWindow": "on",
+
+  // --- Notebook Settings ---
+  // Ensures consistent tabbing and indentation in notebooks
+  "notebook.editorOptionsCustomizations": {
+    "editor.tabSize": 4,
+    "editor.indentSize": 4
+  },
+  "notebook.consolidatedRunButton": true,
+  //"kilo-code.allowedCommands": [
+  //  "npm test",
+  //  "tsc",
+  //  "git log",
+  //  "git diff",
+  //  "git show"
+  //],
+  "kilo-code.deniedCommands": [],
+
+  // Git Changes
+  "git.untrackedChanges": "separate",
+  "workbench.colorCustomizations": {
+    "gitDecoration.untrackedResourceForeground": "#ff5555" // PyCharm Red
+  },
+  // 3. Ensure colors are applied to the file tree (usually true by default)
+  "explorer.decorations.colors": true,
+  "explorer.decorations.badges": true,
+  // It will be replaced by a harmless "Commit" button
+  "git.showActionButton": {
+    "publish": false,
+    "sync": false,
+    "commit": true
+  },
+
+  // 2. Remove the Cloud/Arrow icon from the Repository Header
+  // This removes the push/pull icon next to your repo name/worktree
+  "git.showPushButton": false,
+
+  // 3. Stop VS Code from asking "Would you like to sync?" after a commit
+  "git.postCommitCommand": "none",
+
+  // 4. (Optional) Remove the generic "Publish Branch" cloud icon
+  //"git.enableSmartCommit": true, // Keeps the button focused on Committing, not Publishing
+
+  // This stops you from clicking them by accident when scrolling or selecting.
+  "scm.alwaysShowActions": false,
+  "scm.repositories.selectionMode": "single",
+  "github.copilot.nextEditSuggestions.enabled": true
+}
