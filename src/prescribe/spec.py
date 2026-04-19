@@ -10,7 +10,6 @@ import tomlkit
 
 from prescribe.core.planner import DesiredState
 
-
 KNOWN_FORMATS = frozenset({"toml", "yaml", "json5", "jsonc", "line"})
 KNOWN_PLATFORMS = frozenset({"linux", "macos", "windows"})
 
@@ -69,7 +68,8 @@ class SpecLoader:
             for previous_index, previous in enumerate(targets):
                 if target.path == previous.path and _targets_overlap(target, previous):
                     raise SpecError(
-                        f"spec {path} target #{index}: duplicate path {target.path} overlaps with target #{previous_index}"
+                        f"spec {path} target #{index}: duplicate path {target.path} "
+                        f"overlaps with target #{previous_index}"
                     )
             targets.append(target)
         return Spec(path=path, targets=targets)
@@ -88,18 +88,14 @@ class SpecLoader:
         if not isinstance(raw_path, str) or not raw_path:
             raise SpecError(f"{context}: key 'path' must be a non-empty string")
         raw_paths = raw.get("paths", [])
-        additional_paths = (
-            _coerce_string_list(raw_paths, context, "paths") if "paths" in raw else []
-        )
+        additional_paths = _coerce_string_list(raw_paths, context, "paths") if "paths" in raw else []
         raw_format = raw["format"]
         if not isinstance(raw_format, str) or not raw_format:
             raise SpecError(f"{context}: key 'format' must be a non-empty string")
 
         fmt = raw_format
         if fmt not in KNOWN_FORMATS:
-            raise SpecError(
-                f"{context}: unknown format {fmt!r}, expected one of {sorted(KNOWN_FORMATS)}"
-            )
+            raise SpecError(f"{context}: unknown format {fmt!r}, expected one of {sorted(KNOWN_FORMATS)}")
 
         target_path = _resolve_target_path(spec_path, raw_path, additional_paths)
 
@@ -109,19 +105,13 @@ class SpecLoader:
         platforms = _coerce_string_list(raw.get("platforms", []), context, "platforms")
         for platform in platforms:
             if platform not in KNOWN_PLATFORMS:
-                raise SpecError(
-                    f"{context}: unknown platform {platform!r}, expected one of {sorted(KNOWN_PLATFORMS)}"
-                )
+                raise SpecError(f"{context}: unknown platform {platform!r}, expected one of {sorted(KNOWN_PLATFORMS)}")
 
         machine = _coerce_string_list(raw.get("machine", []), context, "machine")
 
         managed_block_id = raw.get("managed_block_id")
-        if managed_block_id is not None and (
-            not isinstance(managed_block_id, str) or not managed_block_id
-        ):
-            raise SpecError(
-                f"{context}: key 'managed_block_id' must be a non-empty string when provided"
-            )
+        if managed_block_id is not None and (not isinstance(managed_block_id, str) or not managed_block_id):
+            raise SpecError(f"{context}: key 'managed_block_id' must be a non-empty string when provided")
         if fmt == "line" and managed_block_id is None:
             raise SpecError(f"{context}: format 'line' requires 'managed_block_id'")
 
@@ -149,16 +139,12 @@ def _coerce_string_list(value: Any, context: str, field_name: str) -> list[str]:
     result: list[str] = []
     for index, item in enumerate(value):
         if not isinstance(item, str) or not item:
-            raise SpecError(
-                f"{context}: key '{field_name}' item #{index} must be a non-empty string"
-            )
+            raise SpecError(f"{context}: key '{field_name}' item #{index} must be a non-empty string")
         result.append(item)
     return result
 
 
-def _resolve_target_path(
-    spec_path: Path, primary: str, additional_paths: list[str]
-) -> Path:
+def _resolve_target_path(spec_path: Path, primary: str, additional_paths: list[str]) -> Path:
     candidates = [
         _resolve_candidate_path(spec_path, primary),
         *(_resolve_candidate_path(spec_path, path) for path in additional_paths),
@@ -194,9 +180,7 @@ def _normalize_toml_value(value: Any) -> Any:
 
 
 def _targets_overlap(left: SpecTarget, right: SpecTarget) -> bool:
-    return _values_overlap(left.platforms, right.platforms) and _values_overlap(
-        left.machine, right.machine
-    )
+    return _values_overlap(left.platforms, right.platforms) and _values_overlap(left.machine, right.machine)
 
 
 def _values_overlap(left: list[str], right: list[str]) -> bool:

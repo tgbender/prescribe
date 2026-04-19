@@ -41,12 +41,7 @@ def test_line_adapter_appends_missing_block(make_text_file, fake_root: Path) -> 
     adapter.dump(document, target)
 
     assert target.read_text() == (
-        ".venv/\n"
-        "__pycache__/\n"
-        "# prescribe:begin managed\n"
-        "build/\n"
-        "dist/\n"
-        "# prescribe:end managed\n"
+        ".venv/\n__pycache__/\n# prescribe:begin managed\nbuild/\ndist/\n# prescribe:end managed\n"
     )
 
 

@@ -50,23 +50,15 @@ class _Parser:
             return self._parse_string(parent)
         if ch == "-" or ch.isdigit():
             return self._parse_number(parent)
-        if self.text.startswith("true", self.index) and not self._is_ident_char(
-            self.index + 4
-        ):
+        if self.text.startswith("true", self.index) and not self._is_ident_char(self.index + 4):
             return self._parse_literal(parent, "true", True)
-        if self.text.startswith("false", self.index) and not self._is_ident_char(
-            self.index + 5
-        ):
+        if self.text.startswith("false", self.index) and not self._is_ident_char(self.index + 5):
             return self._parse_literal(parent, "false", False)
-        if self.text.startswith("null", self.index) and not self._is_ident_char(
-            self.index + 4
-        ):
+        if self.text.startswith("null", self.index) and not self._is_ident_char(self.index + 4):
             return self._parse_literal(parent, "null", None)
         if ch.isalpha() or ch == "_" or ch == "$":
             end = self.index
-            while end < self.length and (
-                self.text[end].isalnum() or self.text[end] in "_$"
-            ):
+            while end < self.length and (self.text[end].isalnum() or self.text[end] in "_$"):
                 end += 1
             ident = self.text[self.index : end]
             raise JsoncParseError(f"unexpected identifier {ident!r} at {self.index}")
@@ -225,9 +217,7 @@ class _Parser:
             parent=parent,
         )
 
-    def _parse_literal(
-        self, parent: JsoncNode | None, literal: str, value: Any
-    ) -> JsoncNode:
+    def _parse_literal(self, parent: JsoncNode | None, literal: str, value: Any) -> JsoncNode:
         start = self.index
         self.index += len(literal)
         return JsoncNode(
@@ -269,9 +259,7 @@ def parse_tree(text: str) -> JsoncNode | None:
     return _Parser(text).parse()
 
 
-def find_node_at_location(
-    root: JsoncNode | None, path: list[str | int]
-) -> JsoncNode | None:
+def find_node_at_location(root: JsoncNode | None, path: list[str | int]) -> JsoncNode | None:
     if root is None:
         return None
     node = root
@@ -308,9 +296,7 @@ def parse_jsonc(text: str) -> Any:
         raise JsoncParseError(str(exc)) from exc
 
 
-def diff_paths(
-    original: Any, current: Any, prefix: list[str | int] | None = None
-) -> list[tuple[list[str | int], Any]]:
+def diff_paths(original: Any, current: Any, prefix: list[str | int] | None = None) -> list[tuple[list[str | int], Any]]:
     prefix = [] if prefix is None else prefix
     diffs: list[tuple[list[str | int], Any]] = []
     if type(original) is not type(current):
@@ -335,9 +321,7 @@ def diff_paths(
     return diffs
 
 
-def modify_text(
-    text: str, path: list[str | int], value: Any, *, indent: str = "  "
-) -> str:
+def modify_text(text: str, path: list[str | int], value: Any, *, indent: str = "  ") -> str:
     root = parse_tree(text)
     eol = _guess_eol(text)
     if not path:
@@ -358,9 +342,7 @@ def modify_text(
     return _modify_array(text, parent, int(last), value, indent=indent, eol=eol)
 
 
-def _modify_object(
-    text: str, parent: JsoncNode, key: str, value: Any, *, indent: str, eol: str
-) -> str:
+def _modify_object(text: str, parent: JsoncNode, key: str, value: Any, *, indent: str, eol: str) -> str:
     existing = None
     for prop in parent.children:
         if prop.children[0].value == key:
@@ -391,9 +373,7 @@ def _modify_object(
     return text[:prev_end] + f", {insertion}" + text[close:]
 
 
-def _modify_array(
-    text: str, parent: JsoncNode, index: int, value: Any, *, indent: str, eol: str
-) -> str:
+def _modify_array(text: str, parent: JsoncNode, index: int, value: Any, *, indent: str, eol: str) -> str:
     if value is _MISSING:
         if index < 0 or index >= len(parent.children):
             return text
@@ -457,17 +437,13 @@ def _delete_array_item(text: str, parent: JsoncNode, index: int) -> str:
     return text[:start] + text[end:]
 
 
-def _render_property(
-    text: str, parent: JsoncNode, key: str, value: Any, *, indent: str, eol: str
-) -> str:
+def _render_property(text: str, parent: JsoncNode, key: str, value: Any, *, indent: str, eol: str) -> str:
     return f"{json.dumps(key)}: {_render_value(value, indent=indent, eol=eol)}"
 
 
 def _render_value(value: Any, *, indent: str = "  ", eol: str = "\n") -> str:
     if isinstance(value, (dict, list)):
-        rendered = json.dumps(
-            value, ensure_ascii=False, indent=indent, separators=(",", ": ")
-        )
+        rendered = json.dumps(value, ensure_ascii=False, indent=indent, separators=(",", ": "))
         rendered = rendered.replace("\n", eol)
         return rendered
     return json.dumps(value, ensure_ascii=False)
@@ -479,10 +455,7 @@ def _indent_multiline(text: str, prefix: str) -> str:
     lines = text.splitlines(True)
     if len(lines) <= 1:
         return text
-    return lines[0] + "".join(
-        prefix + line if line not in {"\n", "\r", "\r\n"} else line
-        for line in lines[1:]
-    )
+    return lines[0] + "".join(prefix + line if line not in {"\n", "\r", "\r\n"} else line for line in lines[1:])
 
 
 def _guess_eol(text: str) -> str:

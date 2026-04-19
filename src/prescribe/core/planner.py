@@ -72,9 +72,7 @@ class Planner:
                 continue
             current_value = current[key]
             if isinstance(value, dict) and isinstance(current_value, dict):
-                self._diff_mapping(
-                    current_value, value, [*prefix, key], path, operations
-                )
+                self._diff_mapping(current_value, value, [*prefix, key], path, operations)
             elif current_value != value:
                 operations.append(
                     PlannedOperation(
@@ -122,9 +120,7 @@ class Planner:
 
         block = document.block(desired.managed_block_id)
         operations: list[PlannedOperation] = []
-        existing = (
-            None if block is None else [line.rstrip("\r\n") for line in block.lines]
-        )
+        existing = None if block is None else [line.rstrip("\r\n") for line in block.lines]
         if existing != desired.lines:
             operations.append(
                 PlannedOperation(

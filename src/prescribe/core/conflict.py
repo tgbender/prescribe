@@ -48,9 +48,7 @@ def file_fingerprint(
     )
 
 
-def detect_conflict(
-    baseline: FileFingerprint | None, current: FileFingerprint
-) -> ConflictResult | None:
+def detect_conflict(baseline: FileFingerprint | None, current: FileFingerprint) -> ConflictResult | None:
     if baseline is None:
         return None
     if baseline.hash_algo != current.hash_algo:

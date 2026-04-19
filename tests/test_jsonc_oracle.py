@@ -9,7 +9,6 @@ import pytest
 
 from prescribe.adapters.jsonc import JsoncAdapter
 
-
 ORACLE_FIXTURE = Path("tests/fixtures/vscode_settings.jsonc")
 ORACLE_ENABLED = os.getenv("CONFIG_HELPER_RUN_JSONC_ORACLE") == "1"
 
@@ -33,9 +32,7 @@ def test_jsonc_oracle_matches_bunx_output(tmp_path: Path) -> None:
     document.root["workbench.editor.revealIfOpen"] = False
     document.root["notebook.editorOptionsCustomizations"]["editor.indentSize"] = 2
     document.root["github.copilot.nextEditSuggestions.enabled"] = False
-    document.root["workbench.colorCustomizations"][
-        "gitDecoration.untrackedResourceForeground"
-    ] = "#ff4444"
+    document.root["workbench.colorCustomizations"]["gitDecoration.untrackedResourceForeground"] = "#ff4444"
     adapter.dump(document, target)
 
     env = os.environ.copy()

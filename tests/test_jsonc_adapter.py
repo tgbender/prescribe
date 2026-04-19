@@ -5,9 +5,13 @@ from pathlib import Path
 import pytest
 
 from prescribe.adapters.jsonc import JsoncAdapter
-from prescribe.jsonc import JsoncParseError, modify_text, parse_jsonc, parse_tree
-from prescribe.jsonc import _MISSING
-
+from prescribe.jsonc import (
+    _MISSING,
+    JsoncParseError,
+    modify_text,
+    parse_jsonc,
+    parse_tree,
+)
 
 JSONC_SAMPLE = (
     "{\n"

@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from prescribe.document import Adapter
 from prescribe.adapters.json5 import json5_adapter
 from prescribe.adapters.jsonc import jsonc_adapter
 from prescribe.adapters.line import line_adapter
 from prescribe.adapters.toml import toml_adapter
 from prescribe.adapters.yaml import yaml_adapter
-
+from prescribe.document import Adapter
 
 EXACT_NAME_ADAPTERS: dict[str, Adapter] = {
     ".env": line_adapter,

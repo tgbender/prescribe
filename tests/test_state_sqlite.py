@@ -10,17 +10,13 @@ import pytest
 from prescribe.state import StateStore
 
 
-def test_state_store_records_checked_snapshot_and_event(
-    make_text_file, memory_state_store
-) -> None:
+def test_state_store_records_checked_snapshot_and_event(make_text_file, memory_state_store) -> None:
     store = memory_state_store
 
     source = make_text_file("config.toml", "title = 'hello'\n")
     digest = hashlib.sha256(source.read_bytes()).digest()
 
-    run = store.start_run(
-        spec_hash=b"spec", tool_version="1.0", host="test-host", platform="linux"
-    )
+    run = store.start_run(spec_hash=b"spec", tool_version="1.0", host="test-host", platform="linux")
     snapshot, event = store.record_checked(
         run_id=run.id,
         path=source,
@@ -59,9 +55,7 @@ def test_state_store_allows_injected_connection_factory() -> None:
     connection.close()
 
 
-def test_state_store_persists_raw_hash_bytes(
-    make_text_file, memory_state_store
-) -> None:
+def test_state_store_persists_raw_hash_bytes(make_text_file, memory_state_store) -> None:
     store = memory_state_store
 
     source = make_text_file("config.yaml", "key: value\n")
@@ -107,13 +101,10 @@ def test_state_store_transaction_rolls_back_on_error(memory_state_store) -> None
         store.record_event(run_id=1, event_type="test", path="/tmp/x", connection=conn)
     assert store.latest_event(1) is not None
 
-    with pytest.raises(RuntimeError):
-        with store.transaction() as conn:
-            store.start_run(connection=conn)
-            store.record_event(
-                run_id=2, event_type="test", path="/tmp/y", connection=conn
-            )
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError), store.transaction() as conn:
+        store.start_run(connection=conn)
+        store.record_event(run_id=2, event_type="test", path="/tmp/y", connection=conn)
+        raise RuntimeError("boom")
 
     assert store.latest_event(2) is None
 
@@ -147,9 +138,7 @@ def test_state_store_closes_connections_after_standalone_calls() -> None:
     assert closed == opened, f"{closed} closed but {opened} opened"
 
 
-def test_state_store_normalizes_paths_for_batches_and_original_exists(
-    make_text_file, memory_state_store
-) -> None:
+def test_state_store_normalizes_paths_for_batches_and_original_exists(make_text_file, memory_state_store) -> None:
     store = memory_state_store
 
     source = make_text_file("config.toml", "title = 'hello'\n")
@@ -187,11 +176,10 @@ def test_state_store_normalizes_paths_for_batches_and_original_exists(
 
 def test_state_store_rejects_event_with_nonexistent_run_id(memory_state_store) -> None:
     store = memory_state_store
-    with store.connect() as conn:
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute(
-                "INSERT INTO events "
-                "(run_id, created_at, event_type, path, changed, summary, details) "
-                "VALUES (?, datetime('now'), 'test', '/tmp/x', 0, NULL, NULL)",
-                (999,),
-            )
+    with store.connect() as conn, pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO events "
+            "(run_id, created_at, event_type, path, changed, summary, details) "
+            "VALUES (?, datetime('now'), 'test', '/tmp/x', 0, NULL, NULL)",
+            (999,),
+        )

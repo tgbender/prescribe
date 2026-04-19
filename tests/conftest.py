@@ -1,30 +1,20 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import pytest
 
 from prescribe.state import StateStore
 
-
 TOML_SAMPLE = '# top comment\ntitle = "hello"\n[tool.demo]\n# keep this\nvalue = 1\n'
 
-YAML_SAMPLE = (
-    "# top comment\ntitle: hello\ntool:\n  demo:\n    # keep this\n    value: 1\n"
-)
+YAML_SAMPLE = "# top comment\ntitle: hello\ntool:\n  demo:\n    # keep this\n    value: 1\n"
 
 JSON5_SAMPLE = "// top comment\n{\n  title: 'hello',\n  nested: { value: 1, },\n}\n"
 
-LINE_SAMPLE = (
-    "# header\n"
-    "unmanaged before\n"
-    "# prescribe:begin managed\n"
-    "old=1\n"
-    "# prescribe:end managed\n"
-    "unmanaged after\n"
-)
+LINE_SAMPLE = "# header\nunmanaged before\n# prescribe:begin managed\nold=1\n# prescribe:end managed\nunmanaged after\n"
 
 
 @pytest.fixture()

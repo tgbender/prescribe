@@ -4,14 +4,14 @@ import os
 import socket
 import sqlite3
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from prescribe.spec import Spec
 
 from prescribe._util import _MISSING, mapping_value, sha256_bytes
-
 from prescribe.adapters import adapter_for_path
 from prescribe.core import DesiredState, Planner, detect_conflict
 from prescribe.core.apply import apply_operations
@@ -27,7 +27,6 @@ from prescribe.rollback import perform_rollback
 from prescribe.spec import SpecTarget
 from prescribe.state import StateStore
 from prescribe.state.sqlite import ChangeBatchRecord
-
 
 PLATFORM_MATCHERS: dict[str, Callable[[], bool]] = {
     "linux": lambda: sys.platform.startswith("linux"),
@@ -46,9 +45,7 @@ def current_machine() -> str:
 def platform_matches(selectors: list[str]) -> bool:
     if not selectors:
         return True
-    return any(
-        PLATFORM_MATCHERS.get(selector, lambda: False)() for selector in selectors
-    )
+    return any(PLATFORM_MATCHERS.get(selector, lambda: False)() for selector in selectors)
 
 
 def machine_matches(selectors: list[str]) -> bool:
@@ -87,15 +84,13 @@ class Orchestrator:
                 host=current_machine(),
                 connection=connection,
             )
-            return self._run_targets(
-                run.id, spec_hash, spec, dry_run=False, connection=connection
-            )
+            return self._run_targets(run.id, spec_hash, spec, dry_run=False, connection=connection)
 
     def _run_targets(
         self,
         run_id: int | None,
         spec_hash: bytes,
-        spec: "Spec",
+        spec: Spec,
         *,
         dry_run: bool = False,
         connection: sqlite3.Connection | None = None,
@@ -105,11 +100,7 @@ class Orchestrator:
         assert isinstance(spec, Spec)
         results: list[OrchestrationResult] = []
         for target in spec.targets:
-            results.append(
-                self._process_target(
-                    run_id, spec_hash, target, dry_run=dry_run, connection=connection
-                )
-            )
+            results.append(self._process_target(run_id, spec_hash, target, dry_run=dry_run, connection=connection))
         return results
 
     def rollback(
@@ -122,15 +113,11 @@ class Orchestrator:
         if not dry_run:
             self.state_store.initialize()
         elif not self.state_store.path.exists():
-            return OrchestrationResult(
-                status="noop", applied=False, changed=False, dry_run=True
-            )
+            return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=True)
 
         if not dry_run:
             with self.state_store.transaction() as connection:
-                return perform_rollback(
-                    path, self.state_store, dry_run=False, connection=connection
-                )
+                return perform_rollback(path, self.state_store, dry_run=False, connection=connection)
         return perform_rollback(path, self.state_store, dry_run=True)
 
     def _process_target(
@@ -143,13 +130,9 @@ class Orchestrator:
         connection: sqlite3.Connection | None = None,
     ) -> OrchestrationResult:
         if not platform_matches(target.platforms):
-            return OrchestrationResult(
-                status="skipped", applied=False, changed=False, skipped=True
-            )
+            return OrchestrationResult(status="skipped", applied=False, changed=False, skipped=True)
         if not machine_matches(target.machine):
-            return OrchestrationResult(
-                status="skipped", applied=False, changed=False, skipped=True
-            )
+            return OrchestrationResult(status="skipped", applied=False, changed=False, skipped=True)
 
         adapter = adapter_for_path(target.path, fmt=target.format)
 
@@ -183,9 +166,7 @@ class Orchestrator:
                     details=f"{exc.__class__.__name__}: {exc}",
                     connection=connection,
                 )
-            return OrchestrationResult(
-                status="error", applied=False, changed=False, error=str(exc)
-            )
+            return OrchestrationResult(status="error", applied=False, changed=False, error=str(exc))
 
     def _process_new_file(
         self,
@@ -208,9 +189,7 @@ class Orchestrator:
             )
 
         if dry_run:
-            return OrchestrationResult(
-                status="dry-run", applied=False, changed=True, dry_run=True
-            )
+            return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
 
         if target.path.exists():
             assert run_id is not None
@@ -222,9 +201,7 @@ class Orchestrator:
                 current_fingerprint=_current_fingerprint(target.path),
             )
             self._record_conflict(run_id, conflict, connection=connection)
-            return OrchestrationResult(
-                status="conflict", applied=False, changed=True, conflict=conflict
-            )
+            return OrchestrationResult(status="conflict", applied=False, changed=True, conflict=conflict)
 
         original_exists = target.path.exists()
         return self._apply_and_record(
@@ -259,21 +236,25 @@ class Orchestrator:
             snapshot = self.state_store.latest_snapshot(target.path, connection=connection)
             baseline = (
                 file_fingerprint(
-                    snapshot.path, snapshot.hash_algo, snapshot.content_hash,
-                    snapshot.size, snapshot.mtime_ns,
+                    snapshot.path,
+                    snapshot.hash_algo,
+                    snapshot.content_hash,
+                    snapshot.size,
+                    snapshot.mtime_ns,
                 )
-                if snapshot is not None else None
+                if snapshot is not None
+                else None
             )
             conflict = _detect_managed_conflict(
-                document, plan.operations, managed_state,
+                document,
+                plan.operations,
+                managed_state,
                 baseline_fingerprint=baseline,
                 current_fingerprint=before,
             )
             if conflict is not None:
                 self._record_conflict(run_id, conflict, connection=connection)
-                return OrchestrationResult(
-                    status="conflict", applied=False, changed=True, conflict=conflict
-                )
+                return OrchestrationResult(status="conflict", applied=False, changed=True, conflict=conflict)
 
         if not plan.changed:
             if run_id is not None and not dry_run:
@@ -300,14 +281,10 @@ class Orchestrator:
         if conflict is not None:
             if run_id is not None and not dry_run:
                 self._record_conflict(run_id, conflict, connection=connection)
-            return OrchestrationResult(
-                status="conflict", applied=False, changed=True, conflict=conflict
-            )
+            return OrchestrationResult(status="conflict", applied=False, changed=True, conflict=conflict)
 
         if dry_run:
-            return OrchestrationResult(
-                status="dry-run", applied=False, changed=True, dry_run=True
-            )
+            return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
 
         return self._apply_and_record(
             run_id=run_id,
@@ -418,9 +395,7 @@ def _empty_document(path: Path, fmt: str) -> Document:
 def _current_fingerprint(path: Path) -> FileFingerprint:
     stat = path.stat()
     content_hash = sha256_bytes(path.read_bytes())
-    return file_fingerprint(
-        path, "sha256", content_hash, stat.st_size, stat.st_mtime_ns
-    )
+    return file_fingerprint(path, "sha256", content_hash, stat.st_size, stat.st_mtime_ns)
 
 
 def _conflict_details(conflict: ConflictResult) -> str:
@@ -441,7 +416,9 @@ def _fingerprint_details(fingerprint: FileFingerprint | None) -> str:
     )
 
 
-def _managed_state_from_batches(batches: list["ChangeBatchRecord"]) -> dict[str, dict[str, Any]]:
+def _managed_state_from_batches(
+    batches: list[ChangeBatchRecord],
+) -> dict[str, dict[str, Any]]:
     state: dict[str, dict[str, Any]] = {}
     for batch in batches:
         for operation in batch.operations:

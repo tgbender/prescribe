@@ -3,9 +3,7 @@ from pathlib import Path
 from prescribe.adapters.yaml import YamlAdapter
 
 
-def test_yaml_round_trip_preserves_comments(
-    make_text_file, yaml_sample: str, fake_root: Path
-) -> None:
+def test_yaml_round_trip_preserves_comments(make_text_file, yaml_sample: str, fake_root: Path) -> None:
     source = make_text_file("config.yaml", yaml_sample)
 
     adapter = YamlAdapter()

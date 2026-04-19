@@ -68,9 +68,7 @@ def test_apply_creates_intermediate_dicts(tmp_path: Path) -> None:
     document = TomlAdapter().load(source)
     plan = Planner().plan(
         document,
-        DesiredState(
-            path=source, format="toml", data={"tool": {"new_section": {"key": "val"}}}
-        ),
+        DesiredState(path=source, format="toml", data={"tool": {"new_section": {"key": "val"}}}),
     )
 
     assert plan.changed is True

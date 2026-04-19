@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Optional
 
 import typer
 
@@ -40,13 +39,17 @@ def _version_callback(value: bool) -> None:
 @app.callback()
 def _callback(
     version: bool = typer.Option(
-        None, "--version", callback=_version_callback, is_eager=True, help="Show version and exit."
+        None,
+        "--version",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show version and exit.",
     ),
 ) -> None:
     pass
 
 
-def _make_store(state: Optional[Path]) -> StateStore:
+def _make_store(state: Path | None) -> StateStore:
     if state is not None:
         return StateStore(state)
     env = os.environ.get("CONFIG_HELPER_STATE")
@@ -70,20 +73,20 @@ def apply(
     spec: Path = typer.Argument(..., help="Path to the spec TOML file."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Plan changes without writing."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
-    state: Optional[Path] = typer.Option(None, "--state", envvar="CONFIG_HELPER_STATE", help="Path to state database."),
+    state: Path | None = typer.Option(None, "--state", envvar="CONFIG_HELPER_STATE", help="Path to state database."),
 ) -> None:
     """Apply a spec file to its target config files."""
     try:
         spec_obj = SpecLoader().load(spec)
     except SpecError as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     results = Orchestrator(_make_store(state)).run(spec, dry_run=dry_run)
 
     if output_json:
         data = []
-        for target, result in zip(spec_obj.targets, results):
+        for target, result in zip(spec_obj.targets, results, strict=True):
             entry: dict[str, object] = {
                 "path": str(target.path),
                 "status": result.status,
@@ -97,7 +100,7 @@ def apply(
             data.append(entry)
         typer.echo(json.dumps(data, indent=2))
     else:
-        for target, result in zip(spec_obj.targets, results):
+        for target, result in zip(spec_obj.targets, results, strict=True):
             detail = result.conflict.reason if result.conflict else result.error or None
             typer.echo(_status_line(result.status, result.changed, str(target.path), detail))
 
@@ -109,20 +112,20 @@ def apply(
 def status(
     spec: Path = typer.Argument(..., help="Path to the spec TOML file."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
-    state: Optional[Path] = typer.Option(None, "--state", envvar="CONFIG_HELPER_STATE", help="Path to state database."),
+    state: Path | None = typer.Option(None, "--state", envvar="CONFIG_HELPER_STATE", help="Path to state database."),
 ) -> None:
     """Show sync status of all targets without making changes."""
     try:
         spec_obj = SpecLoader().load(spec)
     except SpecError as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
     results = Orchestrator(_make_store(state)).run(spec, dry_run=True)
 
     if output_json:
         data = []
-        for target, result in zip(spec_obj.targets, results):
+        for target, result in zip(spec_obj.targets, results, strict=True):
             entry: dict[str, object] = {
                 "path": str(target.path),
                 "status": _display_status(result.status, result.changed),
@@ -133,14 +136,21 @@ def status(
             data.append(entry)
         typer.echo(json.dumps(data, indent=2))
     else:
-        for target, result in zip(spec_obj.targets, results):
-            typer.echo(_status_line(result.status, result.changed, str(target.path), result.error or None))
+        for target, result in zip(spec_obj.targets, results, strict=True):
+            typer.echo(
+                _status_line(
+                    result.status,
+                    result.changed,
+                    str(target.path),
+                    result.error or None,
+                )
+            )
 
 
 @app.command(name="list")
 def list_managed(
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
-    state: Optional[Path] = typer.Option(None, "--state", envvar="CONFIG_HELPER_STATE", help="Path to state database."),
+    state: Path | None = typer.Option(None, "--state", envvar="CONFIG_HELPER_STATE", help="Path to state database."),
 ) -> None:
     """List all config files managed by prescribe."""
     store = _make_store(state)
@@ -155,18 +165,20 @@ def list_managed(
     records = store.list_managed()
 
     if output_json:
-        typer.echo(json.dumps(
-            [
-                {
-                    "path": str(r.path),
-                    "format": r.format,
-                    "last_applied_at": r.last_applied_at.isoformat(),
-                    "exists": r.path.exists(),
-                }
-                for r in records
-            ],
-            indent=2,
-        ))
+        typer.echo(
+            json.dumps(
+                [
+                    {
+                        "path": str(r.path),
+                        "format": r.format,
+                        "last_applied_at": r.last_applied_at.isoformat(),
+                        "exists": r.path.exists(),
+                    }
+                    for r in records
+                ],
+                indent=2,
+            )
+        )
         return
 
     if not records:
@@ -185,7 +197,7 @@ def rollback(
     path: Path = typer.Argument(..., help="Path to the config file to roll back."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be rolled back."),
     output_json: bool = typer.Option(False, "--json", help="Output result as JSON."),
-    state: Optional[Path] = typer.Option(None, "--state", envvar="CONFIG_HELPER_STATE", help="Path to state database."),
+    state: Path | None = typer.Option(None, "--state", envvar="CONFIG_HELPER_STATE", help="Path to state database."),
 ) -> None:
     """Roll back managed changes to a config file."""
     result = Orchestrator(_make_store(state)).rollback(path, dry_run=dry_run)

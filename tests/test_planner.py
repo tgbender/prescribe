@@ -2,7 +2,7 @@ from pathlib import Path
 
 from prescribe.adapters.line import LineAdapter
 from prescribe.adapters.toml import TomlAdapter
-from prescribe.core import DesiredState, Planner, detect_conflict, FileFingerprint
+from prescribe.core import DesiredState, FileFingerprint, Planner, detect_conflict
 
 
 def test_planner_detects_missing_and_different_toml_keys(make_text_file) -> None:
@@ -47,12 +47,8 @@ def test_planner_detects_matching_line_block(make_text_file) -> None:
 
 def test_conflict_detection_flags_hash_changes(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
-    baseline = FileFingerprint(
-        path=path, hash_algo="sha256", content_hash=b"abc", size=10
-    )
-    current = FileFingerprint(
-        path=path, hash_algo="sha256", content_hash=b"xyz", size=10
-    )
+    baseline = FileFingerprint(path=path, hash_algo="sha256", content_hash=b"abc", size=10)
+    current = FileFingerprint(path=path, hash_algo="sha256", content_hash=b"xyz", size=10)
 
     conflict = detect_conflict(baseline, current)
 

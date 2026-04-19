@@ -5,7 +5,7 @@ import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -94,9 +94,7 @@ class StateStore:
         connection_factory: Callable[[Path], sqlite3.Connection] = sqlite3.connect,
     ) -> None:
         raw_path = Path(path)
-        self.path = (
-            raw_path if str(raw_path) == ":memory:" else _canonical_path(raw_path)
-        )
+        self.path = raw_path if str(raw_path) == ":memory:" else _canonical_path(raw_path)
         self.connection_factory = connection_factory
 
     def _open(self) -> sqlite3.Connection:
@@ -112,9 +110,7 @@ class StateStore:
         return self._open()
 
     @contextmanager
-    def _connection(
-        self, connection: sqlite3.Connection | None = None
-    ) -> Iterator[sqlite3.Connection]:
+    def _connection(self, connection: sqlite3.Connection | None = None) -> Iterator[sqlite3.Connection]:
         if connection is not None:
             yield connection
         else:
@@ -426,9 +422,7 @@ class StateStore:
     ) -> ChangeBatchRecord:
         created = _utcnow(created_at)
         path_text = str(_canonical_path(path))
-        payload = json.dumps(
-            [_to_jsonable(operation) for operation in operations], ensure_ascii=False
-        )
+        payload = json.dumps([_to_jsonable(operation) for operation in operations], ensure_ascii=False)
         with self._connection(connection) as conn:
             stored_original_exists = self.original_exists(path, connection=conn)
             if stored_original_exists is None:
@@ -514,9 +508,7 @@ class StateStore:
                 created_at=_parse_datetime(row[3]),
                 format=row[4],
                 original_exists=bool(row[5]),
-                operations=[
-                    _from_jsonable(operation) for operation in json.loads(row[6])
-                ],
+                operations=[_from_jsonable(operation) for operation in json.loads(row[6])],
             )
             for row in rows
         ]
@@ -612,7 +604,6 @@ class StateStore:
             content_text=row[5],
             original_exists=bool(row[6]),
         )
-
 
     def list_managed(
         self,
@@ -725,10 +716,10 @@ def _canonical_path(path: Path | str) -> Path:
 
 def _utcnow(value: datetime | None = None) -> datetime:
     if value is None:
-        value = datetime.now(timezone.utc)
+        value = datetime.now(UTC)
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _parse_datetime(value: str) -> datetime:

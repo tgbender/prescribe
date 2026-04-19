@@ -47,12 +47,7 @@ def test_spec_target_unknown_format(tmp_path: Path) -> None:
 
 def test_spec_target_data_must_be_table(tmp_path: Path) -> None:
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text(
-        "[[targets]]\n"
-        "path = 'config.toml'\n"
-        "format = 'toml'\n"
-        "data = ['not', 'a', 'table']\n"
-    )
+    spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\ndata = ['not', 'a', 'table']\n")
 
     with pytest.raises(SpecError, match="key 'data' must be a table/object"):
         SpecLoader().load(spec_path)
@@ -60,21 +55,15 @@ def test_spec_target_data_must_be_table(tmp_path: Path) -> None:
 
 def test_spec_target_list_fields_must_be_string_lists(tmp_path: Path) -> None:
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text(
-        "[[targets]]\npath = 'config.toml'\nformat = 'toml'\ndelete = ['ok', 1]\n"
-    )
+    spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\ndelete = ['ok', 1]\n")
 
-    with pytest.raises(
-        SpecError, match="key 'delete' item #1 must be a non-empty string"
-    ):
+    with pytest.raises(SpecError, match="key 'delete' item #1 must be a non-empty string"):
         SpecLoader().load(spec_path)
 
 
 def test_spec_target_unknown_platform_rejected(tmp_path: Path) -> None:
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text(
-        "[[targets]]\npath = 'config.toml'\nformat = 'toml'\nplatforms = ['solaris']\n"
-    )
+    spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\nplatforms = ['solaris']\n")
 
     with pytest.raises(SpecError, match="unknown platform"):
         SpecLoader().load(spec_path)
@@ -161,9 +150,7 @@ def test_spec_expands_home_and_env_vars_in_path(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setenv("APP_NAME", "myapp")
 
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text(
-        "[[targets]]\npath = '~/.config/${APP_NAME}/config.toml'\nformat = 'toml'\n"
-    )
+    spec_path.write_text("[[targets]]\npath = '~/.config/${APP_NAME}/config.toml'\nformat = 'toml'\n")
 
     spec = SpecLoader().load(spec_path)
     assert spec.targets[0].path == (home_dir / ".config/myapp/config.toml").resolve()
@@ -174,10 +161,7 @@ def test_spec_uses_first_existing_path_from_fallback_list(tmp_path: Path) -> Non
     existing = tmp_path / "existing.toml"
     existing.write_text("title = 'hello'\n")
     spec_path.write_text(
-        "[[targets]]\n"
-        "path = 'missing.toml'\n"
-        "paths = ['also-missing.toml', 'existing.toml']\n"
-        "format = 'toml'\n"
+        "[[targets]]\npath = 'missing.toml'\npaths = ['also-missing.toml', 'existing.toml']\nformat = 'toml'\n"
     )
 
     spec = SpecLoader().load(spec_path)
@@ -186,9 +170,7 @@ def test_spec_uses_first_existing_path_from_fallback_list(tmp_path: Path) -> Non
 
 def test_spec_valid_line_target_with_block_id(tmp_path: Path) -> None:
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text(
-        "[[targets]]\npath = '.env'\nformat = 'line'\nmanaged_block_id = 'managed'\n"
-    )
+    spec_path.write_text("[[targets]]\npath = '.env'\nformat = 'line'\nmanaged_block_id = 'managed'\n")
 
     spec = SpecLoader().load(spec_path)
     assert spec.targets[0].managed_block_id == "managed"

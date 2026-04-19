@@ -20,23 +20,14 @@ def test_rollback_fuzz_preserves_unmanaged_changes_and_restores_managed_state(
     rng = random.Random(seed)
     fmt = FORMATS[seed % len(FORMATS)]
     variant = rng.randrange(LINE_VARIANTS if fmt == "line" else MAPPING_VARIANTS)
-    case_dir = (
-        fake_root
-        / f"case_{seed:03d}"
-        / f"grp_{rng.randrange(3)}"
-        / f"sub_{rng.randrange(5)}"
-    )
+    case_dir = fake_root / f"case_{seed:03d}" / f"grp_{rng.randrange(3)}" / f"sub_{rng.randrange(5)}"
     case_dir.mkdir(parents=True, exist_ok=True)
 
     target_name = _target_name_for_format(fmt)
     target_path = case_dir / target_name
     spec_path = case_dir / "spec.toml"
     use_absolute_path = seed % 2 == 1
-    spec_target_path = (
-        str(target_path)
-        if use_absolute_path
-        else target_path.relative_to(spec_path.parent).as_posix()
-    )
+    spec_target_path = str(target_path) if use_absolute_path else target_path.relative_to(spec_path.parent).as_posix()
     round_count = 2 + rng.randrange(4)
 
     original_text = _initial_text(fmt, seed, variant)
@@ -45,7 +36,8 @@ def test_rollback_fuzz_preserves_unmanaged_changes_and_restores_managed_state(
     expected_text = original_text
     expected_semantic = _expected_semantic_state(fmt, seed, variant)
     chain: list[str] = [
-        f"seed={seed} fmt={fmt} variant={variant} target={target_path} absolute_path={use_absolute_path} rounds={round_count}"
+        f"seed={seed} fmt={fmt} variant={variant} target={target_path} "
+        f"absolute_path={use_absolute_path} rounds={round_count}"
     ]
 
     orchestrator = Orchestrator(memory_state_store)
@@ -78,29 +70,20 @@ def test_rollback_fuzz_preserves_unmanaged_changes_and_restores_managed_state(
             expected_semantic = _apply_manual_semantic_edit(
                 fmt, variant, expected_semantic, manual_external=manual_external
             )
-            chain.append(
-                f"manual[{round_index}] external={manual_external} comment={manual_comment}"
-            )
+            chain.append(f"manual[{round_index}] external={manual_external} comment={manual_comment}")
 
     rolled_back = orchestrator.rollback(target_path)
-    chain.append(
-        f"rollback status={rolled_back.status} applied={rolled_back.applied} changed={rolled_back.changed}"
-    )
+    chain.append(f"rollback status={rolled_back.status} applied={rolled_back.applied} changed={rolled_back.changed}")
     assert rolled_back.status == "rolled-back", _failure_report(chain, target_path)
 
     final_document = adapter_for_path(target_path).load(target_path)
     final_text = target_path.read_text(encoding="utf-8")
     try:
         if fmt == "line":
-            assert (
-                final_document.root.block(_line_profile(variant)["managed_block_id"])
-                is not None
-            )
+            assert final_document.root.block(_line_profile(variant)["managed_block_id"]) is not None
             assert [
                 line.rstrip("\r\n")
-                for line in final_document.root.block(
-                    _line_profile(variant)["managed_block_id"]
-                ).lines
+                for line in final_document.root.block(_line_profile(variant)["managed_block_id"]).lines
             ] == expected_semantic["managed_lines"]
             assert expected_semantic[_line_profile(variant)["tail_key"]] in final_text
         else:
@@ -159,14 +142,7 @@ def _mapping_flat_initial_text(fmt: str, seed: int) -> str:
             "nestedEnabled = true\n"
         )
     if fmt == "yaml":
-        return (
-            f"# seed {seed}\n"
-            "title: alpha\n"
-            "count: 1\n"
-            "temporary: remove-me\n"
-            "external: keep\n"
-            "nestedEnabled: true\n"
-        )
+        return f"# seed {seed}\ntitle: alpha\ncount: 1\ntemporary: remove-me\nexternal: keep\nnestedEnabled: true\n"
     if fmt == "json5":
         return (
             f"// seed {seed}\n"
@@ -383,9 +359,7 @@ def _expected_semantic_state(fmt: str, seed: int, variant: int):
     raise ValueError(variant)
 
 
-def _spec_text(
-    fmt: str, path_text: str, seed: int, round_index: int, variant: int
-) -> str:
+def _spec_text(fmt: str, path_text: str, seed: int, round_index: int, variant: int) -> str:
     if fmt == "line":
         profile = _line_profile(variant)
         lines = [
@@ -405,9 +379,7 @@ def _spec_text(
     return _mapping_spec(path_text, fmt, managed, delete)
 
 
-def _mapping_managed_state(
-    fmt: str, seed: int, round_index: int, variant: int
-) -> dict[str, object]:
+def _mapping_managed_state(fmt: str, seed: int, round_index: int, variant: int) -> dict[str, object]:
     if variant == 0:
         return {
             "count": round_index + 2,
@@ -434,9 +406,7 @@ def _mapping_managed_state(
     raise ValueError(variant)
 
 
-def _mapping_spec(
-    path_text: str, fmt: str, managed: dict[str, object], delete: list[str]
-) -> str:
+def _mapping_spec(path_text: str, fmt: str, managed: dict[str, object], delete: list[str]) -> str:
     lines = [
         "[[targets]]",
         f"path = '{path_text}'",
@@ -471,42 +441,26 @@ def _toml_literal(value: object) -> str:
     return f"'{value}'"
 
 
-def _apply_manual_edit(
-    fmt: str, variant: int, text: str, *, manual_comment: str, manual_external: str
-) -> str:
+def _apply_manual_edit(fmt: str, variant: int, text: str, *, manual_comment: str, manual_external: str) -> str:
     if fmt == "toml":
         return (
-            "# "
-            + manual_comment
-            + "\n"
-            + _replace_first(
-                text, "external = 'keep'", f"external = '{manual_external}'"
-            )
+            "# " + manual_comment + "\n" + _replace_first(text, "external = 'keep'", f"external = '{manual_external}'")
         )
     if fmt == "yaml":
-        return (
-            "# "
-            + manual_comment
-            + "\n"
-            + _replace_first(text, "external: keep", f"external: {manual_external}")
-        )
+        return "# " + manual_comment + "\n" + _replace_first(text, "external: keep", f"external: {manual_external}")
     if fmt == "json5":
         return (
             "// "
             + manual_comment
             + "\n"
-            + _replace_first(
-                text, '"external": "keep"', f'"external": "{manual_external}"'
-            )
+            + _replace_first(text, '"external": "keep"', f'"external": "{manual_external}"')
         )
     if fmt == "jsonc":
         return (
             "// "
             + manual_comment
             + "\n"
-            + _replace_first(
-                text, '"external": "keep"', f'"external": "{manual_external}"'
-            )
+            + _replace_first(text, '"external": "keep"', f'"external": "{manual_external}"')
         )
     if fmt == "line":
         profile = _line_profile(variant)

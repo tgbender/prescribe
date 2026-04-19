@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-import re
-from typing import Iterable, Sequence
 
 from prescribe.atomic import atomic_write_text
 from prescribe.document import Document
@@ -74,11 +74,7 @@ class LineDocument:
         output: list[str] = []
         for segment in self.segments:
             chunk = segment.render()
-            if (
-                output
-                and not output[-1].endswith(("\n", "\r"))
-                and not chunk.startswith(("\n", "\r"))
-            ):
+            if output and not output[-1].endswith(("\n", "\r")) and not chunk.startswith(("\n", "\r")):
                 output.append(self.newline)
             output.append(chunk)
         return "".join(output)
@@ -115,9 +111,7 @@ def parse_line_document(path: Path, text: str) -> LineDocument:
             if end_match is not None:
                 end_id = end_match.group("block_id")
                 if end_id != block_id:
-                    raise ValueError(
-                        f"managed block mismatch in {path}: expected {block_id!r}, found {end_id!r}"
-                    )
+                    raise ValueError(f"managed block mismatch in {path}: expected {block_id!r}, found {end_id!r}")
                 footer = line
                 index += 1
                 break
@@ -127,9 +121,7 @@ def parse_line_document(path: Path, text: str) -> LineDocument:
         if footer is None:
             raise ValueError(f"unterminated managed block {block_id!r} in {path}")
 
-        segments.append(
-            ManagedBlock(block_id=block_id, lines=body, header=header, footer=footer)
-        )
+        segments.append(ManagedBlock(block_id=block_id, lines=body, header=header, footer=footer))
 
     if literal:
         segments.append(LiteralSegment(lines=literal))

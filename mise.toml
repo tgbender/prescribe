@@ -9,6 +9,7 @@ taplo = "latest"
 [env]
 MISE_NPM_PACKAGE_MANAGER = "bun"
 DO_NOT_TRACK = "1"
+PREK_QUIET = "1"
 
 [settings]
 npm.package_manager = "bun"

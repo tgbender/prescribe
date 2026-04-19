@@ -22,11 +22,15 @@ dev = ["mypy>=1.0,<2.0", "pytest>=9.0.3,<10.0.0", "pyfakefs>=6.2,<7.0.0"]
 
 [tool.ruff]
 target-version = "py312"
+line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = []
+ignore = [
+  "B008", # typer.Argument/Option in defaults is the intended Typer pattern
+]
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
+exclude = ["tests/"]

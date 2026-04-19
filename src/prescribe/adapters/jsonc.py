@@ -32,9 +32,7 @@ class JsoncAdapter:
 
     def dump(self, document: Document, path: Path) -> None:
         if document.source_text is None or document.baseline_root is None:
-            raise JsoncParseError(
-                "jsonc document is missing source text for round-trip editing"
-            )
+            raise JsoncParseError("jsonc document is missing source text for round-trip editing")
 
         text = document.source_text
         diffs = diff_paths(document.baseline_root, document.root)

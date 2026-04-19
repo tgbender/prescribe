@@ -11,7 +11,6 @@ from prescribe._util import (
     set_mapping_value,
     sha256_bytes,
 )
-
 from prescribe.adapters import adapter_for_path
 from prescribe.core.result import OrchestrationResult
 from prescribe.document import Document
@@ -27,15 +26,11 @@ def perform_rollback(
     connection: sqlite3.Connection | None = None,
 ) -> OrchestrationResult:
     if original:
-        return perform_rollback_original(
-            path, state_store, dry_run=dry_run, connection=connection
-        )
+        return perform_rollback_original(path, state_store, dry_run=dry_run, connection=connection)
 
     batches = state_store.change_batches(path, connection=connection)
     if not batches:
-        return OrchestrationResult(
-            status="noop", applied=False, changed=False, dry_run=dry_run
-        )
+        return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
 
     format_name = batches[-1].format
     if format_name is None:
@@ -49,13 +44,9 @@ def perform_rollback(
     checkpoint = state_store.latest_checkpoint(path, connection=connection)
     if not path.exists():
         if checkpoint is None or not checkpoint.original_exists:
-            return OrchestrationResult(
-                status="noop", applied=False, changed=False, dry_run=dry_run
-            )
+            return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
         if dry_run:
-            return OrchestrationResult(
-                status="dry-run", applied=False, changed=True, dry_run=True
-            )
+            return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(checkpoint.content_text, encoding="utf-8")
 
@@ -66,19 +57,13 @@ def perform_rollback(
         for batch in reversed(batches):
             changed = rollback_batch(document, batch.operations) or changed
     except Exception as exc:
-        return OrchestrationResult(
-            status="error", applied=False, changed=False, error=str(exc)
-        )
+        return OrchestrationResult(status="error", applied=False, changed=False, error=str(exc))
 
     if not changed:
-        return OrchestrationResult(
-            status="noop", applied=False, changed=False, dry_run=dry_run
-        )
+        return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
 
     if dry_run:
-        return OrchestrationResult(
-            status="dry-run", applied=False, changed=True, dry_run=True
-        )
+        return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
 
     original_exists = batches[0].original_exists
     if original_exists or _document_has_content(document):
@@ -136,30 +121,28 @@ def perform_rollback_original(
 
     if not baseline.original_exists:
         if not path.exists():
-            return OrchestrationResult(
-                status="noop", applied=False, changed=False, dry_run=dry_run
-            )
+            return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
         if dry_run:
-            return OrchestrationResult(
-                status="dry-run", applied=False, changed=True, dry_run=True
-            )
+            return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
         path.unlink()
         _record_rollback_event(
-            state_store, path, "rollback-original",
+            state_store,
+            path,
+            "rollback-original",
             "restored to pre-prescribe state (file deleted)",
             connection=connection,
         )
         return OrchestrationResult(status="rolled-back", applied=True, changed=True)
 
     if dry_run:
-        return OrchestrationResult(
-            status="dry-run", applied=False, changed=True, dry_run=True
-        )
+        return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(baseline.content_text, encoding="utf-8")
     _record_rollback_event(
-        state_store, path, "rollback-original",
+        state_store,
+        path,
+        "rollback-original",
         "restored to pre-prescribe baseline",
         connection=connection,
     )
@@ -175,23 +158,19 @@ def perform_restore(
 ) -> OrchestrationResult:
     checkpoint = state_store.latest_checkpoint(path, connection=connection)
     if checkpoint is None:
-        return OrchestrationResult(
-            status="noop", applied=False, changed=False, dry_run=dry_run
-        )
+        return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
 
     if dry_run:
-        return OrchestrationResult(
-            status="dry-run", applied=False, changed=True, dry_run=True
-        )
+        return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
 
     if not checkpoint.original_exists:
         if not path.exists():
-            return OrchestrationResult(
-                status="noop", applied=False, changed=False, dry_run=dry_run
-            )
+            return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
         path.unlink()
         _record_rollback_event(
-            state_store, path, "restore",
+            state_store,
+            path,
+            "restore",
             "restored to last checkpoint (file deleted)",
             connection=connection,
         )
@@ -200,7 +179,9 @@ def perform_restore(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(checkpoint.content_text, encoding="utf-8")
     _record_rollback_event(
-        state_store, path, "restore",
+        state_store,
+        path,
+        "restore",
         "restored to last checkpoint",
         connection=connection,
     )
@@ -215,14 +196,9 @@ def _record_rollback_event(
     *,
     connection: sqlite3.Connection | None = None,
 ) -> None:
-    from prescribe.state.sqlite import _utcnow
-
-    now = _utcnow()
     run_id = 0
     with state_store._connection(connection) as conn:
-        row = conn.execute(
-            "SELECT id FROM runs ORDER BY id DESC LIMIT 1"
-        ).fetchone()
+        row = conn.execute("SELECT id FROM runs ORDER BY id DESC LIMIT 1").fetchone()
         if row is not None:
             run_id = row[0]
     state_store.record_event(
@@ -280,9 +256,7 @@ def _rollback_line(document: Document, operations: list[dict[str, Any]]) -> bool
             raise ValueError("rollback operation missing key")
         block_id = str(key)
         block = document.root.block(block_id)
-        current_lines = (
-            None if block is None else [line.rstrip("\r\n") for line in block.lines]
-        )
+        current_lines = None if block is None else [line.rstrip("\r\n") for line in block.lines]
         if kind == "replace_block":
             if current_lines == operation.get("value"):
                 before_value = operation.get("before_value")

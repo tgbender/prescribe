@@ -3,9 +3,7 @@ from pathlib import Path
 from prescribe.adapters.toml import TomlAdapter
 
 
-def test_toml_round_trip_preserves_comments(
-    make_text_file, toml_sample: str, fake_root: Path
-) -> None:
+def test_toml_round_trip_preserves_comments(make_text_file, toml_sample: str, fake_root: Path) -> None:
     source = make_text_file("config.toml", toml_sample)
 
     adapter = TomlAdapter()
