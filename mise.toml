@@ -22,8 +22,16 @@ depends = ["uv-sync-all"]
 run = "uv pip install --editable ."
 
 [tasks.setup-hooks]
-description = "Install pre-commit hooks"
+description = "Install prek git hooks"
 run = "prek install"
+
+[tasks.hooks-run]
+description = "Run all prek hooks against all files"
+run = "prek run --all-files"
+
+[tasks.hooks-update]
+description = "Update prek hook repos"
+run = "prek autoupdate"
 
 [tasks.uv-sync-all]
 description = "Sync Python deps with uv"
@@ -39,6 +47,10 @@ description = "Scan git history for secrets (pre-commit)"
 run = "trufflehog git file://. --since-commit=HEAD~1 --no-verification --no-update --fail"
 
 ### LINTERS AND FORMATTERS
+[tasks.check]
+description = "Run all checks (linters, type checks, formatting checks)"
+depends = ["lint", "format"]
+
 [tasks.format]
 description = "Run all auto-fixes and formatting"
 depends = ["ruff-fix", "ruff-format", "prettier-format", "taplo-format"]
