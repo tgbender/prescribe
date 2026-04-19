@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +24,8 @@ def perform_rollback(
     *,
     dry_run: bool = False,
     original: bool = False,
-    connection=None,
-):
+    connection: sqlite3.Connection | None = None,
+) -> OrchestrationResult:
     if original:
         return perform_rollback_original(
             path, state_store, dry_run=dry_run, connection=connection
@@ -121,8 +122,8 @@ def perform_rollback_original(
     state_store: StateStore,
     *,
     dry_run: bool = False,
-    connection=None,
-):
+    connection: sqlite3.Connection | None = None,
+) -> OrchestrationResult:
     baseline = state_store.latest_baseline(path, connection=connection)
     if baseline is None:
         return OrchestrationResult(
@@ -170,8 +171,8 @@ def perform_restore(
     state_store: StateStore,
     *,
     dry_run: bool = False,
-    connection=None,
-):
+    connection: sqlite3.Connection | None = None,
+) -> OrchestrationResult:
     checkpoint = state_store.latest_checkpoint(path, connection=connection)
     if checkpoint is None:
         return OrchestrationResult(
@@ -212,7 +213,7 @@ def _record_rollback_event(
     event_type: str,
     summary: str,
     *,
-    connection=None,
+    connection: sqlite3.Connection | None = None,
 ) -> None:
     from prescribe.state.sqlite import _utcnow
 

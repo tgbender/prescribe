@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from prescribe.document import Adapter
 from prescribe.adapters.json5 import json5_adapter
 from prescribe.adapters.jsonc import jsonc_adapter
 from prescribe.adapters.line import line_adapter
@@ -9,7 +10,7 @@ from prescribe.adapters.toml import toml_adapter
 from prescribe.adapters.yaml import yaml_adapter
 
 
-EXACT_NAME_ADAPTERS = {
+EXACT_NAME_ADAPTERS: dict[str, Adapter] = {
     ".env": line_adapter,
     ".gitattributes": line_adapter,
     ".gitignore": line_adapter,
@@ -17,7 +18,7 @@ EXACT_NAME_ADAPTERS = {
     ".editorconfig": line_adapter,
 }
 
-SUFFIX_ADAPTERS = {
+SUFFIX_ADAPTERS: dict[str, Adapter] = {
     ".toml": toml_adapter,
     ".yaml": yaml_adapter,
     ".yml": yaml_adapter,
@@ -31,7 +32,7 @@ SUFFIX_ADAPTERS = {
 }
 
 
-FORMAT_ADAPTERS = {
+FORMAT_ADAPTERS: dict[str, Adapter] = {
     "toml": toml_adapter,
     "yaml": yaml_adapter,
     "json5": json5_adapter,
@@ -40,14 +41,14 @@ FORMAT_ADAPTERS = {
 }
 
 
-def adapter_for_format(fmt: str):
+def adapter_for_format(fmt: str) -> Adapter:
     try:
         return FORMAT_ADAPTERS[fmt]
     except KeyError as exc:
         raise ValueError(f"unsupported format: {fmt}") from exc
 
 
-def adapter_for_path(path: Path, fmt: str | None = None):
+def adapter_for_path(path: Path, fmt: str | None = None) -> Adapter:
     if fmt is not None:
         return adapter_for_format(fmt)
 

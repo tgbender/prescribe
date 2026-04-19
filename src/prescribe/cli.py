@@ -84,7 +84,7 @@ def apply(
     if output_json:
         data = []
         for target, result in zip(spec_obj.targets, results):
-            entry: dict = {
+            entry: dict[str, object] = {
                 "path": str(target.path),
                 "status": result.status,
                 "applied": result.applied,
@@ -123,7 +123,7 @@ def status(
     if output_json:
         data = []
         for target, result in zip(spec_obj.targets, results):
-            entry: dict = {
+            entry: dict[str, object] = {
                 "path": str(target.path),
                 "status": _display_status(result.status, result.changed),
                 "changed": result.changed,
@@ -191,7 +191,7 @@ def rollback(
     result = Orchestrator(_make_store(state)).rollback(path, dry_run=dry_run)
 
     if output_json:
-        data: dict = {
+        data: dict[str, object] = {
             "path": str(path),
             "status": result.status,
             "applied": result.applied,

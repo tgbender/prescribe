@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import os
 import socket
+import sqlite3
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from prescribe.spec import Spec
 
 from prescribe._util import _MISSING, mapping_value, sha256_bytes
 
@@ -18,10 +22,11 @@ from prescribe.core.conflict import (
 )
 from prescribe.core.planner import PlannedOperation
 from prescribe.core.result import OrchestrationResult
-from prescribe.document import Document
+from prescribe.document import Adapter, Document
 from prescribe.rollback import perform_rollback
 from prescribe.spec import SpecTarget
 from prescribe.state import StateStore
+from prescribe.state.sqlite import ChangeBatchRecord
 
 
 PLATFORM_MATCHERS: dict[str, Callable[[], bool]] = {
@@ -90,10 +95,10 @@ class Orchestrator:
         self,
         run_id: int | None,
         spec_hash: bytes,
-        spec,
+        spec: "Spec",
         *,
         dry_run: bool = False,
-        connection=None,
+        connection: sqlite3.Connection | None = None,
     ) -> list[OrchestrationResult]:
         from prescribe.spec import Spec
 
@@ -135,7 +140,7 @@ class Orchestrator:
         target: SpecTarget,
         *,
         dry_run: bool = False,
-        connection=None,
+        connection: sqlite3.Connection | None = None,
     ) -> OrchestrationResult:
         if not platform_matches(target.platforms):
             return OrchestrationResult(
@@ -187,10 +192,10 @@ class Orchestrator:
         run_id: int | None,
         spec_hash: bytes,
         target: SpecTarget,
-        adapter,
+        adapter: Adapter,
         *,
         dry_run: bool = False,
-        connection=None,
+        connection: sqlite3.Connection | None = None,
     ) -> OrchestrationResult:
         document = _empty_document(target.path, target.format)
         plan = self.planner.plan(document, target_to_desired(target))
@@ -239,10 +244,10 @@ class Orchestrator:
         run_id: int | None,
         spec_hash: bytes,
         target: SpecTarget,
-        adapter,
+        adapter: Adapter,
         *,
         dry_run: bool = False,
-        connection=None,
+        connection: sqlite3.Connection | None = None,
     ) -> OrchestrationResult:
         before = _current_fingerprint(target.path)
         document = adapter.load(target.path)
@@ -321,7 +326,7 @@ class Orchestrator:
         run_id: int,
         conflict: ConflictResult,
         *,
-        connection=None,
+        connection: sqlite3.Connection | None = None,
     ) -> None:
         self.state_store.record_event(
             run_id=run_id,
@@ -342,9 +347,9 @@ class Orchestrator:
         document: Document,
         operations: list[PlannedOperation],
         original_exists: bool,
-        adapter,
+        adapter: Adapter,
         event_type: str,
-        connection=None,
+        connection: sqlite3.Connection | None = None,
     ) -> OrchestrationResult:
         apply_operations(document, operations)
         adapter.dump(document, target.path)
@@ -436,7 +441,7 @@ def _fingerprint_details(fingerprint: FileFingerprint | None) -> str:
     )
 
 
-def _managed_state_from_batches(batches) -> dict[str, dict[str, Any]]:
+def _managed_state_from_batches(batches: list["ChangeBatchRecord"]) -> dict[str, dict[str, Any]]:
     state: dict[str, dict[str, Any]] = {}
     for batch in batches:
         for operation in batch.operations:

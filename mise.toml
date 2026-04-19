@@ -1,6 +1,85 @@
 [tools]
+trufflehog = "latest"
+uv = "latest"
+prek = "latest"
+ruff = "latest"
 bun = "latest"
+taplo = "latest"
 
+[env]
+MISE_NPM_PACKAGE_MANAGER = "bun"
+DO_NOT_TRACK = "1"
+
+[settings]
+npm.package_manager = "bun"
+python.uv_venv_auto = true
+
+### SETUP TASKS
+[tasks.setup]
+description = "Sync deps and install editable package into venv"
+depends = ["uv-sync-all"]
+run = "uv pip install --editable ."
+
+[tasks.setup-hooks]
+description = "Install pre-commit hooks"
+run = "prek install"
+
+[tasks.uv-sync-all]
+description = "Sync Python deps with uv"
+run = "uv sync --all-extras"
+
+### PRE-COMMIT
+[tasks.trufflehog-scan]
+description = "Scan git history for secrets (pre-commit)"
+run = "trufflehog git file://. --since-commit=HEAD~1 --no-verification --no-update --fail"
+
+### LINTERS AND FORMATTERS
+[tasks.format]
+description = "Run all auto-fixes and formatting"
+depends = ["ruff-fix", "ruff-format", "prettier-format", "taplo-format"]
+
+[tasks.lint]
+description = "Run all linters and type checks"
+depends = ["ruff-check", "mypy", "prettier-check", "taplo-check"]
+
+[tasks.ruff-check]
+description = "Check code with ruff"
+run = "ruff check ."
+
+[tasks.ruff-fix]
+description = "Auto-fix ruff lint violations"
+run = "ruff check --fix ."
+
+[tasks.ruff-format]
+description = "Format code with ruff"
+run = "ruff format ."
+
+[tasks.mypy]
+description = "Run mypy type checks"
+run = "uv run mypy ."
+
+[tasks.prettier-format]
+description = "Format non-Python files"
+run = "git ls-files '*.md' '*.json' '*.yaml' '*.yml' | bunx prettier --write '**/*.{md,json,yaml,yml}'"
+
+[tasks.prettier-check]
+description = "Check non-Python file formatting"
+run = "git ls-files -z '*.md' '*.json' '*.yaml' '*.yml' | xargs -0 bunx prettier --check"
+
+[tasks.taplo-format]
+description = "Format TOML files"
+run = "taplo fmt **/*.toml"
+
+[tasks.taplo-check]
+description = "Check TOML file formatting"
+run = "taplo fmt --check **/*.toml"
+
+### TESTS
+[tasks.test]
+description = "Run tests"
+run = "uv run pytest -q"
+
+### OTHER
 [tasks.oracle-jsonc]
 description = "Render the JSONC oracle for the VS Code settings fixture"
 run = "bun scripts/jsonc_oracle.ts"
