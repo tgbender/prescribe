@@ -1,3 +1,5 @@
+__version__ = "0.1.0"
+
 from config_helper.adapters import (
     Json5Adapter,
     JsoncAdapter,

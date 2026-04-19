@@ -69,6 +69,13 @@ class ChangeBatchRecord:
 
 
 @dataclass(slots=True)
+class ManagedRecord:
+    path: Path
+    format: str | None
+    last_applied_at: datetime
+
+
+@dataclass(slots=True)
 class BaselineRecord:
     id: int
     run_id: int
@@ -605,6 +612,30 @@ class StateStore:
             content_text=row[5],
             original_exists=bool(row[6]),
         )
+
+
+    def list_managed(
+        self,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[ManagedRecord]:
+        with self._connection(connection) as conn:
+            rows = conn.execute(
+                """
+                SELECT path, format, MAX(created_at) AS last_applied_at
+                FROM change_batches
+                GROUP BY path
+                ORDER BY path
+                """
+            ).fetchall()
+        return [
+            ManagedRecord(
+                path=Path(row[0]),
+                format=row[1],
+                last_applied_at=_parse_datetime(row[2]),
+            )
+            for row in rows
+        ]
 
 
 _SCHEMA = """
