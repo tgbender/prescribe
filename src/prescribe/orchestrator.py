@@ -73,6 +73,7 @@ class Orchestrator:
         spec = SpecLoader().load(spec_path)
         spec_hash = sha256_bytes(spec_path.read_bytes())
         if dry_run:
+            self.state_store.initialize()
             return self._run_targets(None, spec_hash, spec, dry_run=True)
 
         self.state_store.initialize()
@@ -229,32 +230,66 @@ class Orchestrator:
         before = _current_fingerprint(target.path)
         document = adapter.load(target.path)
         plan = self.planner.plan(document, target_to_desired(target))
-        if run_id is not None:
-            managed_state = _managed_state_from_batches(
-                self.state_store.change_batches(target.path, connection=connection)
-            )
-            snapshot = self.state_store.latest_snapshot(target.path, connection=connection)
-            baseline = (
-                file_fingerprint(
-                    snapshot.path,
-                    snapshot.hash_algo,
-                    snapshot.content_hash,
-                    snapshot.size,
-                    snapshot.mtime_ns,
+        managed_conflict: ConflictResult | None = None
+        if run_id is not None or dry_run:
+            if connection is None and run_id is None:
+                with self.state_store.connect() as read_connection:
+                    managed_state = _managed_state_from_batches(
+                        self.state_store.change_batches(target.path, connection=read_connection)
+                    )
+                    snapshot = self.state_store.latest_snapshot(target.path, connection=read_connection)
+                    baseline = (
+                        file_fingerprint(
+                            snapshot.path,
+                            snapshot.hash_algo,
+                            snapshot.content_hash,
+                            snapshot.size,
+                            snapshot.mtime_ns,
+                        )
+                        if snapshot is not None
+                        else None
+                    )
+                    managed_conflict = _detect_managed_conflict(
+                        document,
+                        plan.operations,
+                        managed_state,
+                        baseline_fingerprint=baseline,
+                        current_fingerprint=before,
+                    )
+            else:
+                managed_state = _managed_state_from_batches(
+                    self.state_store.change_batches(target.path, connection=connection)
                 )
-                if snapshot is not None
-                else None
-            )
-            conflict = _detect_managed_conflict(
-                document,
-                plan.operations,
-                managed_state,
-                baseline_fingerprint=baseline,
-                current_fingerprint=before,
-            )
-            if conflict is not None:
-                self._record_conflict(run_id, conflict, connection=connection)
-                return OrchestrationResult(status="conflict", applied=False, changed=True, conflict=conflict)
+                snapshot = self.state_store.latest_snapshot(target.path, connection=connection)
+                baseline = (
+                    file_fingerprint(
+                        snapshot.path,
+                        snapshot.hash_algo,
+                        snapshot.content_hash,
+                        snapshot.size,
+                        snapshot.mtime_ns,
+                    )
+                    if snapshot is not None
+                    else None
+                )
+                managed_conflict = _detect_managed_conflict(
+                    document,
+                    plan.operations,
+                    managed_state,
+                    baseline_fingerprint=baseline,
+                    current_fingerprint=before,
+                )
+
+            if managed_conflict is not None:
+                if run_id is not None and not dry_run:
+                    self._record_conflict(run_id, managed_conflict, connection=connection)
+                return OrchestrationResult(
+                    status="conflict",
+                    applied=False,
+                    changed=True,
+                    conflict=managed_conflict,
+                    dry_run=dry_run,
+                )
 
         if not plan.changed:
             if run_id is not None and not dry_run:
@@ -281,7 +316,9 @@ class Orchestrator:
         if conflict is not None:
             if run_id is not None and not dry_run:
                 self._record_conflict(run_id, conflict, connection=connection)
-            return OrchestrationResult(status="conflict", applied=False, changed=True, conflict=conflict)
+            return OrchestrationResult(
+                status="conflict", applied=False, changed=True, conflict=conflict, dry_run=dry_run
+            )
 
         if dry_run:
             return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)

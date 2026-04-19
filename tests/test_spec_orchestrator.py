@@ -195,6 +195,27 @@ def test_orchestrator_conflicts_when_managed_key_changes_between_runs(tmp_path: 
     assert second[0].applied is False
 
 
+def test_orchestrator_reports_managed_conflict_in_dry_run(tmp_path: Path, memory_state_store) -> None:
+    config_toml = tmp_path / "config.toml"
+    config_toml.write_text("title = 'hello'\ncount = 1\nexternal = true\n")
+
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+
+    orchestrator = Orchestrator(memory_state_store)
+    first = orchestrator.run(spec_path)
+    assert first[0].status == "applied"
+
+    config_toml.write_text("title = 'hello'\ncount = 3\nexternal = false\n")
+
+    dry_run = orchestrator.run(spec_path, dry_run=True)
+    assert dry_run[0].status == "conflict"
+    assert dry_run[0].dry_run is True
+    assert dry_run[0].applied is False
+    assert dry_run[0].conflict is not None
+    assert dry_run[0].conflict.reason == "managed key 'count' changed externally"
+
+
 def test_orchestrator_creates_missing_toml_file(tmp_path: Path, memory_state_store) -> None:
     config_toml = tmp_path / "new_config.toml"
     assert not config_toml.exists()
