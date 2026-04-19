@@ -57,16 +57,16 @@ lines = [
 
 ### Target fields
 
-| Field | Required | Description |
-|---|---|---|
-| `path` | yes | Path to the config file (supports `~`) |
-| `format` | yes | `toml`, `yaml`, `jsonc`, `json5`, or `line` |
-| `data` | no | Key/value pairs to set (dot-notation keys for nested values) |
-| `delete` | no | Keys to remove |
-| `lines` | no | Lines to manage (requires `format = "line"`) |
-| `managed_block_id` | no* | Block identifier for line-format files (*required for `line`) |
-| `platforms` | no | Limit to `linux`, `macos`, and/or `windows` |
-| `machine` | no | Limit to specific hostnames |
+| Field              | Required | Description                                                    |
+| ------------------ | -------- | -------------------------------------------------------------- |
+| `path`             | yes      | Path to the config file (supports `~`)                         |
+| `format`           | yes      | `toml`, `yaml`, `jsonc`, `json5`, or `line`                    |
+| `data`             | no       | Key/value pairs to set (dot-notation keys for nested values)   |
+| `delete`           | no       | Keys to remove                                                 |
+| `lines`            | no       | Lines to manage (requires `format = "line"`)                   |
+| `managed_block_id` | no\*     | Block identifier for line-format files (\*required for `line`) |
+| `platforms`        | no       | Limit to `linux`, `macos`, and/or `windows`                    |
+| `machine`          | no       | Limit to specific hostnames                                    |
 
 ---
 

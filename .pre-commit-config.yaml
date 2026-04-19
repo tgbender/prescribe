@@ -22,6 +22,20 @@ repos:
         files: \.toml$
         pass_filenames: false
 
+      - id: prettier-format
+        name: prettier format
+        entry: mise run prettier-format
+        language: system
+        files: \.(md|json|yaml|yml)$
+        pass_filenames: false
+
+      - id: mypy
+        name: mypy
+        entry: mise run mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+
       - id: trufflehog-scan
         name: trufflehog scan
         entry: mise run trufflehog-scan
