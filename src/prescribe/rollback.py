@@ -216,7 +216,9 @@ def _record_rollback_event(
     *,
     connection: sqlite3.Connection | None = None,
 ) -> None:
-    run_id = state_store.latest_run_id(connection=connection) or 0
+    run_id = state_store.latest_run_id(connection=connection)
+    if run_id is None:
+        raise RuntimeError(f"cannot record rollback event for {path}: no runs in state store")
     state_store.record_event(
         run_id=run_id,
         event_type=event_type,

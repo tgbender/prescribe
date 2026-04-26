@@ -1,7 +1,7 @@
 [project]
 name = "prescribe"
 version = "0.1.0"
-authors = [{ name = "Travis Bender", email = "travisgbender@gmail.com" }]
+authors = [{ name = "Travis Bender" }]
 requires-python = ">=3.12"
 dependencies = [
   "json5>=0.12.1,<0.15.0",

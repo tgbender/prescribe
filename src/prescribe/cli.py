@@ -213,10 +213,11 @@ def rollback(
         "--on-conflict",
         help="Behavior when a key was externally modified: prompt (default when TTY), revert, or ignore.",
     ),
+    original: bool = typer.Option(False, "--original", help="Restore to pre-prescribe state (before first apply)."),
 ) -> None:
     """Roll back managed changes to a config file."""
     result = Orchestrator(_make_store(state)).rollback(
-        path, dry_run=dry_run, conflict_resolver=_make_conflict_resolver(on_conflict)
+        path, dry_run=dry_run, original=original, conflict_resolver=_make_conflict_resolver(on_conflict)
     )
 
     if output_json:

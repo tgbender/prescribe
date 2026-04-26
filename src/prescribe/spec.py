@@ -6,8 +6,6 @@ from typing import Any
 
 import tomlkit
 
-from prescribe.core.planner import DesiredState
-
 KNOWN_FORMATS = frozenset({"toml", "yaml", "json5", "jsonc", "line"})
 KNOWN_PLATFORMS = frozenset({"linux", "macos", "windows"})
 
@@ -32,19 +30,6 @@ class SpecTarget:
 class Spec:
     path: Path
     targets: list[SpecTarget] = field(default_factory=list)
-
-    def desired_states(self) -> list[DesiredState]:
-        return [
-            DesiredState(
-                path=target.path,
-                format=target.format,
-                data=target.data,
-                delete=target.delete,
-                managed_block_id=target.managed_block_id,
-                lines=target.lines,
-            )
-            for target in self.targets
-        ]
 
 
 class SpecLoader:

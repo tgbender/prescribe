@@ -108,6 +108,7 @@ class Orchestrator:
         target_path: Path | str,
         *,
         dry_run: bool = False,
+        original: bool = False,
         conflict_resolver: ConflictResolver = None,
     ) -> OrchestrationResult:
         path = Path(target_path)
@@ -119,9 +120,14 @@ class Orchestrator:
         if not dry_run:
             with self.state_store.transaction() as connection:
                 return perform_rollback(
-                    path, self.state_store, dry_run=False, resolver=conflict_resolver, connection=connection
+                    path,
+                    self.state_store,
+                    dry_run=False,
+                    original=original,
+                    resolver=conflict_resolver,
+                    connection=connection,
                 )
-        return perform_rollback(path, self.state_store, dry_run=True, resolver=conflict_resolver)
+        return perform_rollback(path, self.state_store, dry_run=True, original=original, resolver=conflict_resolver)
 
     def _process_target(
         self,
@@ -354,9 +360,10 @@ class Orchestrator:
     ) -> OrchestrationResult:
         apply_operations(document, operations)
         adapter.dump(document, target.path)
-        written_text = target.path.read_text(encoding="utf-8")
+        new_bytes = target.path.read_bytes()
+        written_text = new_bytes.decode("utf-8")
         new_stat = target.path.stat()
-        new_hash = sha256_bytes(target.path.read_bytes())
+        new_hash = sha256_bytes(new_bytes)
         assert run_id is not None
         self.state_store.record_checkpoint(
             run_id=run_id,
