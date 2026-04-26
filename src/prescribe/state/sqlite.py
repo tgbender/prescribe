@@ -1,6 +1,5 @@
-from __future__ import annotations
-
 import json
+import os
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -8,6 +7,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from prescribe.state.migrate import migrate as migrate_schema
+from prescribe.state.schema import CURRENT_SCHEMA
 
 
 @dataclass(slots=True)
@@ -99,7 +101,7 @@ class StateStore:
 
     def _open(self) -> sqlite3.Connection:
         if str(self.path) != ":memory:":
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            os.makedirs(self.path.parent, exist_ok=True)
         connection = self.connection_factory(self.path)
         connection.execute("PRAGMA foreign_keys = ON")
         if str(self.path) != ":memory:":
@@ -137,9 +139,9 @@ class StateStore:
         finally:
             connection.close()
 
-    def initialize(self, *, connection: sqlite3.Connection | None = None) -> None:
+    def initialize(self, *, connection: sqlite3.Connection | None = None, dry_run: bool = False) -> list[str]:
         with self._connection(connection) as conn:
-            conn.executescript(_SCHEMA)
+            return migrate_schema(conn, CURRENT_SCHEMA, dry_run=dry_run, autocommit=False)
 
     def start_run(
         self,
@@ -627,87 +629,6 @@ class StateStore:
             )
             for row in rows
         ]
-
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    started_at TEXT NOT NULL,
-    spec_hash BLOB,
-    tool_version TEXT,
-    host TEXT,
-    platform TEXT
-);
-
-CREATE TABLE IF NOT EXISTS file_snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    path TEXT NOT NULL,
-    captured_at TEXT NOT NULL,
-    hash_algo TEXT NOT NULL,
-    content_hash BLOB NOT NULL,
-    size INTEGER NOT NULL,
-    mtime_ns INTEGER,
-    format TEXT,
-    spec_hash BLOB
-);
-
-CREATE TABLE IF NOT EXISTS events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    created_at TEXT NOT NULL,
-    event_type TEXT NOT NULL,
-    path TEXT,
-    changed INTEGER NOT NULL,
-    summary TEXT,
-    details TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_file_snapshots_path_id
-ON file_snapshots(path, id DESC);
-
-CREATE INDEX IF NOT EXISTS idx_events_run_id_id
-ON events(run_id, id DESC);
-
-CREATE TABLE IF NOT EXISTS change_batches (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    path TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    format TEXT,
-    original_exists INTEGER NOT NULL,
-    operations_json TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_change_batches_path_id
-ON change_batches(path, id DESC);
-
-CREATE TABLE IF NOT EXISTS file_checkpoints (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    path TEXT NOT NULL,
-    captured_at TEXT NOT NULL,
-    format TEXT,
-    content_text TEXT NOT NULL,
-    original_exists INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_file_checkpoints_path_id
-ON file_checkpoints(path, id DESC);
-
-CREATE TABLE IF NOT EXISTS file_baselines (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-    path TEXT NOT NULL,
-    captured_at TEXT NOT NULL,
-    format TEXT,
-    content_text TEXT NOT NULL,
-    original_exists INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_file_baselines_path_id
-ON file_baselines(path, id ASC);
-"""
 
 
 def _canonical_path(path: Path | str) -> Path:

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import os
 import socket
 import sqlite3
@@ -91,7 +89,7 @@ class Orchestrator:
         self,
         run_id: int | None,
         spec_hash: bytes,
-        spec: Spec,
+        spec: "Spec",
         *,
         dry_run: bool = False,
         connection: sqlite3.Connection | None = None,

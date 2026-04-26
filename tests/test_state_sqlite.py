@@ -10,8 +10,8 @@ import pytest
 from prescribe.state import StateStore
 
 
-def test_state_store_records_checked_snapshot_and_event(make_text_file, memory_state_store) -> None:
-    store = memory_state_store
+def test_state_store_records_checked_snapshot_and_event(make_text_file, state_store) -> None:
+    store = state_store
 
     source = make_text_file("config.toml", "title = 'hello'\n")
     digest = hashlib.sha256(source.read_bytes()).digest()
@@ -55,8 +55,8 @@ def test_state_store_allows_injected_connection_factory() -> None:
     connection.close()
 
 
-def test_state_store_persists_raw_hash_bytes(make_text_file, memory_state_store) -> None:
-    store = memory_state_store
+def test_state_store_persists_raw_hash_bytes(make_text_file, state_store) -> None:
+    store = state_store
 
     source = make_text_file("config.yaml", "key: value\n")
     digest = hashlib.sha256(source.read_bytes()).digest()
@@ -87,15 +87,15 @@ def test_state_store_enables_wal_mode_for_file_db(tmp_path: Path) -> None:
     assert mode == "wal"
 
 
-def test_state_store_transaction_commits_on_success(memory_state_store) -> None:
-    store = memory_state_store
+def test_state_store_transaction_commits_on_success(state_store) -> None:
+    store = state_store
     with store.transaction() as conn:
         run = store.start_run(connection=conn)
     assert store.latest_event(run.id) is None
 
 
-def test_state_store_transaction_rolls_back_on_error(memory_state_store) -> None:
-    store = memory_state_store
+def test_state_store_transaction_rolls_back_on_error(state_store) -> None:
+    store = state_store
     with store.transaction() as conn:
         store.start_run(connection=conn)
         store.record_event(run_id=1, event_type="test", path="/tmp/x", connection=conn)
@@ -109,7 +109,8 @@ def test_state_store_transaction_rolls_back_on_error(memory_state_store) -> None
     assert store.latest_event(2) is None
 
 
-def test_state_store_closes_connections_after_standalone_calls() -> None:
+@pytest.mark.parametrize("use_file", [False, True])
+def test_state_store_closes_connections_after_standalone_calls(use_file: bool, tmp_path: Path) -> None:
     opened = 0
     closed = 0
 
@@ -124,12 +125,20 @@ def test_state_store_closes_connections_after_standalone_calls() -> None:
             closed += 1
             super().close()
 
-    uri = "file::memory:?cache=shared"
+    if use_file:
+        db_path = str(tmp_path / "tracking.db")
+        holder = None
 
-    def factory(path):
-        return TrackingConnection(uri, uri=True)
+        def factory(path):
+            return TrackingConnection(db_path)
+    else:
+        db_path = "file::memory:?cache=shared"
+        holder = sqlite3.connect(db_path, uri=True)
 
-    store = StateStore(uri, connection_factory=factory)
+        def factory(path):
+            return TrackingConnection(db_path, uri=True)
+
+    store = StateStore(db_path, connection_factory=factory)
     store.initialize()
     store.start_run()
     store.start_run()
@@ -137,9 +146,12 @@ def test_state_store_closes_connections_after_standalone_calls() -> None:
     assert opened > 0
     assert closed == opened, f"{closed} closed but {opened} opened"
 
+    if holder is not None:
+        holder.close()
 
-def test_state_store_normalizes_paths_for_batches_and_original_exists(make_text_file, memory_state_store) -> None:
-    store = memory_state_store
+
+def test_state_store_normalizes_paths_for_batches_and_original_exists(make_text_file, state_store) -> None:
+    store = state_store
 
     source = make_text_file("config.toml", "title = 'hello'\n")
 
@@ -174,8 +186,8 @@ def test_state_store_normalizes_paths_for_batches_and_original_exists(make_text_
     assert store.latest_snapshot(alias).id == snapshot.id
 
 
-def test_state_store_rejects_event_with_nonexistent_run_id(memory_state_store) -> None:
-    store = memory_state_store
+def test_state_store_rejects_event_with_nonexistent_run_id(state_store) -> None:
+    store = state_store
     with store.connect() as conn, pytest.raises(sqlite3.IntegrityError):
         conn.execute(
             "INSERT INTO events "

@@ -41,7 +41,7 @@ def test_machine_matches_current_machine() -> None:
     assert machine_matches(["not-the-current-machine"]) is False
 
 
-def test_orchestrator_skips_non_matching_platform(make_text_file, memory_state_store) -> None:
+def test_orchestrator_skips_non_matching_platform(make_text_file, state_store) -> None:
     config_toml = make_text_file("config.toml", "title = 'hello'\ncount = 1\n")
 
     spec_path = make_text_file(
@@ -49,7 +49,7 @@ def test_orchestrator_skips_non_matching_platform(make_text_file, memory_state_s
         "[[targets]]\npath = 'config.toml'\nformat = 'toml'\nplatforms = ['windows']\n[targets.data]\ncount = 2\n",
     )
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     results = orchestrator.run(spec_path)
@@ -59,7 +59,7 @@ def test_orchestrator_skips_non_matching_platform(make_text_file, memory_state_s
     assert config_toml.read_text() == "title = 'hello'\ncount = 1\n"
 
 
-def test_orchestrator_applies_matching_platform(tmp_path: Path, memory_state_store) -> None:
+def test_orchestrator_applies_matching_platform(tmp_path: Path, state_store) -> None:
     import sys
 
     current = "macos" if sys.platform == "darwin" else "linux" if sys.platform.startswith("linux") else "windows"
@@ -71,7 +71,7 @@ def test_orchestrator_applies_matching_platform(tmp_path: Path, memory_state_sto
         f"[[targets]]\npath = 'config.toml'\nformat = 'toml'\nplatforms = ['{current}']\n[targets.data]\ncount = 2\n"
     )
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     results = orchestrator.run(spec_path)
@@ -80,7 +80,7 @@ def test_orchestrator_applies_matching_platform(tmp_path: Path, memory_state_sto
     assert results[0].applied is True
 
 
-def test_orchestrator_skips_non_matching_machine(tmp_path: Path, monkeypatch, memory_state_store) -> None:
+def test_orchestrator_skips_non_matching_machine(tmp_path: Path, monkeypatch, state_store) -> None:
     config_toml = tmp_path / "config.toml"
     config_toml.write_text("title = 'hello'\ncount = 1\n")
 
@@ -91,7 +91,7 @@ def test_orchestrator_skips_non_matching_machine(tmp_path: Path, monkeypatch, me
 
     monkeypatch.setenv("CONFIG_HELPER_MACHINE", "other-host")
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     results = orchestrator.run(spec_path)
@@ -101,7 +101,7 @@ def test_orchestrator_skips_non_matching_machine(tmp_path: Path, monkeypatch, me
     assert config_toml.read_text() == "title = 'hello'\ncount = 1\n"
 
 
-def test_spec_loader_and_orchestrator_apply_and_then_noop(tmp_path: Path, memory_state_store) -> None:
+def test_spec_loader_and_orchestrator_apply_and_then_noop(tmp_path: Path, state_store) -> None:
     config_toml = tmp_path / "config.toml"
     config_toml.write_text("title = 'hello'\ncount = 1\n")
 
@@ -129,7 +129,7 @@ def test_spec_loader_and_orchestrator_apply_and_then_noop(tmp_path: Path, memory
     assert spec.targets[0].path == config_toml.resolve()
     assert spec.targets[1].path == env_file.resolve()
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     first = orchestrator.run(spec_path, tool_version="test")
@@ -144,14 +144,14 @@ def test_spec_loader_and_orchestrator_apply_and_then_noop(tmp_path: Path, memory
     assert [result.applied for result in second] == [False, False]
 
 
-def test_orchestrator_conflict_when_file_changes_between_runs(tmp_path: Path, memory_state_store) -> None:
+def test_orchestrator_conflict_when_file_changes_between_runs(tmp_path: Path, state_store) -> None:
     config_toml = tmp_path / "config.toml"
     config_toml.write_text("title = 'hello'\ncount = 1\n")
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     first = orchestrator.run(spec_path)
@@ -172,14 +172,14 @@ def test_orchestrator_conflict_when_file_changes_between_runs(tmp_path: Path, me
     assert second[0].applied is False
 
 
-def test_orchestrator_conflicts_when_managed_key_changes_between_runs(tmp_path: Path, memory_state_store) -> None:
+def test_orchestrator_conflicts_when_managed_key_changes_between_runs(tmp_path: Path, state_store) -> None:
     config_toml = tmp_path / "config.toml"
     config_toml.write_text("title = 'hello'\ncount = 1\nexternal = true\n")
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     first = orchestrator.run(spec_path)
@@ -195,14 +195,14 @@ def test_orchestrator_conflicts_when_managed_key_changes_between_runs(tmp_path: 
     assert second[0].applied is False
 
 
-def test_orchestrator_reports_managed_conflict_in_dry_run(tmp_path: Path, memory_state_store) -> None:
+def test_orchestrator_reports_managed_conflict_in_dry_run(tmp_path: Path, state_store) -> None:
     config_toml = tmp_path / "config.toml"
     config_toml.write_text("title = 'hello'\ncount = 1\nexternal = true\n")
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
 
-    orchestrator = Orchestrator(memory_state_store)
+    orchestrator = Orchestrator(state_store)
     first = orchestrator.run(spec_path)
     assert first[0].status == "applied"
 
@@ -216,7 +216,7 @@ def test_orchestrator_reports_managed_conflict_in_dry_run(tmp_path: Path, memory
     assert dry_run[0].conflict.reason == "managed key 'count' changed externally"
 
 
-def test_orchestrator_creates_missing_toml_file(tmp_path: Path, memory_state_store) -> None:
+def test_orchestrator_creates_missing_toml_file(tmp_path: Path, state_store) -> None:
     config_toml = tmp_path / "new_config.toml"
     assert not config_toml.exists()
 
@@ -225,7 +225,7 @@ def test_orchestrator_creates_missing_toml_file(tmp_path: Path, memory_state_sto
         "[[targets]]\npath = 'new_config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\nextra = true\n"
     )
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     results = orchestrator.run(spec_path)
@@ -239,7 +239,7 @@ def test_orchestrator_creates_missing_toml_file(tmp_path: Path, memory_state_sto
     assert document.root["extra"] is True
 
 
-def test_orchestrator_expands_home_and_env_vars_in_target_path(tmp_path: Path, monkeypatch, memory_state_store) -> None:
+def test_orchestrator_expands_home_and_env_vars_in_target_path(tmp_path: Path, monkeypatch, state_store) -> None:
     home_dir = tmp_path / "home"
     home_dir.mkdir()
     monkeypatch.setenv("HOME", str(home_dir))
@@ -251,7 +251,7 @@ def test_orchestrator_expands_home_and_env_vars_in_target_path(tmp_path: Path, m
         "[[targets]]\npath = '~/.config/${APP_NAME}/config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n"
     )
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     results = orchestrator.run(spec_path)
@@ -260,7 +260,7 @@ def test_orchestrator_expands_home_and_env_vars_in_target_path(tmp_path: Path, m
     assert TomlAdapter().load(config_toml).root["count"] == 2
 
 
-def test_orchestrator_creates_missing_line_file(tmp_path: Path, memory_state_store) -> None:
+def test_orchestrator_creates_missing_line_file(tmp_path: Path, state_store) -> None:
     env_file = tmp_path / "new_env"
     assert not env_file.exists()
 
@@ -269,7 +269,7 @@ def test_orchestrator_creates_missing_line_file(tmp_path: Path, memory_state_sto
         "[[targets]]\npath = 'new_env'\nformat = 'line'\nmanaged_block_id = 'managed'\nlines = ['alpha=1', 'beta=2']\n"
     )
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     results = orchestrator.run(spec_path)
@@ -279,13 +279,13 @@ def test_orchestrator_creates_missing_line_file(tmp_path: Path, memory_state_sto
     assert "alpha=1" in env_file.read_text()
 
 
-def test_orchestrator_second_run_after_create_is_noop(tmp_path: Path, memory_state_store) -> None:
+def test_orchestrator_second_run_after_create_is_noop(tmp_path: Path, state_store) -> None:
     _config_toml = tmp_path / "new_config.toml"
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[targets]]\npath = 'new_config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     first = orchestrator.run(spec_path)
@@ -299,7 +299,7 @@ def test_orchestrator_second_run_after_create_is_noop(tmp_path: Path, memory_sta
 
 
 def test_orchestrator_rollback_restores_managed_changes_and_preserves_unrelated_edits(
-    tmp_path: Path, memory_state_store
+    tmp_path: Path, state_store
 ) -> None:
     config_toml = tmp_path / "config.toml"
     config_toml.write_text("title = 'hello'\ncount = 1\nexternal = true\n")
@@ -307,7 +307,7 @@ def test_orchestrator_rollback_restores_managed_changes_and_preserves_unrelated_
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     applied = orchestrator.run(spec_path)
@@ -322,14 +322,14 @@ def test_orchestrator_rollback_restores_managed_changes_and_preserves_unrelated_
     assert config_toml.read_text() == "title = 'hello'\ncount = 1\nexternal = false\n"
 
 
-def test_orchestrator_rollback_recreates_deleted_file_from_checkpoint(fake_root: Path, memory_state_store) -> None:
+def test_orchestrator_rollback_recreates_deleted_file_from_checkpoint(fake_root: Path, state_store) -> None:
     config_toml = fake_root / "config.toml"
     config_toml.write_text("title = 'hello'\ncount = 1\nexternal = true\n")
 
     spec_path = fake_root / "spec.toml"
     spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
 
-    orchestrator = Orchestrator(memory_state_store)
+    orchestrator = Orchestrator(state_store)
     applied = orchestrator.run(spec_path)
     assert applied[0].status == "applied"
 
@@ -347,14 +347,14 @@ def test_orchestrator_rollback_recreates_deleted_file_from_checkpoint(fake_root:
     assert parsed["external"] is True
 
 
-def test_orchestrator_rollback_removes_managed_file_created_by_app(tmp_path: Path, memory_state_store) -> None:
+def test_orchestrator_rollback_removes_managed_file_created_by_app(tmp_path: Path, state_store) -> None:
     config_toml = tmp_path / "new_config.toml"
     assert not config_toml.exists()
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[targets]]\npath = 'new_config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     applied = orchestrator.run(spec_path)
@@ -368,14 +368,12 @@ def test_orchestrator_rollback_removes_managed_file_created_by_app(tmp_path: Pat
     assert not config_toml.exists()
 
 
-def test_orchestrator_rollback_preserves_regex_manual_edit_across_multiple_batches(
-    tmp_path: Path, memory_state_store
-) -> None:
+def test_orchestrator_rollback_preserves_regex_manual_edit_across_multiple_batches(tmp_path: Path, state_store) -> None:
     config_toml = tmp_path / "config.toml"
     config_toml.write_text("title = 'hello'\ncount = 1\ncolor = 'red'\nexternal = 'keep'\n")
 
     spec_path = tmp_path / "spec.toml"
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     spec_path.write_text(
@@ -430,14 +428,14 @@ def test_orchestrator_rollback_preserves_regex_manual_edit_across_multiple_batch
     assert "note" not in parsed
 
 
-def test_orchestrator_dry_run_reports_existing_file_changes_without_writing(tmp_path: Path, memory_state_store) -> None:
+def test_orchestrator_dry_run_reports_existing_file_changes_without_writing(tmp_path: Path, state_store) -> None:
     config_toml = tmp_path / "config.toml"
     config_toml.write_text("title = 'hello'\ncount = 1\n")
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     results = orchestrator.run(spec_path, dry_run=True)
@@ -447,17 +445,17 @@ def test_orchestrator_dry_run_reports_existing_file_changes_without_writing(tmp_
     assert results[0].changed is True
     assert results[0].error is None
     assert config_toml.read_text() == "title = 'hello'\ncount = 1\n"
-    assert not store.path.exists()
+    assert str(config_toml) not in {str(m.path) for m in store.list_managed()}
 
 
-def test_orchestrator_dry_run_reports_missing_file_creates_without_writing(tmp_path: Path, memory_state_store) -> None:
+def test_orchestrator_dry_run_reports_missing_file_creates_without_writing(tmp_path: Path, state_store) -> None:
     config_toml = tmp_path / "new_config.toml"
     assert not config_toml.exists()
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[targets]]\npath = 'new_config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     results = orchestrator.run(spec_path, dry_run=True)
@@ -466,17 +464,17 @@ def test_orchestrator_dry_run_reports_missing_file_creates_without_writing(tmp_p
     assert results[0].applied is False
     assert results[0].changed is True
     assert config_toml.exists() is False
-    assert not store.path.exists()
+    assert str(config_toml) not in {str(m.path) for m in store.list_managed()}
 
 
-def test_orchestrator_reports_corrupt_existing_file(tmp_path: Path, memory_state_store) -> None:
+def test_orchestrator_reports_corrupt_existing_file(tmp_path: Path, state_store) -> None:
     config_toml = tmp_path / "config.toml"
     config_toml.write_text("title = 'hello'\ncount = [\n")
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     results = orchestrator.run(spec_path)
@@ -487,7 +485,7 @@ def test_orchestrator_reports_corrupt_existing_file(tmp_path: Path, memory_state
     assert config_toml.read_text() == "title = 'hello'\ncount = [\n"
 
 
-def test_orchestrator_reports_corrupt_line_file(tmp_path: Path, memory_state_store) -> None:
+def test_orchestrator_reports_corrupt_line_file(tmp_path: Path, state_store) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text("# prescribe:begin managed\nalpha=1\n# prescribe:end other\n")
 
@@ -496,7 +494,7 @@ def test_orchestrator_reports_corrupt_line_file(tmp_path: Path, memory_state_sto
         "[[targets]]\npath = '.env'\nformat = 'line'\nmanaged_block_id = 'managed'\nlines = ['alpha=1']\n"
     )
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
 
     results = orchestrator.run(spec_path)
@@ -507,14 +505,14 @@ def test_orchestrator_reports_corrupt_line_file(tmp_path: Path, memory_state_sto
     assert env_file.read_text() == ("# prescribe:begin managed\nalpha=1\n# prescribe:end other\n")
 
 
-def test_orchestrator_detects_change_during_planning(tmp_path: Path, monkeypatch, memory_state_store) -> None:
+def test_orchestrator_detects_change_during_planning(tmp_path: Path, monkeypatch, state_store) -> None:
     config_toml = tmp_path / "config.toml"
     config_toml.write_text("title = 'hello'\ncount = 1\n")
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
     original_plan = Planner().plan
 
@@ -536,16 +534,14 @@ def test_orchestrator_detects_change_during_planning(tmp_path: Path, monkeypatch
     assert config_toml.read_text() == "title = 'hello'\ncount = 3\n"
 
 
-def test_orchestrator_detects_new_file_appearing_during_planning(
-    tmp_path: Path, monkeypatch, memory_state_store
-) -> None:
+def test_orchestrator_detects_new_file_appearing_during_planning(tmp_path: Path, monkeypatch, state_store) -> None:
     config_toml = tmp_path / "new_config.toml"
     assert not config_toml.exists()
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[targets]]\npath = 'new_config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
 
-    store = memory_state_store
+    store = state_store
     orchestrator = Orchestrator(store)
     original_plan = Planner().plan
 
@@ -567,14 +563,14 @@ def test_orchestrator_detects_new_file_appearing_during_planning(
     assert config_toml.read_text() == "count = 3\n"
 
 
-def test_orchestrator_rollback_skips_managed_key_changed_externally(tmp_path: Path, memory_state_store) -> None:
+def test_orchestrator_rollback_skips_managed_key_changed_externally(tmp_path: Path, state_store) -> None:
     config_toml = tmp_path / "config.toml"
     config_toml.write_text("title = 'hello'\ncount = 1\n")
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
 
-    orchestrator = Orchestrator(memory_state_store)
+    orchestrator = Orchestrator(state_store)
     applied = orchestrator.run(spec_path)
     assert applied[0].status == "applied"
 

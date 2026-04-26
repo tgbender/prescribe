@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -14,8 +12,8 @@ class JsoncNode:
     length: int
     value: Any = None
     colon_offset: int | None = None
-    parent: JsoncNode | None = None
-    children: list[JsoncNode] = field(default_factory=list)
+    parent: "JsoncNode | None" = None
+    children: list["JsoncNode"] = field(default_factory=list)
 
 
 class JsoncParseError(ValueError):
@@ -28,7 +26,7 @@ class _Parser:
         self.length = len(text)
         self.index = 0
 
-    def parse(self) -> JsoncNode | None:
+    def parse(self) -> "JsoncNode | None":
         self.index = self._skip_trivia(0)
         if self.index >= self.length:
             return None
@@ -36,7 +34,7 @@ class _Parser:
         self.index = self._skip_trivia(self.index)
         return node
 
-    def _parse_value(self, parent: JsoncNode | None) -> JsoncNode:
+    def _parse_value(self, parent: "JsoncNode | None") -> "JsoncNode":
         self.index = self._skip_trivia(self.index)
         if self.index >= self.length:
             raise JsoncParseError("unexpected end of input")
@@ -64,7 +62,7 @@ class _Parser:
             raise JsoncParseError(f"unexpected identifier {ident!r} at {self.index}")
         raise JsoncParseError(f"unexpected character {ch!r} at {self.index}")
 
-    def _parse_object(self, parent: JsoncNode | None) -> JsoncNode:
+    def _parse_object(self, parent: "JsoncNode | None") -> "JsoncNode":
         start = self.index
         self.index += 1
         node = JsoncNode(type="object", offset=start, length=-1, parent=parent)
@@ -109,7 +107,7 @@ class _Parser:
                 return node
             raise JsoncParseError(f"expected ',' or '}}' at {self.index}")
 
-    def _parse_array(self, parent: JsoncNode | None) -> JsoncNode:
+    def _parse_array(self, parent: "JsoncNode | None") -> "JsoncNode":
         start = self.index
         self.index += 1
         node = JsoncNode(type="array", offset=start, length=-1, parent=parent)
@@ -137,7 +135,7 @@ class _Parser:
                 return node
             raise JsoncParseError(f"expected ',' or ']' at {self.index}")
 
-    def _parse_string(self, parent: JsoncNode | None) -> JsoncNode:
+    def _parse_string(self, parent: "JsoncNode | None") -> "JsoncNode":
         start = self.index
         if self.text[self.index] != '"':
             raise JsoncParseError(f"expected string at {self.index}")
@@ -192,7 +190,7 @@ class _Parser:
             self.index += 1
         raise JsoncParseError("unterminated string")
 
-    def _parse_number(self, parent: JsoncNode | None) -> JsoncNode:
+    def _parse_number(self, parent: "JsoncNode | None") -> "JsoncNode":
         start = self.index
         if self.text[self.index] == "-":
             self.index += 1
@@ -217,7 +215,7 @@ class _Parser:
             parent=parent,
         )
 
-    def _parse_literal(self, parent: JsoncNode | None, literal: str, value: Any) -> JsoncNode:
+    def _parse_literal(self, parent: "JsoncNode | None", literal: str, value: Any) -> "JsoncNode":
         start = self.index
         self.index += len(literal)
         return JsoncNode(
@@ -255,11 +253,11 @@ class _Parser:
         return index
 
 
-def parse_tree(text: str) -> JsoncNode | None:
+def parse_tree(text: str) -> "JsoncNode | None":
     return _Parser(text).parse()
 
 
-def find_node_at_location(root: JsoncNode | None, path: list[str | int]) -> JsoncNode | None:
+def find_node_at_location(root: "JsoncNode | None", path: list[str | int]) -> "JsoncNode | None":
     if root is None:
         return None
     node = root

@@ -15,7 +15,7 @@ LINE_VARIANTS = 2
 
 @pytest.mark.parametrize("seed", range(36))
 def test_rollback_fuzz_preserves_unmanaged_changes_and_restores_managed_state(
-    make_text_file, fake_root: Path, memory_state_store, seed: int
+    make_text_file, fake_root: Path, state_store, seed: int
 ) -> None:
     rng = random.Random(seed)
     fmt = FORMATS[seed % len(FORMATS)]
@@ -40,7 +40,7 @@ def test_rollback_fuzz_preserves_unmanaged_changes_and_restores_managed_state(
         f"absolute_path={use_absolute_path} rounds={round_count}"
     ]
 
-    orchestrator = Orchestrator(memory_state_store)
+    orchestrator = Orchestrator(state_store)
 
     for round_index in range(round_count):
         spec_text = _spec_text(fmt, spec_target_path, seed, round_index, variant)

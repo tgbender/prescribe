@@ -8,6 +8,26 @@ import pytest
 
 from prescribe.state import StateStore
 
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--file-db",
+        action="store_true",
+        default=False,
+        help="Use real file-backed SQLite databases instead of :memory:",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if not config.getoption("--file-db"):
+        return
+    skip = pytest.mark.skip(reason="pyfakefs incompatible with --file-db real SQLite")
+    for item in items:
+        if "state_store" in item.fixturenames:  # noqa
+            if "fs" in item.fixturenames or "make_text_file" in item.fixturenames or "fake_root" in item.fixturenames:  # noqa
+                item.add_marker(skip)
+
+
 TOML_SAMPLE = '# top comment\ntitle = "hello"\n[tool.demo]\n# keep this\nvalue = 1\n'
 
 YAML_SAMPLE = "# top comment\ntitle: hello\ntool:\n  demo:\n    # keep this\n    value: 1\n"
@@ -33,6 +53,27 @@ def make_text_file(fs, fake_root: Path) -> Callable[[str, str], Path]:
         return path
 
     return writer
+
+
+@pytest.fixture(scope="session")
+def _file_state_store_session(tmp_path_factory) -> StateStore:
+    db_path = tmp_path_factory.getbasetemp() / "file_db" / "state.db"
+    store = StateStore(db_path)
+    store.initialize()
+    return store
+
+
+@pytest.fixture()
+def file_state_store(_file_state_store_session) -> StateStore:
+    return _file_state_store_session
+
+
+@pytest.fixture()
+def state_store(request) -> StateStore:
+    """StateStore backed by :memory: (default) or a real file (--file-db)."""
+    if request.config.getoption("--file-db"):
+        return request.getfixturevalue("file_state_store")
+    return request.getfixturevalue("memory_state_store")
 
 
 @pytest.fixture()
