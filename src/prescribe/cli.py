@@ -51,7 +51,7 @@ def _callback(
 def _make_store(state: Path | None) -> StateStore:
     if state is not None:
         return StateStore(state)
-    env = os.environ.get("CONFIG_HELPER_STATE")
+    env = os.environ.get("PRESCRIBE_STATE")
     if env:
         return StateStore(env)
     return StateStore(default_state_path())
@@ -72,7 +72,7 @@ def apply(
     spec: Path = typer.Argument(..., help="Path to the spec TOML file."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Plan changes without writing."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
-    state: Path | None = typer.Option(None, "--state", envvar="CONFIG_HELPER_STATE", help="Path to state database."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
 ) -> None:
     """Apply a spec file to its target config files."""
     try:
@@ -111,7 +111,7 @@ def apply(
 def status(
     spec: Path = typer.Argument(..., help="Path to the spec TOML file."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
-    state: Path | None = typer.Option(None, "--state", envvar="CONFIG_HELPER_STATE", help="Path to state database."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
 ) -> None:
     """Show sync status of all targets without making changes."""
     try:
@@ -149,7 +149,7 @@ def status(
 @app.command(name="list")
 def list_managed(
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
-    state: Path | None = typer.Option(None, "--state", envvar="CONFIG_HELPER_STATE", help="Path to state database."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
 ) -> None:
     """List all config files managed by prescribe."""
     store = _make_store(state)
@@ -196,7 +196,7 @@ def rollback(
     path: Path = typer.Argument(..., help="Path to the config file to roll back."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be rolled back."),
     output_json: bool = typer.Option(False, "--json", help="Output result as JSON."),
-    state: Path | None = typer.Option(None, "--state", envvar="CONFIG_HELPER_STATE", help="Path to state database."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
 ) -> None:
     """Roll back managed changes to a config file."""
     result = Orchestrator(_make_store(state)).rollback(path, dry_run=dry_run)

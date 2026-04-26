@@ -34,7 +34,7 @@ PLATFORM_MATCHERS: dict[str, Callable[[], bool]] = {
 
 
 def current_machine() -> str:
-    override = os.environ.get("CONFIG_HELPER_MACHINE")
+    override = os.environ.get("PRESCRIBE_MACHINE")
     if override:
         return override
     return socket.gethostname().split(".")[0]

@@ -89,7 +89,7 @@ def test_orchestrator_skips_non_matching_machine(tmp_path: Path, monkeypatch, st
         "[[targets]]\npath = 'config.toml'\nformat = 'toml'\nmachine = ['build-host']\n[targets.data]\ncount = 2\n"
     )
 
-    monkeypatch.setenv("CONFIG_HELPER_MACHINE", "other-host")
+    monkeypatch.setenv("PRESCRIBE_MACHINE", "other-host")
 
     store = state_store
     orchestrator = Orchestrator(store)

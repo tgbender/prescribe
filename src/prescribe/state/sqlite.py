@@ -607,6 +607,11 @@ class StateStore:
             original_exists=bool(row[6]),
         )
 
+    def latest_run_id(self, *, connection: sqlite3.Connection | None = None) -> int | None:
+        with self._connection(connection) as conn:
+            row = conn.execute("SELECT id FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+            return row[0] if row is not None else None
+
     def list_managed(
         self,
         *,

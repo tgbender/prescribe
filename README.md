@@ -20,7 +20,7 @@ prescribe list                     # List all managed files
 prescribe rollback path/to/file    # Roll back changes to a file
 ```
 
-All commands accept `--json` for machine-readable output and `--state` (or `CONFIG_HELPER_STATE` env var) to set the state database path.
+All commands accept `--json` for machine-readable output and `--state` (or `PRESCRIBE_STATE` env var) to set the state database path.
 
 ---
 

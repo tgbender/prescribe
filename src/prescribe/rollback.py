@@ -194,11 +194,7 @@ def _record_rollback_event(
     *,
     connection: sqlite3.Connection | None = None,
 ) -> None:
-    run_id = 0
-    with state_store._connection(connection) as conn:
-        row = conn.execute("SELECT id FROM runs ORDER BY id DESC LIMIT 1").fetchone()
-        if row is not None:
-            run_id = row[0]
+    run_id = state_store.latest_run_id(connection=connection) or 0
     state_store.record_event(
         run_id=run_id,
         event_type=event_type,
