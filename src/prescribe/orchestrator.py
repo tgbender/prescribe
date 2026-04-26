@@ -1,3 +1,4 @@
+import contextlib
 import os
 import socket
 import sqlite3
@@ -21,7 +22,7 @@ from prescribe.core.conflict import (
 from prescribe.core.planner import PlannedOperation
 from prescribe.core.result import OrchestrationResult
 from prescribe.document import Adapter, Document
-from prescribe.rollback import perform_rollback
+from prescribe.rollback import ConflictResolver, perform_rollback
 from prescribe.spec import SpecTarget
 from prescribe.state import StateStore
 from prescribe.state.sqlite import ChangeBatchRecord
@@ -107,6 +108,7 @@ class Orchestrator:
         target_path: Path | str,
         *,
         dry_run: bool = False,
+        conflict_resolver: ConflictResolver = None,
     ) -> OrchestrationResult:
         path = Path(target_path)
         if not dry_run:
@@ -116,8 +118,10 @@ class Orchestrator:
 
         if not dry_run:
             with self.state_store.transaction() as connection:
-                return perform_rollback(path, self.state_store, dry_run=False, connection=connection)
-        return perform_rollback(path, self.state_store, dry_run=True)
+                return perform_rollback(
+                    path, self.state_store, dry_run=False, resolver=conflict_resolver, connection=connection
+                )
+        return perform_rollback(path, self.state_store, dry_run=True, resolver=conflict_resolver)
 
     def _process_target(
         self,
@@ -230,53 +234,9 @@ class Orchestrator:
         plan = self.planner.plan(document, target_to_desired(target))
         managed_conflict: ConflictResult | None = None
         if run_id is not None or dry_run:
-            if connection is None and run_id is None:
-                with self.state_store.connect() as read_connection:
-                    managed_state = _managed_state_from_batches(
-                        self.state_store.change_batches(target.path, connection=read_connection)
-                    )
-                    snapshot = self.state_store.latest_snapshot(target.path, connection=read_connection)
-                    baseline = (
-                        file_fingerprint(
-                            snapshot.path,
-                            snapshot.hash_algo,
-                            snapshot.content_hash,
-                            snapshot.size,
-                            snapshot.mtime_ns,
-                        )
-                        if snapshot is not None
-                        else None
-                    )
-                    managed_conflict = _detect_managed_conflict(
-                        document,
-                        plan.operations,
-                        managed_state,
-                        baseline_fingerprint=baseline,
-                        current_fingerprint=before,
-                    )
-            else:
-                managed_state = _managed_state_from_batches(
-                    self.state_store.change_batches(target.path, connection=connection)
-                )
-                snapshot = self.state_store.latest_snapshot(target.path, connection=connection)
-                baseline = (
-                    file_fingerprint(
-                        snapshot.path,
-                        snapshot.hash_algo,
-                        snapshot.content_hash,
-                        snapshot.size,
-                        snapshot.mtime_ns,
-                    )
-                    if snapshot is not None
-                    else None
-                )
-                managed_conflict = _detect_managed_conflict(
-                    document,
-                    plan.operations,
-                    managed_state,
-                    baseline_fingerprint=baseline,
-                    current_fingerprint=before,
-                )
+            ctx = self.state_store.connect() if connection is None else contextlib.nullcontext(connection)
+            with ctx as read_conn:
+                managed_conflict = self._check_managed_conflict(document, plan, target, before, read_conn)
 
             if managed_conflict is not None:
                 if run_id is not None and not dry_run:
@@ -331,6 +291,35 @@ class Orchestrator:
             adapter=adapter,
             event_type="applied",
             connection=connection,
+        )
+
+    def _check_managed_conflict(
+        self,
+        document: Document,
+        plan: Any,
+        target: SpecTarget,
+        current_fingerprint: "FileFingerprint",
+        connection: sqlite3.Connection,
+    ) -> ConflictResult | None:
+        managed_state = _managed_state_from_batches(self.state_store.change_batches(target.path, connection=connection))
+        snapshot = self.state_store.latest_snapshot(target.path, connection=connection)
+        baseline = (
+            file_fingerprint(
+                snapshot.path,
+                snapshot.hash_algo,
+                snapshot.content_hash,
+                snapshot.size,
+                snapshot.mtime_ns,
+            )
+            if snapshot is not None
+            else None
+        )
+        return _detect_managed_conflict(
+            document,
+            plan.operations,
+            managed_state,
+            baseline_fingerprint=baseline,
+            current_fingerprint=current_fingerprint,
         )
 
     def _record_conflict(

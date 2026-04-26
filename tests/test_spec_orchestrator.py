@@ -579,3 +579,63 @@ def test_orchestrator_rollback_skips_managed_key_changed_externally(tmp_path: Pa
     rolled_back = orchestrator.rollback(config_toml)
     assert rolled_back.status == "noop"
     assert TomlAdapter().load(config_toml).root["count"] == 99
+
+
+def test_orchestrator_rollback_force_reverts_externally_modified_key(tmp_path: Path, state_store) -> None:
+    config_toml = tmp_path / "config.toml"
+    config_toml.write_text("title = 'hello'\ncount = 1\n")
+
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+
+    orchestrator = Orchestrator(state_store)
+    applied = orchestrator.run(spec_path)
+    assert applied[0].status == "applied"
+
+    config_toml.write_text("title = 'hello'\ncount = 99\n")
+
+    rolled_back = orchestrator.rollback(config_toml, conflict_resolver=lambda key: True)
+    assert rolled_back.status == "rolled-back"
+    assert rolled_back.applied is True
+    assert rolled_back.changed is True
+    assert TomlAdapter().load(config_toml).root["count"] == 1
+
+
+def test_orchestrator_rollback_records_conflict_resolution_in_db(tmp_path: Path, state_store) -> None:
+    import json
+
+    config_toml = tmp_path / "config.toml"
+    config_toml.write_text("title = 'hello'\ncount = 1\ncolor = 'red'\n")
+
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text(
+        "[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\ncolor = 'blue'\n"
+    )
+
+    orchestrator = Orchestrator(state_store)
+    run_result = orchestrator.run(spec_path)
+    assert run_result[0].status == "applied"
+    run_id = state_store.latest_run_id()
+    assert run_id is not None
+
+    # externally modify both managed keys so both trigger conflict resolution
+    config_toml.write_text("title = 'hello'\ncount = 99\ncolor = 'green'\n")
+
+    # revert count (force), leave color (ignore)
+    def resolver(key: str) -> bool:
+        return key == "count"
+
+    rolled_back = orchestrator.rollback(config_toml, conflict_resolver=resolver)
+    assert rolled_back.status == "rolled-back"
+
+    rollback_run_id = state_store.latest_run_id()
+    assert rollback_run_id is not None
+    event = state_store.latest_event(rollback_run_id)
+    assert event is not None
+    assert event.event_type == "rollback"
+    assert "force-reverted" in event.summary
+    assert "skipped" in event.summary
+    assert event.details is not None
+    details = json.loads(event.details)
+    assert "count" in details["force_reverted"]
+    assert "color" in details["skipped"]

@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from pathlib import Path
 
 import typer
@@ -7,6 +8,7 @@ import typer
 from prescribe import __version__
 from prescribe.orchestrator import Orchestrator
 from prescribe.paths import default_state_path
+from prescribe.rollback import ConflictResolver
 from prescribe.spec import SpecError, SpecLoader
 from prescribe.state import StateStore
 
@@ -191,15 +193,31 @@ def list_managed(
         typer.echo(f"{fmt}  {date}  {r.path}{missing}")
 
 
+def _make_conflict_resolver(on_conflict: str | None) -> ConflictResolver:
+    effective = on_conflict or ("prompt" if sys.stdin.isatty() else "ignore")
+    if effective == "revert":
+        return lambda key: True
+    if effective == "prompt":
+        return lambda key: typer.confirm(f"  '{key}' was externally modified. Revert anyway?")
+    return None
+
+
 @app.command()
 def rollback(
     path: Path = typer.Argument(..., help="Path to the config file to roll back."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be rolled back."),
     output_json: bool = typer.Option(False, "--json", help="Output result as JSON."),
     state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
+    on_conflict: str | None = typer.Option(
+        None,
+        "--on-conflict",
+        help="Behavior when a key was externally modified: prompt (default when TTY), revert, or ignore.",
+    ),
 ) -> None:
     """Roll back managed changes to a config file."""
-    result = Orchestrator(_make_store(state)).rollback(path, dry_run=dry_run)
+    result = Orchestrator(_make_store(state)).rollback(
+        path, dry_run=dry_run, conflict_resolver=_make_conflict_resolver(on_conflict)
+    )
 
     if output_json:
         data: dict[str, object] = {

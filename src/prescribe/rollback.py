@@ -1,4 +1,6 @@
+import json
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,8 @@ from prescribe.core.result import OrchestrationResult
 from prescribe.document import Document
 from prescribe.state import StateStore
 
+ConflictResolver = Callable[[str], bool] | None
+
 
 def perform_rollback(
     path: Path,
@@ -21,10 +25,11 @@ def perform_rollback(
     *,
     dry_run: bool = False,
     original: bool = False,
+    resolver: ConflictResolver = None,
     connection: sqlite3.Connection | None = None,
 ) -> OrchestrationResult:
     if original:
-        return perform_rollback_original(path, state_store, dry_run=dry_run, connection=connection)
+        return perform_rollback_original(path, state_store, dry_run=dry_run, resolver=resolver, connection=connection)
 
     batches = state_store.change_batches(path, connection=connection)
     if not batches:
@@ -52,8 +57,13 @@ def perform_rollback(
     try:
         document = adapter.load(path)
         changed = False
+        all_skipped: list[str] = []
+        all_force_reverted: list[str] = []
         for batch in reversed(batches):
-            changed = rollback_batch(document, batch.operations) or changed
+            batch_changed, batch_skipped, batch_forced = rollback_batch(document, batch.operations, resolver)
+            changed = batch_changed or changed
+            all_skipped.extend(batch_skipped)
+            all_force_reverted.extend(batch_forced)
     except Exception as exc:
         return OrchestrationResult(status="error", applied=False, changed=False, error=str(exc))
 
@@ -89,12 +99,23 @@ def perform_rollback(
     elif path.exists():
         path.unlink()
 
+    parts = [f"rolled back {len(batches)} change batch(es)"]
+    if all_force_reverted:
+        parts.append(f"{len(all_force_reverted)} key(s) force-reverted")
+    if all_skipped:
+        parts.append(f"{len(all_skipped)} key(s) skipped (externally modified)")
+    conflict_details = (
+        json.dumps({"skipped": all_skipped, "force_reverted": all_force_reverted})
+        if all_skipped or all_force_reverted
+        else None
+    )
     state_store.record_event(
         run_id=batches[-1].run_id,
         event_type="rollback",
         path=path,
         changed=True,
-        summary=f"rolled back {len(batches)} change batch(es)",
+        summary="; ".join(parts),
+        details=conflict_details,
         connection=connection,
     )
     return OrchestrationResult(status="rolled-back", applied=True, changed=True)
@@ -105,9 +126,10 @@ def perform_rollback_original(
     state_store: StateStore,
     *,
     dry_run: bool = False,
+    resolver: ConflictResolver = None,
     connection: sqlite3.Connection | None = None,
 ) -> OrchestrationResult:
-    baseline = state_store.latest_baseline(path, connection=connection)
+    baseline = state_store.original_baseline(path, connection=connection)
     if baseline is None:
         return OrchestrationResult(
             status="noop",
@@ -205,17 +227,23 @@ def _record_rollback_event(
     )
 
 
-def rollback_batch(document: Document, operations: list[dict[str, Any]]) -> bool:
+def rollback_batch(
+    document: Document, operations: list[dict[str, Any]], resolver: ConflictResolver = None
+) -> tuple[bool, list[str], list[str]]:
     format_name = getattr(document, "format", None)
     if format_name in {"toml", "yaml", "json5", "jsonc"}:
-        return _rollback_mapping(document, operations)
+        return _rollback_mapping(document, operations, resolver)
     if format_name == "line":
-        return _rollback_line(document, operations)
+        return _rollback_line(document, operations, resolver)
     raise ValueError(f"unsupported document format for rollback: {format_name}")
 
 
-def _rollback_mapping(document: Document, operations: list[dict[str, Any]]) -> bool:
+def _rollback_mapping(
+    document: Document, operations: list[dict[str, Any]], resolver: ConflictResolver = None
+) -> tuple[bool, list[str], list[str]]:
     changed = False
+    skipped: list[str] = []
+    force_reverted: list[str] = []
     for operation in reversed(operations):
         kind = operation["kind"]
         key = operation.get("key")
@@ -226,11 +254,23 @@ def _rollback_mapping(document: Document, operations: list[dict[str, Any]]) -> b
             if current_value == operation.get("value"):
                 delete_mapping_value(document.root, key)
                 changed = True
+            elif resolver is not None and resolver(key):
+                delete_mapping_value(document.root, key)
+                changed = True
+                force_reverted.append(key)
+            else:
+                skipped.append(key)
             continue
         if kind == "update":
             if current_value == operation.get("value"):
                 set_mapping_value(document.root, key, operation.get("before_value"))
                 changed = True
+            elif resolver is not None and resolver(key):
+                set_mapping_value(document.root, key, operation.get("before_value"))
+                changed = True
+                force_reverted.append(key)
+            else:
+                skipped.append(key)
             continue
         if kind == "delete":
             if current_value is _MISSING:
@@ -238,11 +278,15 @@ def _rollback_mapping(document: Document, operations: list[dict[str, Any]]) -> b
                 changed = True
             continue
         raise ValueError(f"unsupported rollback mapping operation: {kind}")
-    return changed
+    return changed, skipped, force_reverted
 
 
-def _rollback_line(document: Document, operations: list[dict[str, Any]]) -> bool:
+def _rollback_line(
+    document: Document, operations: list[dict[str, Any]], resolver: ConflictResolver = None
+) -> tuple[bool, list[str], list[str]]:
     changed = False
+    skipped: list[str] = []
+    force_reverted: list[str] = []
     for operation in reversed(operations):
         kind = operation["kind"]
         key = operation.get("key")
@@ -259,6 +303,16 @@ def _rollback_line(document: Document, operations: list[dict[str, Any]]) -> bool
                 else:
                     document.root.ensure_block(block_id, list(before_value))
                 changed = True
+            elif resolver is not None and resolver(block_id):
+                before_value = operation.get("before_value")
+                if before_value is None:
+                    document.root.remove_block(block_id)
+                else:
+                    document.root.ensure_block(block_id, list(before_value))
+                changed = True
+                force_reverted.append(block_id)
+            else:
+                skipped.append(block_id)
             continue
         if kind == "delete_block":
             if block is None:
@@ -268,7 +322,7 @@ def _rollback_line(document: Document, operations: list[dict[str, Any]]) -> bool
                 changed = True
             continue
         raise ValueError(f"unsupported rollback line operation: {kind}")
-    return changed
+    return changed, skipped, force_reverted
 
 
 def _document_has_content(document: Document) -> bool:

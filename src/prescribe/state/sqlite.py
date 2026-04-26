@@ -577,7 +577,7 @@ class StateStore:
             original_exists=original_exists,
         )
 
-    def latest_baseline(
+    def original_baseline(
         self,
         path: Path | str,
         *,

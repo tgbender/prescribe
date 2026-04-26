@@ -5,7 +5,6 @@ from prescribe.core.conflict import (
     detect_conflict,
     file_fingerprint,
 )
-from prescribe.core.ops import Operation
 from prescribe.core.planner import (
     DesiredState,
     PlannedOperation,
@@ -18,7 +17,6 @@ __all__ = [
     "ConflictResult",
     "DesiredState",
     "FileFingerprint",
-    "Operation",
     "OrchestrationResult",
     "PlanResult",
     "Planner",

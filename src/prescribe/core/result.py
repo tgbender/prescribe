@@ -1,11 +1,14 @@
 from dataclasses import dataclass
+from typing import Literal
 
 from prescribe.core.conflict import ConflictResult
+
+OrchestrationStatus = Literal["applied", "noop", "dry-run", "conflict", "skipped", "error", "rolled-back", "restored"]
 
 
 @dataclass(slots=True)
 class OrchestrationResult:
-    status: str
+    status: OrchestrationStatus
     applied: bool
     changed: bool
     conflict: ConflictResult | None = None
