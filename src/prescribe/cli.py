@@ -6,6 +6,7 @@ import typer
 
 from prescribe import __version__
 from prescribe.orchestrator import Orchestrator
+from prescribe.paths import default_state_path
 from prescribe.spec import SpecError, SpecLoader
 from prescribe.state import StateStore
 
@@ -53,7 +54,7 @@ def _make_store(state: Path | None) -> StateStore:
     env = os.environ.get("CONFIG_HELPER_STATE")
     if env:
         return StateStore(env)
-    return StateStore(Path.home() / ".local" / "share" / "prescribe" / "state.db")
+    return StateStore(default_state_path())
 
 
 def _status_line(status: str, changed: bool, path: str, detail: str | None = None) -> str:

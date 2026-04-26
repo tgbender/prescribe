@@ -421,9 +421,9 @@ def _empty_document(path: Path, fmt: str) -> Document:
     if fmt in {"toml", "yaml", "json5", "jsonc"}:
         return Document(path=path, format=fmt, root={})
     if fmt == "line":
-        from prescribe.adapters.line import LineDocument
+        from prescribe.adapters.line import LineDocument, preferred_newline
 
-        return Document(path=path, format="line", root=LineDocument(path=path))
+        return Document(path=path, format="line", root=LineDocument(path=path, newline=preferred_newline(path)))
     raise ValueError(f"unsupported format for empty document: {fmt}")
 
 

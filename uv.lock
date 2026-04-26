@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.12"
 
 [options]
-exclude-newer = "2026-04-16T04:53:25.699964Z"
+exclude-newer = "2026-04-23T17:36:49.525887Z"
 exclude-newer-span = "P3D"
 
 [[package]]
@@ -206,6 +206,15 @@ wheels = [
 ]
 
 [[package]]
+name = "platformdirs"
+version = "4.9.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9f/4a/0883b8e3802965322523f0b200ecf33d31f10991d0401162f4b23c698b42/platformdirs-4.9.6.tar.gz", hash = "sha256:3bfa75b0ad0db84096ae777218481852c0ebc6c727b3168c1b9e0118e458cf0a", size = 29400, upload-time = "2026-04-09T00:04:10.812Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/75/a6/a0a304dc33b49145b21f4808d763822111e67d1c3a32b524a1baf947b6e1/platformdirs-4.9.6-py3-none-any.whl", hash = "sha256:e61adb1d5e5cb3441b4b7710bea7e4c12250ca49439228cc1021c00dcfac0917", size = 21348, upload-time = "2026-04-09T00:04:09.463Z" },
+]
+
+[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -220,6 +229,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "json5" },
+    { name = "platformdirs" },
     { name = "ruamel-yaml" },
     { name = "tomlkit" },
     { name = "typer" },
@@ -235,6 +245,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "json5", specifier = ">=0.12.1,<0.13.0" },
+    { name = "platformdirs", specifier = ">=4.0,<5.0" },
     { name = "ruamel-yaml", specifier = ">=0.19.1,<0.20.0" },
     { name = "tomlkit", specifier = ">=0.14.0,<0.15.0" },
     { name = "typer", specifier = ">=0.9,<1.0" },

@@ -31,6 +31,7 @@ from prescribe.orchestrator import (
     machine_matches,
     platform_matches,
 )
+from prescribe.paths import config_dir, data_dir, default_state_path
 from prescribe.spec import Spec, SpecError, SpecLoader, SpecTarget
 from prescribe.state import EventRecord, RunRecord, SnapshotRecord, StateStore
 
@@ -60,6 +61,9 @@ __all__ = [
     "YamlAdapter",
     "adapter_for_path",
     "apply_operations",
+    "config_dir",
+    "data_dir",
+    "default_state_path",
     "detect_conflict",
     "file_fingerprint",
     "json5_adapter",

@@ -6,6 +6,8 @@ from pathlib import Path
 from prescribe.atomic import atomic_write_text
 from prescribe.document import Document
 
+_CRLF_EXTENSIONS = frozenset({".bat", ".cmd"})
+
 _BEGIN_RE = re.compile(r"^# prescribe:begin (?P<block_id>\S+)\s*$")
 _END_RE = re.compile(r"^# prescribe:end (?P<block_id>\S+)\s*$")
 
@@ -80,7 +82,7 @@ class LineDocument:
 
 def parse_line_document(path: Path, text: str) -> LineDocument:
     lines = text.splitlines(keepends=True)
-    newline = _detect_newline(lines)
+    newline = preferred_newline(path, lines)
     segments: list[Segment] = []
     literal: list[str] = []
     index = 0
@@ -131,11 +133,12 @@ class LineAdapter:
     format_name = "line"
 
     def load(self, path: Path) -> Document:
-        root = parse_line_document(path, path.read_text(encoding="utf-8"))
+        raw = path.read_bytes().decode("utf-8")
+        root = parse_line_document(path, raw)
         return Document(path=path, format=self.format_name, root=root)
 
     def dump(self, document: Document, path: Path) -> None:
-        atomic_write_text(path, document.root.render())
+        atomic_write_text(path, document.root.render(), newline="")
 
 
 def _detect_newline(lines: Iterable[str]) -> str:
@@ -144,6 +147,20 @@ def _detect_newline(lines: Iterable[str]) -> str:
             return "\r\n"
         if line.endswith("\n"):
             return "\n"
+    return "\n"
+
+
+def preferred_newline(path: Path, lines: Iterable[str] | None = None) -> str:
+    """Determine the newline convention for a file.
+
+    - .bat/.cmd files always use \\r\\n
+    - Existing files: detect from content
+    - New files: default to \\n
+    """
+    if path.suffix.lower() in _CRLF_EXTENSIONS:
+        return "\r\n"
+    if lines is not None:
+        return _detect_newline(lines)
     return "\n"
 
 

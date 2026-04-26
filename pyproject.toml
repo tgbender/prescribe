@@ -5,6 +5,7 @@ authors = [{ name = "Travis Bender", email = "travisgbender@gmail.com" }]
 requires-python = ">=3.12"
 dependencies = [
   "json5>=0.12.1,<0.13.0",
+  "platformdirs>=4.0,<5.0",
   "ruamel-yaml>=0.19.1,<0.20.0",
   "tomlkit>=0.14.0,<0.15.0",
   "typer>=0.9,<1.0",
