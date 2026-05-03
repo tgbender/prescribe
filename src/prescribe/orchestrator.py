@@ -128,7 +128,25 @@ class Orchestrator:
             results.append(self._handle_file(run_id, spec_hash, file_target, dry_run=dry_run, connection=connection))
 
         # ── env ──
-        resolved_env = self._resolve_env(spec.env)
+        resolved_env, materialize_names = self._resolve_env(spec.env)
+
+        # Materialize env vars to OS-level store (best-effort, fire-and-forget)
+        if not dry_run and materialize_names:
+            mat_env = {k: v for k, v in resolved_env.items() if k in materialize_names}
+            self._do_materialize(mat_env)
+
+        # Produce an env result so callers can inspect resolved vars
+        # even when there are no [[files]] or [[shell]] targets
+        if spec.env and not spec.files and not spec.shell:
+            results.append(
+                OrchestrationResult(
+                    status="applied" if not dry_run else "dry-run",
+                    applied=not dry_run,
+                    changed=bool(resolved_env),
+                    env_vars=resolved_env,
+                    dry_run=dry_run,
+                )
+            )
 
         # ── shell blocks ──
         for shell_target in spec.shell:
@@ -309,7 +327,7 @@ class Orchestrator:
 
     # ── env resolution ────────────────────────────────
 
-    def _resolve_env(self, env_targets: list[EnvTarget]) -> dict[str, str]:
+    def _resolve_env(self, env_targets: list[EnvTarget]) -> tuple[dict[str, str], set[str]]:
         """Filter, merge, and resolve env targets into a flat name→value dict.
 
         Merging rules for duplicate names:
@@ -318,14 +336,20 @@ class Orchestrator:
         - append: accumulated in spec order
         - path_prepend/path_append: forwarded to PATH construction
         - materialize: True if any entry says True
+
+        Returns (resolved_dict, materialize_names).
         """
         path_prepends: dict[str, list[str]] = {}
         path_appends: dict[str, list[str]] = {}
         resolved: dict[str, str] = {}
+        materialize_names: set[str] = set()
 
         for et in env_targets:
             if not condition_matches(target=et):
                 continue
+
+            if et.materialize:
+                materialize_names.add(et.name)
 
             if et.path_prepend:
                 path_prepends.setdefault(et.name, []).extend(et.path_prepend)
@@ -376,7 +400,7 @@ class Orchestrator:
             new_path = deduped_prepends + deduped_current + deduped_appends
             resolved["PATH"] = os.pathsep.join(new_path)
 
-        return resolved
+        return resolved, materialize_names
 
     # ── shell handling ────────────────────────────────
 
@@ -504,6 +528,13 @@ class Orchestrator:
             return OrchestrationResult(status="error", applied=False, changed=False, error=str(exc))
 
     # ── rollback ──────────────────────────────────────
+
+    def _do_materialize(self, env_vars: dict[str, str]) -> None:
+        """Write env vars to the OS-level persistent store."""
+        from prescribe.materialize import materialize
+
+        with contextlib.suppress(Exception):
+            materialize(env_vars=env_vars, dry_run=False)
 
     def rollback(
         self,

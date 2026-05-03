@@ -1,6 +1,6 @@
 [project]
 name = "prescribe"
-version = "0.1.1"
+version = "0.2.0"
 authors = [{ name = "Travis Bender" }]
 readme = "README.md"
 requires-python = ">=3.12"
@@ -10,6 +10,7 @@ dependencies = [
   "sqlalchemy>=2.0.49",
   "tomlkit>=0.14.0,<0.15.0",
   "typer>=0.9,<1.0",
+  "winregenv>=0.2.0; sys_platform == 'win32'",
 ]
 
 [project.scripts]
