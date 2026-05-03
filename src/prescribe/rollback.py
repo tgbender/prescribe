@@ -233,7 +233,7 @@ def rollback_batch(
     document: Document, operations: list[dict[str, Any]], resolver: ConflictResolver = None
 ) -> tuple[bool, list[str], list[str]]:
     format_name = getattr(document, "format", None)
-    if format_name in {"toml", "yaml", "json5", "jsonc"}:
+    if format_name in {"toml", "yaml", "jsonc"}:
         return _rollback_mapping(document, operations, resolver)
     if format_name == "line":
         return _rollback_line(document, operations, resolver)

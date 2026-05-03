@@ -1,12 +1,10 @@
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from prescribe.adapters import (
-    Json5Adapter,
     JsoncAdapter,
     TomlAdapter,
     YamlAdapter,
     adapter_for_path,
-    json5_adapter,
     jsonc_adapter,
     toml_adapter,
     yaml_adapter,
@@ -41,7 +39,6 @@ __all__ = [
     "DesiredState",
     "EventRecord",
     "FileFingerprint",
-    "Json5Adapter",
     "JsoncAdapter",
     "OrchestrationResult",
     "Orchestrator",
@@ -64,7 +61,6 @@ __all__ = [
     "default_state_path",
     "detect_conflict",
     "file_fingerprint",
-    "json5_adapter",
     "jsonc_adapter",
     "current_machine",
     "machine_matches",

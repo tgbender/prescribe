@@ -6,7 +6,7 @@ from prescribe.core.planner import PlannedOperation
 
 def apply_operations(document: Any, operations: list[PlannedOperation]) -> Any:
     format_name = getattr(document, "format", None)
-    if format_name in {"toml", "yaml", "json5", "jsonc"}:
+    if format_name in {"toml", "yaml", "jsonc"}:
         _apply_mapping(document.root, operations)
         return document
     if format_name == "line":

@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from prescribe._util import _MISSING, mapping_value
+
 
 @dataclass(slots=True)
 class PlannedOperation:
@@ -33,7 +35,7 @@ class PlanResult:
 class Planner:
     def plan(self, current: Any, desired: DesiredState) -> PlanResult:
         format_name = getattr(current, "format", None)
-        if format_name in {"toml", "yaml", "json5", "jsonc"}:
+        if format_name in {"toml", "yaml", "jsonc"}:
             return self._plan_mapping(current.root, desired)
         if format_name == "line":
             return self._plan_line(current.root, desired)
@@ -54,7 +56,38 @@ class Planner:
         operations: list[PlannedOperation],
     ) -> None:
         for key, value in desired.items():
-            dotted_key = ".".join([*prefix, key])
+            dotted_key = ".".join([*prefix, key]) if prefix else key
+            # At the top level, resolve dotted keys via mapping_value
+            # (which handles flat-key fallback for formats like JSONC).
+            if not prefix and "." in key:
+                current_value = mapping_value(current, key)
+                if current_value is _MISSING:
+                    operations.append(
+                        PlannedOperation(
+                            kind="set",
+                            path=path,
+                            key=dotted_key,
+                            value=value,
+                            before_value=None,
+                            before_exists=False,
+                            reason="missing",
+                        )
+                    )
+                elif current_value != value:
+                    operations.append(
+                        PlannedOperation(
+                            kind="update",
+                            path=path,
+                            key=dotted_key,
+                            value=value,
+                            before_value=current_value,
+                            before_exists=True,
+                            reason="differs",
+                        )
+                    )
+                continue
+
+            # Flat key lookup (existing behavior)
             if key not in current:
                 operations.append(
                     PlannedOperation(

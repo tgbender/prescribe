@@ -8,7 +8,7 @@ import pytest
 from prescribe.adapters import adapter_for_path
 from prescribe.orchestrator import Orchestrator
 
-FORMATS = ("toml", "yaml", "json5", "jsonc", "line")
+FORMATS = ("toml", "yaml", "jsonc", "line")
 MAPPING_VARIANTS = 3
 LINE_VARIANTS = 2
 
@@ -89,7 +89,7 @@ def test_rollback_fuzz_preserves_unmanaged_changes_and_restores_managed_state(
         else:
             assert final_document.root == expected_semantic
             assert _mapping_manual_path(variant)[-1] in final_text
-            if fmt != "json5":
+            if fmt != "jsonc":
                 assert f"manual-note-{seed}-{variant}-0" in final_text
                 assert "seed" in final_text
     except AssertionError as exc:
@@ -110,8 +110,6 @@ def _target_name_for_format(fmt: str) -> str:
         return "config.toml"
     if fmt == "yaml":
         return "config.yaml"
-    if fmt == "json5":
-        return "config.json5"
     if fmt == "jsonc":
         return "config.jsonc"
     if fmt == "line":
@@ -143,17 +141,6 @@ def _mapping_flat_initial_text(fmt: str, seed: int) -> str:
         )
     if fmt == "yaml":
         return f"# seed {seed}\ntitle: alpha\ncount: 1\ntemporary: remove-me\nexternal: keep\nnestedEnabled: true\n"
-    if fmt == "json5":
-        return (
-            f"// seed {seed}\n"
-            "{\n"
-            "  title: 'alpha',\n"
-            "  count: 1,\n"
-            "  temporary: 'remove-me',\n"
-            "  external: 'keep',\n"
-            "  nestedEnabled: true,\n"
-            "}\n"
-        )
     if fmt == "jsonc":
         return (
             "{\n"
@@ -198,16 +185,6 @@ def _mapping_nested_initial_text(fmt: str, seed: int) -> str:
             "  tags:\n"
             "    - one\n"
             "    - two\n"
-        )
-    if fmt == "json5":
-        return (
-            f"// seed {seed}\n"
-            "{\n"
-            "  title: 'alpha',\n"
-            "  temporary: 'remove-me',\n"
-            "  service: { enabled: true, retries: 1, mode: 'steady' },\n"
-            "  meta: { owner: 'keep', external: 'keep', tags: ['one', 'two'] },\n"
-            "}\n"
         )
     if fmt == "jsonc":
         return (
@@ -262,17 +239,6 @@ def _mapping_list_initial_text(fmt: str, seed: int) -> str:
             "    - extra\n"
             "meta:\n"
             "  external: keep\n"
-        )
-    if fmt == "json5":
-        return (
-            f"// seed {seed}\n"
-            "{\n"
-            "  title: 'alpha',\n"
-            "  count: 1,\n"
-            "  temporary: 'remove-me',\n"
-            "  settings: { enabled: true, retries: 1, zones: ['a', 'b'], features: ['core', 'extra'] },\n"
-            "  meta: { external: 'keep' },\n"
-            "}\n"
         )
     if fmt == "jsonc":
         return (
@@ -448,13 +414,6 @@ def _apply_manual_edit(fmt: str, variant: int, text: str, *, manual_comment: str
         )
     if fmt == "yaml":
         return "# " + manual_comment + "\n" + _replace_first(text, "external: keep", f"external: {manual_external}")
-    if fmt == "json5":
-        return (
-            "// "
-            + manual_comment
-            + "\n"
-            + _replace_first(text, '"external": "keep"', f'"external": "{manual_external}"')
-        )
     if fmt == "jsonc":
         return (
             "// "

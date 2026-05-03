@@ -223,6 +223,7 @@ class Orchestrator:
             adapter=adapter,
             event_type="created",
             connection=connection,
+            original_text=None,
         )
 
     def _process_existing_file(
@@ -287,6 +288,7 @@ class Orchestrator:
         if dry_run:
             return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
 
+        original_text = target.path.read_text(encoding="utf-8")
         return self._apply_and_record(
             run_id=run_id,
             spec_hash=spec_hash,
@@ -297,6 +299,7 @@ class Orchestrator:
             adapter=adapter,
             event_type="applied",
             connection=connection,
+            original_text=original_text,
         )
 
     def _check_managed_conflict(
@@ -357,6 +360,7 @@ class Orchestrator:
         adapter: Adapter,
         event_type: str,
         connection: sqlite3.Connection | None = None,
+        original_text: str | None = None,
     ) -> OrchestrationResult:
         apply_operations(document, operations)
         adapter.dump(document, target.path)
@@ -365,6 +369,16 @@ class Orchestrator:
         new_stat = target.path.stat()
         new_hash = sha256_bytes(new_bytes)
         assert run_id is not None
+        existing_baseline = self.state_store.original_baseline(target.path, connection=connection)
+        if existing_baseline is None:
+            self.state_store.record_baseline(
+                run_id=run_id,
+                path=target.path,
+                content_text=original_text or "",
+                format=target.format,
+                original_exists=original_exists,
+                connection=connection,
+            )
         self.state_store.record_checkpoint(
             run_id=run_id,
             path=target.path,
@@ -414,7 +428,7 @@ def target_to_desired(target: SpecTarget) -> DesiredState:
 
 
 def _empty_document(path: Path, fmt: str) -> Document:
-    if fmt in {"toml", "yaml", "json5", "jsonc"}:
+    if fmt in {"toml", "yaml", "jsonc"}:
         return Document(path=path, format=fmt, root={})
     if fmt == "line":
         from prescribe.adapters.line import LineDocument, preferred_newline

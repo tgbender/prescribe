@@ -1,6 +1,5 @@
 from pathlib import Path
 
-from prescribe.adapters.json5 import json5_adapter
 from prescribe.adapters.jsonc import jsonc_adapter
 from prescribe.adapters.line import line_adapter
 from prescribe.adapters.toml import toml_adapter
@@ -19,7 +18,6 @@ SUFFIX_ADAPTERS: dict[str, Adapter] = {
     ".toml": toml_adapter,
     ".yaml": yaml_adapter,
     ".yml": yaml_adapter,
-    ".json5": json5_adapter,
     ".json": jsonc_adapter,
     ".jsonc": jsonc_adapter,
     ".code-workspace": jsonc_adapter,
@@ -32,7 +30,6 @@ SUFFIX_ADAPTERS: dict[str, Adapter] = {
 FORMAT_ADAPTERS: dict[str, Adapter] = {
     "toml": toml_adapter,
     "yaml": yaml_adapter,
-    "json5": json5_adapter,
     "jsonc": jsonc_adapter,
     "line": line_adapter,
 }

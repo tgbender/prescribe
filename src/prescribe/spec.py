@@ -6,7 +6,7 @@ from typing import Any
 
 import tomlkit
 
-KNOWN_FORMATS = frozenset({"toml", "yaml", "json5", "jsonc", "line"})
+KNOWN_FORMATS = frozenset({"toml", "yaml", "jsonc", "line"})
 KNOWN_PLATFORMS = frozenset({"linux", "macos", "windows"})
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -16,23 +17,49 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="Use real file-backed SQLite databases instead of :memory:",
     )
+    parser.addoption(
+        "--no-cli",
+        action="store_true",
+        default=False,
+        help="Skip CLI integration tests even when `prescribe` is on PATH.",
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "cli: CLI integration tests — run by default when `prescribe` is on PATH, skip with --no-cli.",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
-    if not config.getoption("--file-db"):
-        return
-    skip = pytest.mark.skip(reason="pyfakefs incompatible with --file-db real SQLite")
+    # --file-db: skip pyfakefs tests that are incompatible with real SQLite
+    if config.getoption("--file-db"):
+        skip = pytest.mark.skip(reason="pyfakefs incompatible with --file-db real SQLite")
+        for item in items:
+            if "state_store" in item.fixturenames:  # noqa
+                if (
+                    "fs" in item.fixturenames
+                    or "make_text_file" in item.fixturenames
+                    or "fake_root" in item.fixturenames
+                ):  # noqa
+                    item.add_marker(skip)
+
+    # CLI tests: run by default when binary is available; skip on --no-cli or missing binary
+    no_cli = config.getoption("--no-cli")
+    cli_binary = shutil.which("prescribe")
     for item in items:
-        if "state_store" in item.fixturenames:  # noqa
-            if "fs" in item.fixturenames or "make_text_file" in item.fixturenames or "fake_root" in item.fixturenames:  # noqa
-                item.add_marker(skip)
+        if item.get_closest_marker("cli") is None:
+            continue
+        if no_cli:
+            item.add_marker(pytest.mark.skip(reason="--no-cli"))
+        elif cli_binary is None:
+            item.add_marker(pytest.mark.skip(reason="prescribe not on PATH"))
 
 
 TOML_SAMPLE = '# top comment\ntitle = "hello"\n[tool.demo]\n# keep this\nvalue = 1\n'
 
 YAML_SAMPLE = "# top comment\ntitle: hello\ntool:\n  demo:\n    # keep this\n    value: 1\n"
-
-JSON5_SAMPLE = "// top comment\n{\n  title: 'hello',\n  nested: { value: 1, },\n}\n"
 
 LINE_SAMPLE = "# header\nunmanaged before\n# prescribe:begin managed\nold=1\n# prescribe:end managed\nunmanaged after\n"
 
@@ -96,11 +123,6 @@ def toml_sample() -> str:
 @pytest.fixture()
 def yaml_sample() -> str:
     return YAML_SAMPLE
-
-
-@pytest.fixture()
-def json5_sample() -> str:
-    return JSON5_SAMPLE
 
 
 @pytest.fixture()
