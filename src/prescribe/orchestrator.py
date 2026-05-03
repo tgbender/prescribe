@@ -1,4 +1,5 @@
 import contextlib
+import json
 import os
 import shutil
 import socket
@@ -56,7 +57,8 @@ def machine_matches(selectors: list[str]) -> bool:
 def condition_matches(
     *,
     target: FileTarget | EnvTarget | ShellTarget,
-    tags_filter: set[str] | None = None,
+    tags: set[str] | None = None,
+    skip_tags: set[str] | None = None,
 ) -> bool:
     """Check all gating conditions for a target. True = should process."""
     if not platform_matches(target.platforms):
@@ -64,7 +66,10 @@ def condition_matches(
     if not machine_matches(target.machine):
         return False
 
-    if tags_filter is not None and getattr(target, "tags", None) and not (tags_filter & set(target.tags)):
+    target_tags = getattr(target, "tags", None) or []
+    if tags is not None and not (tags & set(target_tags)):
+        return False
+    if skip_tags is not None and (skip_tags & set(target_tags)):
         return False
 
     if hasattr(target, "if_command_exists"):
@@ -80,6 +85,27 @@ def condition_matches(
     return True
 
 
+def _spec_hash(spec: Spec) -> bytes:
+    """Compute a deterministic content hash for a Spec object."""
+    data = {
+        "id": spec.id,
+        "files": [
+            {
+                "path": str(f.path),
+                "format": f.format,
+                "data": f.data,
+                "delete": f.delete,
+                "managed_block_id": f.managed_block_id,
+                "lines": f.lines,
+            }
+            for f in spec.files
+        ],
+        "env": [{"name": e.name, "value": e.value} for e in spec.env],
+        "shell": [{"path": str(s.path), "managed_block_id": s.managed_block_id} for s in spec.shell],
+    }
+    return sha256_bytes(json.dumps(data, sort_keys=True, default=str).encode())
+
+
 class Orchestrator:
     def __init__(self, state_store: StateStore) -> None:
         self.state_store = state_store
@@ -87,19 +113,33 @@ class Orchestrator:
 
     def run(
         self,
-        spec_path: Path | str,
+        spec: Path | str | Spec,
         *,
         tool_version: str | None = None,
         dry_run: bool = False,
+        tags: set[str] | None = None,
+        skip_tags: set[str] | None = None,
     ) -> list[OrchestrationResult]:
         from prescribe.spec import SpecLoader
 
-        spec_path = Path(spec_path)
-        spec = SpecLoader().load(spec_path)
-        spec_hash = sha256_bytes(spec_path.read_bytes())
+        if isinstance(spec, (Path, str)):
+            spec_path = Path(spec)
+            spec_obj = SpecLoader().load(spec_path)
+            spec_hash = sha256_bytes(spec_path.read_bytes())
+        else:
+            spec_obj = spec
+            spec_hash = _spec_hash(spec_obj)
+
         if dry_run:
             self.state_store.initialize()
-            return self._run_all(run_id=None, spec_hash=spec_hash, spec=spec, dry_run=True)
+            return self._run_all(
+                run_id=None,
+                spec_hash=spec_hash,
+                spec=spec_obj,
+                dry_run=True,
+                tags=tags,
+                skip_tags=skip_tags,
+            )
 
         self.state_store.initialize()
         with self.state_store.transaction() as connection:
@@ -110,7 +150,15 @@ class Orchestrator:
                 host=current_machine(),
                 connection=connection,
             )
-            return self._run_all(run_id=run.id, spec_hash=spec_hash, spec=spec, dry_run=False, connection=connection)
+            return self._run_all(
+                run_id=run.id,
+                spec_hash=spec_hash,
+                spec=spec_obj,
+                dry_run=False,
+                tags=tags,
+                skip_tags=skip_tags,
+                connection=connection,
+            )
 
     def _run_all(
         self,
@@ -119,16 +167,28 @@ class Orchestrator:
         spec: Spec,
         *,
         dry_run: bool = False,
+        tags: set[str] | None = None,
+        skip_tags: set[str] | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> list[OrchestrationResult]:
         results: list[OrchestrationResult] = []
 
         # ── files ──
         for file_target in spec.files:
-            results.append(self._handle_file(run_id, spec_hash, file_target, dry_run=dry_run, connection=connection))
+            results.append(
+                self._handle_file(
+                    run_id,
+                    spec_hash,
+                    file_target,
+                    dry_run=dry_run,
+                    tags=tags,
+                    skip_tags=skip_tags,
+                    connection=connection,
+                )
+            )
 
         # ── env ──
-        resolved_env, materialize_names = self._resolve_env(spec.env)
+        resolved_env, materialize_names = self._resolve_env(spec.env, tags=tags, skip_tags=skip_tags)
 
         # Materialize env vars to OS-level store (best-effort, fire-and-forget)
         if not dry_run and materialize_names:
@@ -151,7 +211,14 @@ class Orchestrator:
         # ── shell blocks ──
         for shell_target in spec.shell:
             result = self._handle_shell(
-                run_id, spec_hash, shell_target, resolved_env, dry_run=dry_run, connection=connection
+                run_id,
+                spec_hash,
+                shell_target,
+                resolved_env,
+                dry_run=dry_run,
+                tags=tags,
+                skip_tags=skip_tags,
+                connection=connection,
             )
             result.env_vars = resolved_env
             results.append(result)
@@ -172,9 +239,11 @@ class Orchestrator:
         target: FileTarget,
         *,
         dry_run: bool = False,
+        tags: set[str] | None = None,
+        skip_tags: set[str] | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> OrchestrationResult:
-        if not condition_matches(target=target):
+        if not condition_matches(target=target, tags=tags, skip_tags=skip_tags):
             return OrchestrationResult(status="skipped", applied=False, changed=False, skipped=True)
 
         adapter = adapter_for_path(target.path, fmt=target.format)
@@ -327,7 +396,13 @@ class Orchestrator:
 
     # ── env resolution ────────────────────────────────
 
-    def _resolve_env(self, env_targets: list[EnvTarget]) -> tuple[dict[str, str], set[str]]:
+    def _resolve_env(
+        self,
+        env_targets: list[EnvTarget],
+        *,
+        tags: set[str] | None = None,
+        skip_tags: set[str] | None = None,
+    ) -> tuple[dict[str, str], set[str]]:
         """Filter, merge, and resolve env targets into a flat name→value dict.
 
         Merging rules for duplicate names:
@@ -345,7 +420,7 @@ class Orchestrator:
         materialize_names: set[str] = set()
 
         for et in env_targets:
-            if not condition_matches(target=et):
+            if not condition_matches(target=et, tags=tags, skip_tags=skip_tags):
                 continue
 
             if et.materialize:
@@ -412,9 +487,11 @@ class Orchestrator:
         resolved_env: dict[str, str],
         *,
         dry_run: bool = False,
+        tags: set[str] | None = None,
+        skip_tags: set[str] | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> OrchestrationResult:
-        if not condition_matches(target=target):
+        if not condition_matches(target=target, tags=tags, skip_tags=skip_tags):
             return OrchestrationResult(status="skipped", applied=False, changed=False, skipped=True)
 
         # Determine shell type(s) to render for

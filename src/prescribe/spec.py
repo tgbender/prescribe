@@ -65,7 +65,8 @@ class ShellTarget:
 
 @dataclass(slots=True)
 class Spec:
-    path: Path
+    id: str | None = None
+    path: Path = field(default_factory=Path)
     files: list[FileTarget] = field(default_factory=list)
     env: list[EnvTarget] = field(default_factory=list)
     shell: list[ShellTarget] = field(default_factory=list)

@@ -76,6 +76,8 @@ def apply(
     dry_run: bool = typer.Option(False, "--dry-run", help="Plan changes without writing."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
+    tags: str | None = typer.Option(None, "--tags", help="Only apply targets with these tags (comma-separated)."),
+    skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
 ) -> None:
     """Apply a spec file to its target config files, env vars, and shell blocks."""
     try:
@@ -84,7 +86,9 @@ def apply(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from None
 
-    results = Orchestrator(_make_store(state)).run(spec, dry_run=dry_run)
+    tag_set = _parse_tags(tags)
+    skip_set = _parse_tags(skip_tags)
+    results = Orchestrator(_make_store(state)).run(spec, dry_run=dry_run, tags=tag_set, skip_tags=skip_set)
 
     if output_json:
         data = _results_to_json(spec_obj, results, display_status=False)
@@ -101,6 +105,8 @@ def status(
     spec: Path = typer.Argument(..., help="Path to the spec TOML file."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
+    tags: str | None = typer.Option(None, "--tags", help="Only show targets with these tags (comma-separated)."),
+    skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
 ) -> None:
     """Show sync status of all targets without making changes."""
     try:
@@ -109,7 +115,9 @@ def status(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(1) from None
 
-    results = Orchestrator(_make_store(state)).run(spec, dry_run=True)
+    tag_set = _parse_tags(tags)
+    skip_set = _parse_tags(skip_tags)
+    results = Orchestrator(_make_store(state)).run(spec, dry_run=True, tags=tag_set, skip_tags=skip_set)
 
     if output_json:
         data = _results_to_json(spec_obj, results, display_status=True)
@@ -305,3 +313,10 @@ def _print_results(spec_obj: Spec, results: list[OrchestrationResult]) -> None:
 
 def main() -> None:
     app()
+
+
+def _parse_tags(raw: str | None) -> set[str] | None:
+    """Parse comma-separated tags string into a set, or None if empty."""
+    if not raw:
+        return None
+    return {t.strip() for t in raw.split(",") if t.strip()}

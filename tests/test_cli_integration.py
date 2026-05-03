@@ -479,3 +479,33 @@ def test_rollback_original_restores_existing_file_to_baseline(run, workdir: Path
     result = run("rollback", "--original", str(config))
     assert result.returncode == 0
     assert config.read_text() == "count = 1\nname = 'original'\n"
+
+
+# ── tags ────────────────────────────────────────────────────
+
+
+def test_apply_with_tags_filter(run, workdir: Path) -> None:
+    """--tags agent only applies targets tagged 'agent'."""
+    spec = workdir / "spec.toml"
+    config = workdir / "config.toml"
+    config.write_text("count = 1\n")
+
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\ntags = ['agent']\n[files.data]\ncount = 2\n")
+
+    result = run("apply", "--tags", "agent", "spec.toml")
+    assert result.returncode == 0
+    assert "applied" in result.stdout
+
+
+def test_apply_with_skip_tags_filter(run, workdir: Path) -> None:
+    """--skip-tags secrets skips targets tagged 'secrets'."""
+    spec = workdir / "spec.toml"
+    config = workdir / "config.toml"
+    config.write_text("count = 1\n")
+
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\ntags = ['secrets']\n[files.data]\ncount = 2\n")
+
+    result = run("apply", "--skip-tags", "secrets", "spec.toml")
+    assert result.returncode == 0
+    # Should NOT have been applied — file unchanged
+    assert config.read_text().startswith("count = 1\n")
