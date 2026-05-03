@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from prescribe.state.migrate import migrate as migrate_schema
-from prescribe.state.schema import CURRENT_SCHEMA
 
 
 @dataclass(slots=True)
@@ -141,7 +140,7 @@ class StateStore:
 
     def initialize(self, *, connection: sqlite3.Connection | None = None, dry_run: bool = False) -> list[str]:
         with self._connection(connection) as conn:
-            return migrate_schema(conn, CURRENT_SCHEMA, dry_run=dry_run, autocommit=False)
+            return migrate_schema(conn, dry_run=dry_run)
 
     def start_run(
         self,
