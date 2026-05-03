@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from prescribe.core.conflict import ConflictResult
@@ -15,3 +15,4 @@ class OrchestrationResult:
     skipped: bool = False
     dry_run: bool = False
     error: str | None = None
+    env_vars: dict[str, str] = field(default_factory=dict)

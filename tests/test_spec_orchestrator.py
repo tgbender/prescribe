@@ -46,7 +46,7 @@ def test_orchestrator_skips_non_matching_platform(make_text_file, state_store) -
 
     spec_path = make_text_file(
         "spec.toml",
-        "[[targets]]\npath = 'config.toml'\nformat = 'toml'\nplatforms = ['windows']\n[targets.data]\ncount = 2\n",
+        "[[files]]\npath = 'config.toml'\nformat = 'toml'\nplatforms = ['windows']\n[files.data]\ncount = 2\n",
     )
 
     store = state_store
@@ -68,7 +68,7 @@ def test_orchestrator_applies_matching_platform(tmp_path: Path, state_store) -> 
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text(
-        f"[[targets]]\npath = 'config.toml'\nformat = 'toml'\nplatforms = ['{current}']\n[targets.data]\ncount = 2\n"
+        f"[[files]]\npath = 'config.toml'\nformat = 'toml'\nplatforms = ['{current}']\n[files.data]\ncount = 2\n"
     )
 
     store = state_store
@@ -86,7 +86,7 @@ def test_orchestrator_skips_non_matching_machine(tmp_path: Path, monkeypatch, st
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text(
-        "[[targets]]\npath = 'config.toml'\nformat = 'toml'\nmachine = ['build-host']\n[targets.data]\ncount = 2\n"
+        "[[files]]\npath = 'config.toml'\nformat = 'toml'\nmachine = ['build-host']\n[files.data]\ncount = 2\n"
     )
 
     monkeypatch.setenv("PRESCRIBE_MACHINE", "other-host")
@@ -110,14 +110,14 @@ def test_spec_loader_and_orchestrator_apply_and_then_noop(tmp_path: Path, state_
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text(
-        "[[targets]]\n"
+        "[[files]]\n"
         "path = 'config.toml'\n"
         "format = 'toml'\n"
-        "[targets.data]\n"
+        "[files.data]\n"
         "count = 2\n"
         "extra = true\n"
         "\n"
-        "[[targets]]\n"
+        "[[files]]\n"
         "path = '.env'\n"
         "format = 'line'\n"
         "managed_block_id = 'managed'\n"
@@ -125,9 +125,9 @@ def test_spec_loader_and_orchestrator_apply_and_then_noop(tmp_path: Path, state_
     )
 
     spec = SpecLoader().load(spec_path)
-    assert len(spec.targets) == 2
-    assert spec.targets[0].path == config_toml.resolve()
-    assert spec.targets[1].path == env_file.resolve()
+    assert len(spec.files) == 2
+    assert spec.files[0].path == config_toml.resolve()
+    assert spec.files[1].path == env_file.resolve()
 
     store = state_store
     orchestrator = Orchestrator(store)
@@ -149,7 +149,7 @@ def test_orchestrator_conflict_when_file_changes_between_runs(tmp_path: Path, st
     config_toml.write_text("title = 'hello'\ncount = 1\n")
 
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     store = state_store
     orchestrator = Orchestrator(store)
@@ -177,7 +177,7 @@ def test_orchestrator_conflicts_when_managed_key_changes_between_runs(tmp_path: 
     config_toml.write_text("title = 'hello'\ncount = 1\nexternal = true\n")
 
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     store = state_store
     orchestrator = Orchestrator(store)
@@ -200,7 +200,7 @@ def test_orchestrator_reports_managed_conflict_in_dry_run(tmp_path: Path, state_
     config_toml.write_text("title = 'hello'\ncount = 1\nexternal = true\n")
 
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     orchestrator = Orchestrator(state_store)
     first = orchestrator.run(spec_path)
@@ -222,7 +222,7 @@ def test_orchestrator_creates_missing_toml_file(tmp_path: Path, state_store) -> 
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text(
-        "[[targets]]\npath = 'new_config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\nextra = true\n"
+        "[[files]]\npath = 'new_config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\nextra = true\n"
     )
 
     store = state_store
@@ -248,7 +248,7 @@ def test_orchestrator_expands_home_and_env_vars_in_target_path(tmp_path: Path, m
     config_toml = home_dir / ".config" / "myapp" / "config.toml"
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text(
-        "[[targets]]\npath = '~/.config/${APP_NAME}/config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n"
+        "[[files]]\npath = '~/.config/${APP_NAME}/config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n"
     )
 
     store = state_store
@@ -266,7 +266,7 @@ def test_orchestrator_creates_missing_line_file(tmp_path: Path, state_store) -> 
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text(
-        "[[targets]]\npath = 'new_env'\nformat = 'line'\nmanaged_block_id = 'managed'\nlines = ['alpha=1', 'beta=2']\n"
+        "[[files]]\npath = 'new_env'\nformat = 'line'\nmanaged_block_id = 'managed'\nlines = ['alpha=1', 'beta=2']\n"
     )
 
     store = state_store
@@ -283,7 +283,7 @@ def test_orchestrator_second_run_after_create_is_noop(tmp_path: Path, state_stor
     _config_toml = tmp_path / "new_config.toml"
 
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text("[[targets]]\npath = 'new_config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec_path.write_text("[[files]]\npath = 'new_config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     store = state_store
     orchestrator = Orchestrator(store)
@@ -305,7 +305,7 @@ def test_orchestrator_rollback_restores_managed_changes_and_preserves_unrelated_
     config_toml.write_text("title = 'hello'\ncount = 1\nexternal = true\n")
 
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     store = state_store
     orchestrator = Orchestrator(store)
@@ -327,7 +327,7 @@ def test_orchestrator_rollback_recreates_deleted_file_from_checkpoint(fake_root:
     config_toml.write_text("title = 'hello'\ncount = 1\nexternal = true\n")
 
     spec_path = fake_root / "spec.toml"
-    spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     orchestrator = Orchestrator(state_store)
     applied = orchestrator.run(spec_path)
@@ -352,7 +352,7 @@ def test_orchestrator_rollback_removes_managed_file_created_by_app(tmp_path: Pat
     assert not config_toml.exists()
 
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text("[[targets]]\npath = 'new_config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec_path.write_text("[[files]]\npath = 'new_config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     store = state_store
     orchestrator = Orchestrator(store)
@@ -376,9 +376,7 @@ def test_orchestrator_rollback_preserves_regex_manual_edit_across_multiple_batch
     store = state_store
     orchestrator = Orchestrator(store)
 
-    spec_path.write_text(
-        "[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\ncolor = 'blue'\n"
-    )
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\ncolor = 'blue'\n")
     first = orchestrator.run(spec_path)
     assert first[0].status == "applied"
 
@@ -392,25 +390,13 @@ def test_orchestrator_rollback_preserves_regex_manual_edit_across_multiple_batch
     )
 
     spec_path.write_text(
-        "[[targets]]\n"
-        "path = 'config.toml'\n"
-        "format = 'toml'\n"
-        "[targets.data]\n"
-        "count = 3\n"
-        "color = 'blue'\n"
-        "note = 'second'\n"
+        "[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 3\ncolor = 'blue'\nnote = 'second'\n"
     )
     second = orchestrator.run(spec_path)
     assert second[0].status == "applied"
 
     spec_path.write_text(
-        "[[targets]]\n"
-        "path = 'config.toml'\n"
-        "format = 'toml'\n"
-        "[targets.data]\n"
-        "count = 4\n"
-        "color = 'green'\n"
-        "note = 'third'\n"
+        "[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 4\ncolor = 'green'\nnote = 'third'\n"
     )
     third = orchestrator.run(spec_path)
     assert third[0].status == "applied"
@@ -433,7 +419,7 @@ def test_orchestrator_dry_run_reports_existing_file_changes_without_writing(tmp_
     config_toml.write_text("title = 'hello'\ncount = 1\n")
 
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     store = state_store
     orchestrator = Orchestrator(store)
@@ -453,7 +439,7 @@ def test_orchestrator_dry_run_reports_missing_file_creates_without_writing(tmp_p
     assert not config_toml.exists()
 
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text("[[targets]]\npath = 'new_config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec_path.write_text("[[files]]\npath = 'new_config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     store = state_store
     orchestrator = Orchestrator(store)
@@ -472,7 +458,7 @@ def test_orchestrator_reports_corrupt_existing_file(tmp_path: Path, state_store)
     config_toml.write_text("title = 'hello'\ncount = [\n")
 
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     store = state_store
     orchestrator = Orchestrator(store)
@@ -491,7 +477,7 @@ def test_orchestrator_reports_corrupt_line_file(tmp_path: Path, state_store) -> 
 
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text(
-        "[[targets]]\npath = '.env'\nformat = 'line'\nmanaged_block_id = 'managed'\nlines = ['alpha=1']\n"
+        "[[files]]\npath = '.env'\nformat = 'line'\nmanaged_block_id = 'managed'\nlines = ['alpha=1']\n"
     )
 
     store = state_store
@@ -510,7 +496,7 @@ def test_orchestrator_detects_change_during_planning(tmp_path: Path, monkeypatch
     config_toml.write_text("title = 'hello'\ncount = 1\n")
 
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     store = state_store
     orchestrator = Orchestrator(store)
@@ -539,7 +525,7 @@ def test_orchestrator_detects_new_file_appearing_during_planning(tmp_path: Path,
     assert not config_toml.exists()
 
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text("[[targets]]\npath = 'new_config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec_path.write_text("[[files]]\npath = 'new_config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     store = state_store
     orchestrator = Orchestrator(store)
@@ -568,7 +554,7 @@ def test_orchestrator_rollback_skips_managed_key_changed_externally(tmp_path: Pa
     config_toml.write_text("title = 'hello'\ncount = 1\n")
 
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     orchestrator = Orchestrator(state_store)
     applied = orchestrator.run(spec_path)
@@ -586,7 +572,7 @@ def test_orchestrator_rollback_force_reverts_externally_modified_key(tmp_path: P
     config_toml.write_text("title = 'hello'\ncount = 1\n")
 
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     orchestrator = Orchestrator(state_store)
     applied = orchestrator.run(spec_path)
@@ -608,9 +594,7 @@ def test_orchestrator_rollback_records_conflict_resolution_in_db(tmp_path: Path,
     config_toml.write_text("title = 'hello'\ncount = 1\ncolor = 'red'\n")
 
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text(
-        "[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\ncolor = 'blue'\n"
-    )
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\ncolor = 'blue'\n")
 
     orchestrator = Orchestrator(state_store)
     run_result = orchestrator.run(spec_path)

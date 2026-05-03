@@ -8,14 +8,19 @@ import tomlkit
 
 KNOWN_FORMATS = frozenset({"toml", "yaml", "jsonc", "line"})
 KNOWN_PLATFORMS = frozenset({"linux", "macos", "windows"})
+KNOWN_SHELLS = frozenset({"xonsh", "bash", "zsh", "fish", "nu"})
+KNOWN_SECTION_KEYS = frozenset({"files", "env", "shell"})
 
 
 class SpecError(Exception):
     pass
 
 
+# ── target types ─────────────────────────────────────────
+
+
 @dataclass(slots=True)
-class SpecTarget:
+class FileTarget:
     path: Path
     format: str
     data: dict[str, Any] = field(default_factory=dict)
@@ -24,90 +29,198 @@ class SpecTarget:
     lines: list[str] = field(default_factory=list)
     platforms: list[str] = field(default_factory=list)
     machine: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    if_command_exists: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class EnvTarget:
+    name: str
+    value: str | None = None
+    prepend: list[str] = field(default_factory=list)
+    append: list[str] = field(default_factory=list)
+    path_prepend: list[str] = field(default_factory=list)
+    path_append: list[str] = field(default_factory=list)
+    materialize: bool = False
+    platforms: list[str] = field(default_factory=list)
+    machine: list[str] = field(default_factory=list)
+    shells: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    if_command_exists: list[str] = field(default_factory=list)
+    if_env_missing: bool = False
+
+
+@dataclass(slots=True)
+class ShellTarget:
+    path: Path
+    managed_block_id: str
+    shells: list[str] = field(default_factory=list)
+    platforms: list[str] = field(default_factory=list)
+    machine: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+
+
+# ── spec ──────────────────────────────────────────────────
 
 
 @dataclass(slots=True)
 class Spec:
     path: Path
-    targets: list[SpecTarget] = field(default_factory=list)
+    files: list[FileTarget] = field(default_factory=list)
+    env: list[EnvTarget] = field(default_factory=list)
+    shell: list[ShellTarget] = field(default_factory=list)
+
+
+# ── loader ────────────────────────────────────────────────
 
 
 class SpecLoader:
-    def load(self, path: Path) -> Spec:
+    def load(self, spec_path: Path) -> Spec:
         try:
-            data = tomlkit.parse(path.read_text(encoding="utf-8"))
+            data = tomlkit.parse(spec_path.read_text(encoding="utf-8"))
         except Exception as exc:
-            raise SpecError(f"failed to parse spec {path}: {exc}") from exc
+            raise SpecError(f"failed to parse spec {spec_path}: {exc}") from exc
 
-        raw_targets = data.get("targets")
-        if raw_targets is None:
-            raise SpecError(f"spec {path} missing required key 'targets'")
-        if not isinstance(raw_targets, list):
-            raise SpecError(f"spec {path} key 'targets' must be a list")
+        if "targets" in data:
+            raise SpecError(
+                f"spec {spec_path}: [[targets]] is removed in v0.2.0. "
+                "Use [[files]], [[env]], and [[shell]] sections instead."
+            )
 
-        targets: list[SpecTarget] = []
-        for index, raw in enumerate(raw_targets):
-            target = self._parse_target(path, index, raw)
-            for previous_index, previous in enumerate(targets):
-                if target.path == previous.path and _targets_overlap(target, previous):
-                    raise SpecError(
-                        f"spec {path} target #{index}: duplicate path {target.path} "
-                        f"overlaps with target #{previous_index}"
-                    )
-            targets.append(target)
-        return Spec(path=path, targets=targets)
+        files = self._parse_files(spec_path, data.get("files", []))
+        env_vars = self._parse_env(spec_path, data.get("env", []))
+        shells = self._parse_shell(spec_path, data.get("shell", []))
 
-    def _parse_target(self, spec_path: Path, index: int, raw: Any) -> SpecTarget:
-        context = f"spec {spec_path} target #{index}"
+        _validate_no_duplicate_overlapping_files(spec_path, files)
+
+        return Spec(path=spec_path, files=files, env=env_vars, shell=shells)
+
+    # ── files ─────────────────────────────────────────
+
+    def _parse_files(self, spec_path: Path, raw_list: Any) -> list[FileTarget]:
+        if not isinstance(raw_list, list):
+            raise SpecError(f"spec {spec_path}: 'files' must be an array of tables")
+        targets: list[FileTarget] = []
+        for index, raw in enumerate(raw_list):
+            targets.append(self._parse_file_target(spec_path, index, raw))
+        return targets
+
+    def _parse_file_target(self, spec_path: Path, index: int, raw: Any) -> FileTarget:
+        ctx = f"spec {spec_path} files[{index}]"
         if not isinstance(raw, Mapping):
-            raise SpecError(f"{context}: expected a table/object")
+            raise SpecError(f"{ctx}: expected a table/object")
 
-        if "path" not in raw:
-            raise SpecError(f"{context}: missing required key 'path'")
-        if "format" not in raw:
-            raise SpecError(f"{context}: missing required key 'format'")
+        path = _require_path(spec_path, raw, ctx)
+        fmt = _require_format(raw, ctx)
 
-        raw_path = raw["path"]
-        if not isinstance(raw_path, str) or not raw_path:
-            raise SpecError(f"{context}: key 'path' must be a non-empty string")
-        raw_paths = raw.get("paths", [])
-        additional_paths = _coerce_string_list(raw_paths, context, "paths") if "paths" in raw else []
-        raw_format = raw["format"]
-        if not isinstance(raw_format, str) or not raw_format:
-            raise SpecError(f"{context}: key 'format' must be a non-empty string")
+        if fmt == "line" and "managed_block_id" not in raw:
+            raise SpecError(f"{ctx}: format 'line' requires 'managed_block_id'")
 
-        fmt = raw_format
-        if fmt not in KNOWN_FORMATS:
-            raise SpecError(f"{context}: unknown format {fmt!r}, expected one of {sorted(KNOWN_FORMATS)}")
-
-        target_path = _resolve_target_path(spec_path, raw_path, additional_paths)
-
-        data = _coerce_mapping(raw.get("data", {}), context, "data")
-        delete = _coerce_string_list(raw.get("delete", []), context, "delete")
-        lines = _coerce_string_list(raw.get("lines", []), context, "lines")
-        platforms = _coerce_string_list(raw.get("platforms", []), context, "platforms")
-        for platform in platforms:
-            if platform not in KNOWN_PLATFORMS:
-                raise SpecError(f"{context}: unknown platform {platform!r}, expected one of {sorted(KNOWN_PLATFORMS)}")
-
-        machine = _coerce_string_list(raw.get("machine", []), context, "machine")
-
-        managed_block_id = raw.get("managed_block_id")
-        if managed_block_id is not None and (not isinstance(managed_block_id, str) or not managed_block_id):
-            raise SpecError(f"{context}: key 'managed_block_id' must be a non-empty string when provided")
-        if fmt == "line" and managed_block_id is None:
-            raise SpecError(f"{context}: format 'line' requires 'managed_block_id'")
-
-        return SpecTarget(
-            path=target_path,
+        return FileTarget(
+            path=_resolve_target_path(spec_path, path, _coerce_string_list(raw.get("paths", []), ctx, "paths")),
             format=fmt,
-            data=data,
-            delete=delete,
-            managed_block_id=managed_block_id,
-            lines=lines,
-            platforms=platforms,
-            machine=machine,
+            data=_coerce_mapping(raw.get("data", {}), ctx, "data"),
+            delete=_coerce_string_list(raw.get("delete", []), ctx, "delete"),
+            managed_block_id=_coerce_optional_string(raw.get("managed_block_id"), ctx, "managed_block_id"),
+            lines=_coerce_string_list(raw.get("lines", []), ctx, "lines"),
+            platforms=_coerce_platforms(raw.get("platforms", []), ctx),
+            machine=_coerce_string_list(raw.get("machine", []), ctx, "machine"),
+            tags=_coerce_string_list(raw.get("tags", []), ctx, "tags"),
+            if_command_exists=_coerce_string_list(raw.get("if_command_exists", []), ctx, "if_command_exists"),
         )
+
+    # ── env ───────────────────────────────────────────
+
+    def _parse_env(self, spec_path: Path, raw_list: Any) -> list[EnvTarget]:
+        if not isinstance(raw_list, list):
+            raise SpecError(f"spec {spec_path}: 'env' must be an array of tables")
+        targets: list[EnvTarget] = []
+        for index, raw in enumerate(raw_list):
+            targets.append(self._parse_env_target(spec_path, index, raw))
+        return targets
+
+    def _parse_env_target(self, spec_path: Path, index: int, raw: Any) -> EnvTarget:
+        ctx = f"spec {spec_path} env[{index}]"
+        if not isinstance(raw, Mapping):
+            raise SpecError(f"{ctx}: expected a table/object")
+
+        name = _coerce_required_string(raw.get("name"), ctx, "name")
+
+        return EnvTarget(
+            name=str(name),
+            value=_coerce_optional_string(raw.get("value"), ctx, "value"),
+            prepend=_coerce_string_list(raw.get("prepend", []), ctx, "prepend"),
+            append=_coerce_string_list(raw.get("append", []), ctx, "append"),
+            path_prepend=_coerce_string_list(raw.get("path_prepend", []), ctx, "path_prepend"),
+            path_append=_coerce_string_list(raw.get("path_append", []), ctx, "path_append"),
+            materialize=bool(raw.get("materialize", False)),
+            platforms=_coerce_platforms(raw.get("platforms", []), ctx),
+            machine=_coerce_string_list(raw.get("machine", []), ctx, "machine"),
+            shells=_coerce_shells(raw.get("shells", []), ctx),
+            tags=_coerce_string_list(raw.get("tags", []), ctx, "tags"),
+            if_command_exists=_coerce_string_list(raw.get("if_command_exists", []), ctx, "if_command_exists"),
+            if_env_missing=bool(raw.get("if_env_missing", False)),
+        )
+
+    # ── shell ─────────────────────────────────────────
+
+    def _parse_shell(self, spec_path: Path, raw_list: Any) -> list[ShellTarget]:
+        if not isinstance(raw_list, list):
+            raise SpecError(f"spec {spec_path}: 'shell' must be an array of tables")
+        targets: list[ShellTarget] = []
+        for index, raw in enumerate(raw_list):
+            targets.append(self._parse_shell_target(spec_path, index, raw))
+        return targets
+
+    def _parse_shell_target(self, spec_path: Path, index: int, raw: Any) -> ShellTarget:
+        ctx = f"spec {spec_path} shell[{index}]"
+        if not isinstance(raw, Mapping):
+            raise SpecError(f"{ctx}: expected a table/object")
+
+        path = _require_path(spec_path, raw, ctx)
+        block_id = _coerce_required_string(raw.get("managed_block_id"), ctx, "managed_block_id")
+
+        return ShellTarget(
+            path=_resolve_target_path(spec_path, path, []),
+            managed_block_id=str(block_id),
+            shells=_coerce_shells(raw.get("shells", []), ctx),
+            platforms=_coerce_platforms(raw.get("platforms", []), ctx),
+            machine=_coerce_string_list(raw.get("machine", []), ctx, "machine"),
+            tags=_coerce_string_list(raw.get("tags", []), ctx, "tags"),
+        )
+
+
+# ── helpers ───────────────────────────────────────────────
+
+
+def _require_path(spec_path: Path, raw: Mapping[str, Any], ctx: str) -> str:
+    raw_path = raw.get("path")
+    if not isinstance(raw_path, str) or not raw_path:
+        raise SpecError(f"{ctx}: missing required key 'path'")
+    return raw_path
+
+
+def _require_format(raw: Mapping[str, Any], ctx: str) -> str:
+    raw_fmt = raw.get("format")
+    if not isinstance(raw_fmt, str) or not raw_fmt:
+        raise SpecError(f"{ctx}: missing required key 'format'")
+    if raw_fmt not in KNOWN_FORMATS:
+        raise SpecError(f"{ctx}: unknown format {raw_fmt!r}, expected one of {sorted(KNOWN_FORMATS)}")
+    return raw_fmt
+
+
+def _coerce_required_string(value: Any, ctx: str, field_name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise SpecError(f"{ctx}: key '{field_name}' must be a non-empty string")
+    return value
+
+
+def _coerce_optional_string(value: Any, ctx: str, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise SpecError(f"{ctx}: key '{field_name}' must be a string when provided")
+    return value
 
 
 def _coerce_mapping(value: Any, context: str, field_name: str) -> dict[str, Any]:
@@ -117,7 +230,9 @@ def _coerce_mapping(value: Any, context: str, field_name: str) -> dict[str, Any]
 
 
 def _coerce_string_list(value: Any, context: str, field_name: str) -> list[str]:
-    if not isinstance(value, list):
+    if not isinstance(value, (list, tuple)):
+        if value is None:
+            return []
         raise SpecError(f"{context}: key '{field_name}' must be a list")
     result: list[str] = []
     for index, item in enumerate(value):
@@ -125,6 +240,22 @@ def _coerce_string_list(value: Any, context: str, field_name: str) -> list[str]:
             raise SpecError(f"{context}: key '{field_name}' item #{index} must be a non-empty string")
         result.append(item)
     return result
+
+
+def _coerce_platforms(value: Any, ctx: str) -> list[str]:
+    platforms = _coerce_string_list(value, ctx, "platforms")
+    for platform in platforms:
+        if platform not in KNOWN_PLATFORMS:
+            raise SpecError(f"{ctx}: unknown platform {platform!r}, expected one of {sorted(KNOWN_PLATFORMS)}")
+    return platforms
+
+
+def _coerce_shells(value: Any, ctx: str) -> list[str]:
+    shells = _coerce_string_list(value, ctx, "shells")
+    for shell in shells:
+        if shell not in KNOWN_SHELLS:
+            raise SpecError(f"{ctx}: unknown shell {shell!r}, expected one of {sorted(KNOWN_SHELLS)}")
+    return shells
 
 
 def _resolve_target_path(spec_path: Path, primary: str, additional_paths: list[str]) -> Path:
@@ -162,7 +293,17 @@ def _normalize_toml_value(value: Any) -> Any:
     return value
 
 
-def _targets_overlap(left: SpecTarget, right: SpecTarget) -> bool:
+def _validate_no_duplicate_overlapping_files(spec_path: Path, targets: list[FileTarget]) -> None:
+    for index, target in enumerate(targets):
+        for prev_idx in range(index):
+            previous = targets[prev_idx]
+            if target.path == previous.path and _file_targets_overlap(target, previous):
+                raise SpecError(
+                    f"spec {spec_path} files[{index}]: duplicate path {target.path} overlaps with files[{prev_idx}]"
+                )
+
+
+def _file_targets_overlap(left: FileTarget, right: FileTarget) -> bool:
     return _values_overlap(left.platforms, right.platforms) and _values_overlap(left.machine, right.machine)
 
 

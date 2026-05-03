@@ -65,7 +65,7 @@ def test_version_flag_exits_zero(run) -> None:
 
 def test_apply_creates_missing_file(run, workdir: Path) -> None:
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 1\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 1\n")
 
     result = run("apply", "spec.toml")
 
@@ -79,7 +79,7 @@ def test_apply_sets_key_in_existing_file(run, workdir: Path) -> None:
     config.write_text("title = 'hello'\ncount = 1\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     result = run("apply", "spec.toml")
 
@@ -94,7 +94,7 @@ def test_apply_preserves_unmanaged_keys(run, workdir: Path) -> None:
     config.write_text("title = 'hello'\ncount = 1\nunrelated = true\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 99\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 99\n")
 
     run("apply", "spec.toml")
 
@@ -113,7 +113,7 @@ def test_apply_second_run_is_noop(run, workdir: Path) -> None:
     config.write_text("title = 'hello'\ncount = 1\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     first = run("apply", "spec.toml")
     assert first.returncode == 0
@@ -127,7 +127,7 @@ def test_apply_second_run_is_noop(run, workdir: Path) -> None:
 
 def test_apply_repeated_on_new_file_is_noop(run, workdir: Path) -> None:
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 1\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 1\n")
 
     first = run("apply", "spec.toml")
     assert first.returncode == 0
@@ -147,7 +147,7 @@ def test_apply_dry_run_does_not_write(run, workdir: Path) -> None:
     config.write_text("count = 1\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     result = run("apply", "--dry-run", "spec.toml")
 
@@ -161,7 +161,7 @@ def test_apply_dry_run_on_synced_file_shows_in_sync(run, workdir: Path) -> None:
     config.write_text("count = 1\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     run("apply", "spec.toml")
 
@@ -180,7 +180,7 @@ def test_apply_json_output_is_valid(run, workdir: Path) -> None:
     config.write_text("count = 1\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     result = run("apply", "--json", "spec.toml")
     assert result.returncode == 0
@@ -198,7 +198,7 @@ def test_apply_json_noop_output(run, workdir: Path) -> None:
     config.write_text("count = 1\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     run("apply", "spec.toml")
 
@@ -221,7 +221,7 @@ def test_status_shows_would_change_before_apply(run, workdir: Path) -> None:
     config.write_text("count = 1\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     result = run("status", "spec.toml")
     assert result.returncode == 0
@@ -233,7 +233,7 @@ def test_status_shows_in_sync_after_apply(run, workdir: Path) -> None:
     config.write_text("count = 1\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     run("apply", "spec.toml")
 
@@ -248,7 +248,7 @@ def test_status_json_output(run, workdir: Path) -> None:
     config.write_text("count = 1\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     run("apply", "spec.toml")
 
@@ -276,7 +276,7 @@ def test_list_shows_managed_file_after_apply(run, workdir: Path) -> None:
     config.write_text("count = 1\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     run("apply", "spec.toml")
 
@@ -290,7 +290,7 @@ def test_list_json_output(run, workdir: Path) -> None:
     config.write_text("count = 1\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     run("apply", "spec.toml")
 
@@ -315,7 +315,7 @@ def test_rollback_reverts_managed_key(run, workdir: Path) -> None:
     config.write_text("count = 1\nextra = true\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 99\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 99\n")
 
     run("apply", "spec.toml")
     assert "count = 99" in config.read_text()
@@ -332,7 +332,7 @@ def test_rollback_dry_run_does_not_write(run, workdir: Path) -> None:
     config.write_text("count = 1\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 99\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 99\n")
 
     run("apply", "spec.toml")
     assert "count = 99" in config.read_text()
@@ -348,7 +348,7 @@ def test_rollback_original_deletes_prescribe_created_file(run, workdir: Path) ->
     assert not config.exists()
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'new_config.toml'\nformat = 'toml'\n[targets.data]\ncount = 1\n")
+    spec.write_text("[[files]]\npath = 'new_config.toml'\nformat = 'toml'\n[files.data]\ncount = 1\n")
 
     run("apply", "spec.toml")
     assert config.exists()
@@ -363,7 +363,7 @@ def test_rollback_json_output(run, workdir: Path) -> None:
     config.write_text("count = 1\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 2\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
 
     run("apply", "spec.toml")
 
@@ -396,13 +396,22 @@ def test_apply_invalid_spec_exits_nonzero(run, workdir: Path) -> None:
     assert result.stderr
 
 
-def test_apply_spec_missing_targets_exits_nonzero(run, workdir: Path) -> None:
+def test_apply_spec_empty_spec_is_valid(run, workdir: Path) -> None:
+    """An empty spec (no files/env/shell targets) is valid and returns success."""
     spec = workdir / "spec.toml"
     spec.write_text("[metadata]\nname = 'test'\n")
 
     result = run("apply", "spec.toml")
+    assert result.returncode == 0
+
+
+def test_apply_spec_targets_key_raises_error(run, workdir: Path) -> None:
+    spec = workdir / "spec.toml"
+    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n")
+
+    result = run("apply", "spec.toml")
     assert result.returncode != 0
-    assert "targets" in result.stderr
+    assert "[[targets]]" in result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +424,7 @@ def test_apply_yaml_target(run, workdir: Path) -> None:
     config.write_text("title: hello\ncount: 1\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.yaml'\nformat = 'yaml'\n[targets.data]\ncount = 2\n")
+    spec.write_text("[[files]]\npath = 'config.yaml'\nformat = 'yaml'\n[files.data]\ncount = 2\n")
 
     result = run("apply", "spec.toml")
     assert result.returncode == 0
@@ -428,7 +437,7 @@ def test_apply_jsonc_target(run, workdir: Path) -> None:
     config.write_text('{\n  // a comment\n  "count": 1\n}\n')
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'settings.json'\nformat = 'jsonc'\n[targets.data]\n\"count\" = 2\n")
+    spec.write_text("[[files]]\npath = 'settings.json'\nformat = 'jsonc'\n[files.data]\n\"count\" = 2\n")
 
     result = run("apply", "spec.toml")
     assert result.returncode == 0
@@ -443,7 +452,7 @@ def test_apply_line_target(run, workdir: Path) -> None:
 
     spec = workdir / "spec.toml"
     spec.write_text(
-        "[[targets]]\npath = '.env'\nformat = 'line'\nmanaged_block_id = 'myblock'\nlines = ['FOO=1', 'BAR=2']\n"
+        "[[files]]\npath = '.env'\nformat = 'line'\nmanaged_block_id = 'myblock'\nlines = ['FOO=1', 'BAR=2']\n"
     )
 
     result = run("apply", "spec.toml")
@@ -462,7 +471,7 @@ def test_rollback_original_restores_existing_file_to_baseline(run, workdir: Path
     config.write_text("count = 1\nname = 'original'\n")
 
     spec = workdir / "spec.toml"
-    spec.write_text("[[targets]]\npath = 'config.toml'\nformat = 'toml'\n[targets.data]\ncount = 42\n")
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 42\n")
 
     run("apply", "spec.toml")
     assert config.read_text() != "count = 1\nname = 'original'\n"

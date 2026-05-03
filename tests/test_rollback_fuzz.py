@@ -329,7 +329,7 @@ def _spec_text(fmt: str, path_text: str, seed: int, round_index: int, variant: i
     if fmt == "line":
         profile = _line_profile(variant)
         lines = [
-            "[[targets]]",
+            "[[files]]",
             f"path = '{path_text}'",
             "format = 'line'",
             f"managed_block_id = '{profile['managed_block_id']}'",
@@ -374,14 +374,14 @@ def _mapping_managed_state(fmt: str, seed: int, round_index: int, variant: int) 
 
 def _mapping_spec(path_text: str, fmt: str, managed: dict[str, object], delete: list[str]) -> str:
     lines = [
-        "[[targets]]",
+        "[[files]]",
         f"path = '{path_text}'",
         f"format = '{fmt}'",
     ]
     if delete:
         delete_items = ", ".join(f"'{item}'" for item in delete)
         lines.append(f"delete = [{delete_items}]")
-    lines.append("[targets.data]")
+    lines.append("[files.data]")
     lines.extend(_toml_table_lines(managed))
     return "\n".join(lines) + "\n"
 

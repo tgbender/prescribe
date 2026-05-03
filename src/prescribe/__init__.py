@@ -1,4 +1,4 @@
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 from prescribe.adapters import (
     JsoncAdapter,
@@ -24,47 +24,67 @@ from prescribe.core import (
 from prescribe.document import Adapter, Document
 from prescribe.orchestrator import (
     Orchestrator,
+    condition_matches,
     current_machine,
     machine_matches,
     platform_matches,
 )
 from prescribe.paths import config_dir, data_dir, default_state_path
-from prescribe.spec import Spec, SpecError, SpecLoader, SpecTarget
+from prescribe.shell import render_shell_block
+from prescribe.spec import (
+    EnvTarget,
+    FileTarget,
+    ShellTarget,
+    Spec,
+    SpecError,
+    SpecLoader,
+)
 from prescribe.state import EventRecord, RunRecord, SnapshotRecord, StateStore
 
 __all__ = [
+    # adapters
     "Adapter",
     "Document",
-    "ConflictResult",
-    "DesiredState",
-    "EventRecord",
-    "FileFingerprint",
     "JsoncAdapter",
-    "OrchestrationResult",
-    "Orchestrator",
-    "PlanResult",
-    "Planner",
-    "PlannedOperation",
-    "RunRecord",
-    "SnapshotRecord",
-    "Spec",
-    "SpecError",
-    "SpecLoader",
-    "SpecTarget",
-    "StateStore",
     "TomlAdapter",
     "YamlAdapter",
     "adapter_for_path",
+    "jsonc_adapter",
+    "toml_adapter",
+    "yaml_adapter",
+    # core
+    "ConflictResult",
+    "DesiredState",
+    "FileFingerprint",
+    "OrchestrationResult",
+    "PlannedOperation",
+    "Planner",
+    "PlanResult",
     "apply_operations",
-    "config_dir",
-    "data_dir",
-    "default_state_path",
     "detect_conflict",
     "file_fingerprint",
-    "jsonc_adapter",
+    # orchestrator
+    "Orchestrator",
+    "condition_matches",
     "current_machine",
     "machine_matches",
     "platform_matches",
-    "toml_adapter",
-    "yaml_adapter",
+    # paths
+    "config_dir",
+    "data_dir",
+    "default_state_path",
+    # shell
+    "render_shell_block",
+    # spec
+    "EnvTarget",
+    "FileTarget",
+    "ShellTarget",
+    "Spec",
+    "SpecError",
+    "SpecLoader",
+    # state
+    "EventRecord",
+    "RunRecord",
+    "SnapshotRecord",
+    "StateStore",
 ]

@@ -1,14 +1,12 @@
 import contextlib
 import os
+import shutil
 import socket
 import sqlite3
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from prescribe.spec import Spec
+from typing import Any
 
 from prescribe._util import _MISSING, mapping_value, sha256_bytes
 from prescribe.adapters import adapter_for_path
@@ -23,7 +21,8 @@ from prescribe.core.planner import PlannedOperation
 from prescribe.core.result import OrchestrationResult
 from prescribe.document import Adapter, Document
 from prescribe.rollback import ConflictResolver, perform_rollback
-from prescribe.spec import SpecTarget
+from prescribe.shell import render_shell_block
+from prescribe.spec import EnvTarget, FileTarget, ShellTarget, Spec
 from prescribe.state import StateStore
 from prescribe.state.sqlite import ChangeBatchRecord
 
@@ -54,6 +53,33 @@ def machine_matches(selectors: list[str]) -> bool:
     return any(selector == machine or selector == "all" for selector in selectors)
 
 
+def condition_matches(
+    *,
+    target: FileTarget | EnvTarget | ShellTarget,
+    tags_filter: set[str] | None = None,
+) -> bool:
+    """Check all gating conditions for a target. True = should process."""
+    if not platform_matches(target.platforms):
+        return False
+    if not machine_matches(target.machine):
+        return False
+
+    if tags_filter is not None and getattr(target, "tags", None) and not (tags_filter & set(target.tags)):
+        return False
+
+    if hasattr(target, "if_command_exists"):
+        for cmd in getattr(target, "if_command_exists", []):
+            if shutil.which(cmd) is None:
+                return False
+
+    if hasattr(target, "if_env_missing") and getattr(target, "if_env_missing", False):
+        name = getattr(target, "name", None)
+        if name and name in os.environ:
+            return False
+
+    return True
+
+
 class Orchestrator:
     def __init__(self, state_store: StateStore) -> None:
         self.state_store = state_store
@@ -73,7 +99,7 @@ class Orchestrator:
         spec_hash = sha256_bytes(spec_path.read_bytes())
         if dry_run:
             self.state_store.initialize()
-            return self._run_targets(None, spec_hash, spec, dry_run=True)
+            return self._run_all(run_id=None, spec_hash=spec_hash, spec=spec, dry_run=True)
 
         self.state_store.initialize()
         with self.state_store.transaction() as connection:
@@ -84,63 +110,53 @@ class Orchestrator:
                 host=current_machine(),
                 connection=connection,
             )
-            return self._run_targets(run.id, spec_hash, spec, dry_run=False, connection=connection)
+            return self._run_all(run_id=run.id, spec_hash=spec_hash, spec=spec, dry_run=False, connection=connection)
 
-    def _run_targets(
+    def _run_all(
         self,
         run_id: int | None,
         spec_hash: bytes,
-        spec: "Spec",
+        spec: Spec,
         *,
         dry_run: bool = False,
         connection: sqlite3.Connection | None = None,
     ) -> list[OrchestrationResult]:
-        from prescribe.spec import Spec
-
-        assert isinstance(spec, Spec)
         results: list[OrchestrationResult] = []
-        for target in spec.targets:
-            results.append(self._process_target(run_id, spec_hash, target, dry_run=dry_run, connection=connection))
+
+        # ── files ──
+        for file_target in spec.files:
+            results.append(self._handle_file(run_id, spec_hash, file_target, dry_run=dry_run, connection=connection))
+
+        # ── env ──
+        resolved_env = self._resolve_env(spec.env)
+
+        # ── shell blocks ──
+        for shell_target in spec.shell:
+            result = self._handle_shell(
+                run_id, spec_hash, shell_target, resolved_env, dry_run=dry_run, connection=connection
+            )
+            result.env_vars = resolved_env
+            results.append(result)
+
+        # Attach env vars to all results for convenience
+        for r in results:
+            if not r.env_vars:
+                r.env_vars = resolved_env
+
         return results
 
-    def rollback(
-        self,
-        target_path: Path | str,
-        *,
-        dry_run: bool = False,
-        original: bool = False,
-        conflict_resolver: ConflictResolver = None,
-    ) -> OrchestrationResult:
-        path = Path(target_path)
-        if not dry_run:
-            self.state_store.initialize()
-        elif not self.state_store.path.exists():
-            return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=True)
+    # ── file handling ─────────────────────────────────
 
-        if not dry_run:
-            with self.state_store.transaction() as connection:
-                return perform_rollback(
-                    path,
-                    self.state_store,
-                    dry_run=False,
-                    original=original,
-                    resolver=conflict_resolver,
-                    connection=connection,
-                )
-        return perform_rollback(path, self.state_store, dry_run=True, original=original, resolver=conflict_resolver)
-
-    def _process_target(
+    def _handle_file(
         self,
         run_id: int | None,
         spec_hash: bytes,
-        target: SpecTarget,
+        target: FileTarget,
         *,
         dry_run: bool = False,
         connection: sqlite3.Connection | None = None,
     ) -> OrchestrationResult:
-        if not platform_matches(target.platforms):
-            return OrchestrationResult(status="skipped", applied=False, changed=False, skipped=True)
-        if not machine_matches(target.machine):
+        if not condition_matches(target=target):
             return OrchestrationResult(status="skipped", applied=False, changed=False, skipped=True)
 
         adapter = adapter_for_path(target.path, fmt=target.format)
@@ -148,21 +164,10 @@ class Orchestrator:
         try:
             if not target.path.exists():
                 return self._process_new_file(
-                    run_id,
-                    spec_hash,
-                    target,
-                    adapter,
-                    dry_run=dry_run,
-                    connection=connection,
+                    run_id, spec_hash, target, adapter, dry_run=dry_run, connection=connection
                 )
-
             return self._process_existing_file(
-                run_id,
-                spec_hash,
-                target,
-                adapter,
-                dry_run=dry_run,
-                connection=connection,
+                run_id, spec_hash, target, adapter, dry_run=dry_run, connection=connection
             )
         except Exception as exc:
             if run_id is not None:
@@ -181,14 +186,14 @@ class Orchestrator:
         self,
         run_id: int | None,
         spec_hash: bytes,
-        target: SpecTarget,
+        target: FileTarget,
         adapter: Adapter,
         *,
         dry_run: bool = False,
         connection: sqlite3.Connection | None = None,
     ) -> OrchestrationResult:
         document = _empty_document(target.path, target.format)
-        plan = self.planner.plan(document, target_to_desired(target))
+        plan = self.planner.plan(document, _file_desired(target))
         if not plan.changed:
             return OrchestrationResult(
                 status="dry-run" if dry_run else "noop",
@@ -230,7 +235,7 @@ class Orchestrator:
         self,
         run_id: int | None,
         spec_hash: bytes,
-        target: SpecTarget,
+        target: FileTarget,
         adapter: Adapter,
         *,
         dry_run: bool = False,
@@ -238,7 +243,7 @@ class Orchestrator:
     ) -> OrchestrationResult:
         before = _current_fingerprint(target.path)
         document = adapter.load(target.path)
-        plan = self.planner.plan(document, target_to_desired(target))
+        plan = self.planner.plan(document, _file_desired(target))
         managed_conflict: ConflictResult | None = None
         if run_id is not None or dry_run:
             ctx = self.state_store.connect() if connection is None else contextlib.nullcontext(connection)
@@ -302,11 +307,237 @@ class Orchestrator:
             original_text=original_text,
         )
 
+    # ── env resolution ────────────────────────────────
+
+    def _resolve_env(self, env_targets: list[EnvTarget]) -> dict[str, str]:
+        """Filter, merge, and resolve env targets into a flat name→value dict.
+
+        Merging rules for duplicate names:
+        - value: last one wins
+        - prepend: accumulated in spec order (earlier entries prepend first)
+        - append: accumulated in spec order
+        - path_prepend/path_append: forwarded to PATH construction
+        - materialize: True if any entry says True
+        """
+        path_prepends: dict[str, list[str]] = {}
+        path_appends: dict[str, list[str]] = {}
+        resolved: dict[str, str] = {}
+
+        for et in env_targets:
+            if not condition_matches(target=et):
+                continue
+
+            if et.path_prepend:
+                path_prepends.setdefault(et.name, []).extend(et.path_prepend)
+            if et.path_append:
+                path_appends.setdefault(et.name, []).extend(et.path_append)
+
+            # Collect prepend/append for PATH
+            if et.prepend:
+                path_prepends.setdefault("PATH", []).extend(et.prepend)
+            if et.append:
+                path_appends.setdefault("PATH", []).extend(et.append)
+
+            # Value: last one wins
+            if et.value is not None:
+                resolved[et.name] = os.path.expandvars(et.value)
+
+        # Build PATH from prepends + existing + appends
+        if "PATH" in path_prepends or "PATH" in path_appends:
+            current_path = os.environ.get("PATH", "")
+            current_entries = [p for p in current_path.split(os.pathsep) if p]
+
+            prepend_entries = path_prepends.get("PATH", [])
+            append_entries = path_appends.get("PATH", [])
+
+            # Deduplicate prepend entries: keep first occurrence
+            seen: set[str] = set()
+            deduped_prepends: list[str] = []
+            for entry in prepend_entries:
+                expanded = os.path.expandvars(entry)
+                if expanded not in seen:
+                    seen.add(expanded)
+                    deduped_prepends.append(expanded)
+
+            # Deduplicate append entries
+            deduped_appends: list[str] = []
+            for entry in append_entries:
+                expanded = os.path.expandvars(entry)
+                if expanded not in seen:
+                    seen.add(expanded)
+                    deduped_appends.append(expanded)
+
+            deduped_current: list[str] = []
+            for entry in current_entries:
+                if entry not in seen:
+                    seen.add(entry)
+                    deduped_current.append(entry)
+
+            new_path = deduped_prepends + deduped_current + deduped_appends
+            resolved["PATH"] = os.pathsep.join(new_path)
+
+        return resolved
+
+    # ── shell handling ────────────────────────────────
+
+    def _handle_shell(
+        self,
+        run_id: int | None,
+        spec_hash: bytes,
+        target: ShellTarget,
+        resolved_env: dict[str, str],
+        *,
+        dry_run: bool = False,
+        connection: sqlite3.Connection | None = None,
+    ) -> OrchestrationResult:
+        if not condition_matches(target=target):
+            return OrchestrationResult(status="skipped", applied=False, changed=False, skipped=True)
+
+        # Determine shell type(s) to render for
+        render_shells = target.shells if target.shells else ["bash"]  # default: posix
+
+        # Render blocks for each shell type
+        shell_env_vars: dict[str, str] = {}
+        for shell_type in render_shells:
+            lines = render_shell_block(
+                shell_type=shell_type,
+                env_vars={**resolved_env},  # shallow copy so PATH is not popped repeatedly
+                managed_block_id=target.managed_block_id,
+            )
+            # Store rendered lines for the last shell type (shell blocks are per-shell)
+            # Multiple shells targeting the same file means last one wins for that file
+            shell_env_vars[shell_type] = "\n".join(lines)
+
+        # For now, use the first shell type's rendered block
+        # TODO: support multiple shell types targeting different files
+        first_shell = render_shells[0]
+        rendered = render_shell_block(
+            shell_type=first_shell,
+            env_vars=dict(resolved_env),
+            managed_block_id=target.managed_block_id,
+        )
+
+        return self._apply_shell_block(
+            run_id=run_id,
+            spec_hash=spec_hash,
+            target=target,
+            rendered_lines=rendered,
+            dry_run=dry_run,
+            connection=connection,
+        )
+
+    def _apply_shell_block(
+        self,
+        run_id: int | None,
+        spec_hash: bytes,
+        target: ShellTarget,
+        rendered_lines: list[str],
+        *,
+        dry_run: bool = False,
+        connection: sqlite3.Connection | None = None,
+    ) -> OrchestrationResult:
+        """Apply a shell block using the LINE adapter + managed block pattern."""
+        adapter = adapter_for_path(target.path, fmt="line")
+
+        try:
+            document = adapter.load(target.path) if target.path.exists() else _empty_document(target.path, "line")
+
+            desired = DesiredState(
+                path=target.path,
+                format="line",
+                managed_block_id=target.managed_block_id,
+                lines=rendered_lines,
+            )
+
+            plan = self.planner.plan(document, desired)
+
+            if not plan.changed:
+                if run_id is not None and not dry_run:
+                    self.state_store.record_checked(
+                        run_id=run_id,
+                        path=target.path,
+                        content_hash=sha256_bytes(target.path.read_bytes()),
+                        size=target.path.stat().st_size,
+                        mtime_ns=target.path.stat().st_mtime_ns,
+                        format="line",
+                        spec_hash=spec_hash,
+                        summary="no changes",
+                        connection=connection,
+                    )
+                return OrchestrationResult(
+                    status="dry-run" if dry_run else "noop",
+                    applied=False,
+                    changed=False,
+                    dry_run=dry_run,
+                )
+
+            if dry_run:
+                return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
+
+            assert run_id is not None
+            original_text = target.path.read_text(encoding="utf-8") if target.path.exists() else ""
+            original_exists = target.path.exists()
+
+            return self._apply_and_record(
+                run_id=run_id,
+                spec_hash=spec_hash,
+                target=target,
+                document=document,
+                operations=plan.operations,
+                original_exists=original_exists,
+                adapter=adapter,
+                event_type="applied",
+                connection=connection,
+                original_text=original_text if original_exists else None,
+            )
+        except Exception as exc:
+            if run_id is not None:
+                self.state_store.record_event(
+                    run_id=run_id,
+                    event_type="error",
+                    path=target.path,
+                    changed=False,
+                    summary=str(exc),
+                    details=f"{exc.__class__.__name__}: {exc}",
+                    connection=connection,
+                )
+            return OrchestrationResult(status="error", applied=False, changed=False, error=str(exc))
+
+    # ── rollback ──────────────────────────────────────
+
+    def rollback(
+        self,
+        target_path: Path | str,
+        *,
+        dry_run: bool = False,
+        original: bool = False,
+        conflict_resolver: ConflictResolver = None,
+    ) -> OrchestrationResult:
+        path = Path(target_path)
+        if not dry_run:
+            self.state_store.initialize()
+        elif not self.state_store.path.exists():
+            return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=True)
+
+        if not dry_run:
+            with self.state_store.transaction() as connection:
+                return perform_rollback(
+                    path,
+                    self.state_store,
+                    dry_run=False,
+                    original=original,
+                    resolver=conflict_resolver,
+                    connection=connection,
+                )
+        return perform_rollback(path, self.state_store, dry_run=True, original=original, resolver=conflict_resolver)
+
+    # ── conflict helpers ──────────────────────────────
+
     def _check_managed_conflict(
         self,
         document: Document,
         plan: Any,
-        target: SpecTarget,
+        target: FileTarget,
         current_fingerprint: "FileFingerprint",
         connection: sqlite3.Connection,
     ) -> ConflictResult | None:
@@ -353,7 +584,7 @@ class Orchestrator:
         *,
         run_id: int | None,
         spec_hash: bytes,
-        target: SpecTarget,
+        target: FileTarget | ShellTarget,
         document: Document,
         operations: list[PlannedOperation],
         original_exists: bool,
@@ -375,7 +606,7 @@ class Orchestrator:
                 run_id=run_id,
                 path=target.path,
                 content_text=original_text or "",
-                format=target.format,
+                format=getattr(target, "format", "line"),
                 original_exists=original_exists,
                 connection=connection,
             )
@@ -383,7 +614,7 @@ class Orchestrator:
             run_id=run_id,
             path=target.path,
             content_text=written_text,
-            format=target.format,
+            format=getattr(target, "format", "line"),
             original_exists=original_exists,
             connection=connection,
         )
@@ -393,7 +624,7 @@ class Orchestrator:
             content_hash=new_hash,
             size=new_stat.st_size,
             mtime_ns=new_stat.st_mtime_ns,
-            format=target.format,
+            format=getattr(target, "format", "line"),
             spec_hash=spec_hash,
             connection=connection,
         )
@@ -402,7 +633,7 @@ class Orchestrator:
             path=target.path,
             operations=[_operation_to_data(op) for op in operations],
             original_exists=original_exists,
-            format=target.format,
+            format=getattr(target, "format", "line"),
             connection=connection,
         )
         self.state_store.record_event(
@@ -416,7 +647,10 @@ class Orchestrator:
         return OrchestrationResult(status="applied", applied=True, changed=True)
 
 
-def target_to_desired(target: SpecTarget) -> DesiredState:
+# ── module-level helpers ──────────────────────────────────
+
+
+def _file_desired(target: FileTarget) -> DesiredState:
     return DesiredState(
         path=target.path,
         format=target.format,
