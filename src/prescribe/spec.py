@@ -2,7 +2,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import tomlkit
 
@@ -23,6 +23,7 @@ class SpecError(Exception):
 class FileTarget:
     path: Path
     format: str
+    priority: int = 0
     data: dict[str, Any] = field(default_factory=dict)
     delete: list[str] = field(default_factory=list)
     managed_block_id: str | None = None
@@ -120,6 +121,7 @@ class SpecLoader:
         return FileTarget(
             path=_resolve_target_path(spec_path, path, _coerce_string_list(raw.get("paths", []), ctx, "paths")),
             format=fmt,
+            priority=_coerce_optional_int(raw.get("priority"), ctx, "priority", default=0),
             data=_coerce_mapping(raw.get("data", {}), ctx, "data"),
             delete=_coerce_string_list(raw.get("delete", []), ctx, "delete"),
             managed_block_id=_coerce_optional_string(raw.get("managed_block_id"), ctx, "managed_block_id"),
@@ -224,6 +226,14 @@ def _coerce_optional_string(value: Any, ctx: str, field_name: str) -> str | None
     return value
 
 
+def _coerce_optional_int(value: Any, ctx: str, field_name: str, *, default: int) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SpecError(f"{ctx}: key '{field_name}' must be an integer when provided")
+    return cast(int, value)
+
+
 def _coerce_mapping(value: Any, context: str, field_name: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise SpecError(f"{context}: key '{field_name}' must be a table/object")
@@ -298,10 +308,16 @@ def _validate_no_duplicate_overlapping_files(spec_path: Path, targets: list[File
     for index, target in enumerate(targets):
         for prev_idx in range(index):
             previous = targets[prev_idx]
-            if target.path == previous.path and _file_targets_overlap(target, previous):
-                raise SpecError(
-                    f"spec {spec_path} files[{index}]: duplicate path {target.path} overlaps with files[{prev_idx}]"
-                )
+            if target.path != previous.path:
+                continue
+            if not _file_targets_overlap(target, previous):
+                continue
+            if target.priority != previous.priority:
+                continue
+            raise SpecError(
+                f"spec {spec_path} files[{index}]: duplicate path {target.path} overlaps with files[{prev_idx}]"
+                f" (same priority {target.priority})"
+            )
 
 
 def _file_targets_overlap(left: FileTarget, right: FileTarget) -> bool:

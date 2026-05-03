@@ -178,7 +178,11 @@ class Orchestrator:
         results: list[OrchestrationResult] = []
 
         # ── files ──
-        for file_target in spec.files:
+        # Partition: active files get processed, skipped produce status entries
+        active_files, skipped_files = _resolve_active_files(spec.files, tags=tags, skip_tags=skip_tags)
+        for _ in skipped_files:
+            results.append(OrchestrationResult(status="skipped", applied=False, changed=False, skipped=True))
+        for file_target in active_files:
             results.append(
                 self._handle_file(
                     run_id,
@@ -907,6 +911,36 @@ def _jsonable(value: Any) -> Any:
 
 
 # ── diff helpers ───────────────────────────────────────────
+
+
+def _resolve_active_files(
+    file_targets: list[FileTarget],
+    *,
+    tags: set[str] | None = None,
+    skip_tags: set[str] | None = None,
+) -> tuple[list[FileTarget], list[FileTarget]]:
+    """Partition and deduplicate files.
+
+    Returns (active, skipped) where active is deduplicated by priority.
+    skipped contains files that didn't pass condition_matches.
+    """
+    active_candidates: list[FileTarget] = []
+    skipped: list[FileTarget] = []
+
+    for ft in file_targets:
+        if condition_matches(target=ft, tags=tags, skip_tags=skip_tags):
+            active_candidates.append(ft)
+        else:
+            skipped.append(ft)
+
+    # Deduplicate active candidates by path: lowest priority, first-in-spec breaks ties
+    seen: dict[Path, FileTarget] = {}
+    for ft in active_candidates:
+        existing = seen.get(ft.path)
+        if existing is None or ft.priority < existing.priority:
+            seen[ft.path] = ft
+
+    return list(seen.values()), skipped
 
 
 def _maybe_diff(
