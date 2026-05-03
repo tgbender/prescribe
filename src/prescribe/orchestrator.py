@@ -119,6 +119,7 @@ class Orchestrator:
         dry_run: bool = False,
         tags: set[str] | None = None,
         skip_tags: set[str] | None = None,
+        diff: bool = False,
     ) -> list[OrchestrationResult]:
         from prescribe.spec import SpecLoader
 
@@ -139,6 +140,7 @@ class Orchestrator:
                 dry_run=True,
                 tags=tags,
                 skip_tags=skip_tags,
+                diff=diff,
             )
 
         self.state_store.initialize()
@@ -157,6 +159,7 @@ class Orchestrator:
                 dry_run=False,
                 tags=tags,
                 skip_tags=skip_tags,
+                diff=diff,
                 connection=connection,
             )
 
@@ -169,6 +172,7 @@ class Orchestrator:
         dry_run: bool = False,
         tags: set[str] | None = None,
         skip_tags: set[str] | None = None,
+        diff: bool = False,
         connection: sqlite3.Connection | None = None,
     ) -> list[OrchestrationResult]:
         results: list[OrchestrationResult] = []
@@ -183,6 +187,7 @@ class Orchestrator:
                     dry_run=dry_run,
                     tags=tags,
                     skip_tags=skip_tags,
+                    diff=diff,
                     connection=connection,
                 )
             )
@@ -241,6 +246,7 @@ class Orchestrator:
         dry_run: bool = False,
         tags: set[str] | None = None,
         skip_tags: set[str] | None = None,
+        diff: bool = False,
         connection: sqlite3.Connection | None = None,
     ) -> OrchestrationResult:
         if not condition_matches(target=target, tags=tags, skip_tags=skip_tags):
@@ -251,10 +257,22 @@ class Orchestrator:
         try:
             if not target.path.exists():
                 return self._process_new_file(
-                    run_id, spec_hash, target, adapter, dry_run=dry_run, connection=connection
+                    run_id,
+                    spec_hash,
+                    target,
+                    adapter,
+                    dry_run=dry_run,
+                    diff=diff,
+                    connection=connection,
                 )
             return self._process_existing_file(
-                run_id, spec_hash, target, adapter, dry_run=dry_run, connection=connection
+                run_id,
+                spec_hash,
+                target,
+                adapter,
+                dry_run=dry_run,
+                diff=diff,
+                connection=connection,
             )
         except Exception as exc:
             if run_id is not None:
@@ -277,6 +295,7 @@ class Orchestrator:
         adapter: Adapter,
         *,
         dry_run: bool = False,
+        diff: bool = False,
         connection: sqlite3.Connection | None = None,
     ) -> OrchestrationResult:
         document = _empty_document(target.path, target.format)
@@ -289,8 +308,10 @@ class Orchestrator:
                 dry_run=dry_run,
             )
 
+        diff_text = _maybe_diff_new(plan, adapter, target.path) if diff else None
+
         if dry_run:
-            return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
+            return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True, diff=diff_text)
 
         if target.path.exists():
             assert run_id is not None
@@ -326,6 +347,7 @@ class Orchestrator:
         adapter: Adapter,
         *,
         dry_run: bool = False,
+        diff: bool = False,
         connection: sqlite3.Connection | None = None,
     ) -> OrchestrationResult:
         before = _current_fingerprint(target.path)
@@ -368,6 +390,8 @@ class Orchestrator:
                 dry_run=dry_run,
             )
 
+        diff_text = _maybe_diff(document, plan, adapter, target.path) if diff else None
+
         after = _current_fingerprint(target.path)
         conflict = detect_conflict(before, after)
         if conflict is not None:
@@ -378,7 +402,7 @@ class Orchestrator:
             )
 
         if dry_run:
-            return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
+            return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True, diff=diff_text)
 
         original_text = target.path.read_text(encoding="utf-8")
         return self._apply_and_record(
@@ -880,3 +904,29 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_jsonable(item) for item in value]
     return value
+
+
+# ── diff helpers ───────────────────────────────────────────
+
+
+def _maybe_diff(
+    document: Document,
+    plan: Any,
+    adapter: Adapter,
+    path: Path,
+) -> str | None:
+    """Generate a diff for an existing file if it would change."""
+    from prescribe.diff import diff_file
+
+    return diff_file(document=document, plan=plan.operations, adapter=adapter, path=path)
+
+
+def _maybe_diff_new(
+    plan: Any,
+    adapter: Adapter,
+    path: Path,
+) -> str | None:
+    """Generate a diff for a new file."""
+    from prescribe.diff import diff_new_file
+
+    return diff_new_file(plan=plan.operations, adapter=adapter, path=path)

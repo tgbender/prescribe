@@ -107,6 +107,7 @@ def status(
     state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
     tags: str | None = typer.Option(None, "--tags", help="Only show targets with these tags (comma-separated)."),
     skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
+    diff: bool = typer.Option(False, "--diff", help="Show unified diffs for files that would change."),
 ) -> None:
     """Show sync status of all targets without making changes."""
     try:
@@ -117,7 +118,7 @@ def status(
 
     tag_set = _parse_tags(tags)
     skip_set = _parse_tags(skip_tags)
-    results = Orchestrator(_make_store(state)).run(spec, dry_run=True, tags=tag_set, skip_tags=skip_set)
+    results = Orchestrator(_make_store(state)).run(spec, dry_run=True, tags=tag_set, skip_tags=skip_set, diff=diff)
 
     if output_json:
         data = _results_to_json(spec_obj, results, display_status=True)
@@ -240,6 +241,8 @@ def _results_to_json(
             entry["error"] = r.error
         if r.conflict:
             entry["conflict"] = r.conflict.reason
+        if r.diff:
+            entry["diff"] = r.diff
         data.append(entry)
 
     # env entries don't produce individual results (merged into shell results)
@@ -263,6 +266,8 @@ def _results_to_json(
             shell_entry["error"] = r.error
         if r.conflict:
             shell_entry["conflict"] = r.conflict.reason
+        if r.diff:
+            shell_entry["diff"] = r.diff
         data.append(shell_entry)
 
     return data
@@ -278,6 +283,8 @@ def _print_results(spec_obj: Spec, results: list[OrchestrationResult]) -> None:
         idx += 1
         detail = result.conflict.reason if result.conflict else result.error or None
         typer.echo(_status_line(result.status, result.changed, str(file_target.path), detail))
+        if result.diff:
+            typer.echo(result.diff, nl=False)
 
     # Env entries are merged — show them as a summary
     env_count = len(spec_obj.env)

@@ -509,3 +509,52 @@ def test_apply_with_skip_tags_filter(run, workdir: Path) -> None:
     assert result.returncode == 0
     # Should NOT have been applied — file unchanged
     assert config.read_text().startswith("count = 1\n")
+
+
+# ── status --diff ──────────────────────────────────────────
+
+
+def test_status_diff_shows_unified_diff(run, workdir: Path) -> None:
+    """prescribe status --diff shows unified diffs in output."""
+    config = workdir / "config.toml"
+    config.write_text("count = 1\n")
+
+    spec = workdir / "spec.toml"
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    result = run("status", "--diff", "spec.toml")
+    assert result.returncode == 0
+    assert "-count = 1" in result.stdout
+    assert "+count = 2" in result.stdout
+
+
+def test_status_diff_json_includes_diff(run, workdir: Path) -> None:
+    """prescribe status --diff --json includes diff in JSON output."""
+    import json
+
+    config = workdir / "config.toml"
+    config.write_text("count = 1\n")
+
+    spec = workdir / "spec.toml"
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    result = run("status", "--diff", "--json", "spec.toml")
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert isinstance(data, list)
+    assert "diff" in data[0]
+    assert "+count = 2" in data[0]["diff"]
+
+
+def test_status_diff_no_changes_no_output(run, workdir: Path) -> None:
+    """When everything is in sync, --diff shows nothing extra."""
+    config = workdir / "config.toml"
+    config.write_text("count = 2\n")
+
+    spec = workdir / "spec.toml"
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    result = run("status", "--diff", "spec.toml")
+    assert result.returncode == 0
+    # Should NOT contain diff markers — nothing changed
+    assert "-count = 2" not in result.stdout
