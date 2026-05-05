@@ -268,7 +268,24 @@ def _results_to_json(
             shell_entry["conflict"] = r.conflict.reason
         if r.diff:
             shell_entry["diff"] = r.diff
+        if r.materialize_errors:
+            shell_entry["materialize_errors"] = r.materialize_errors
         data.append(shell_entry)
+
+    # Include materialize_errors from any result in the top-level output
+    all_mat_errors: list[str] = []
+    for r in results:
+        if r.materialize_errors:
+            for err in r.materialize_errors:
+                if err not in all_mat_errors:
+                    all_mat_errors.append(err)
+    if all_mat_errors:
+        data.append(
+            {
+                "type": "materialize",
+                "errors": all_mat_errors,
+            }
+        )
 
     return data
 
@@ -315,6 +332,19 @@ def _print_results(spec_obj: Spec, results: list[OrchestrationResult]) -> None:
         idx += 1
         detail = result.conflict.reason if result.conflict else result.error or None
         typer.echo(_status_line(result.status, result.changed, str(shell_target.path), detail))
+
+    # Surface materialize errors
+    all_mat_errors: list[str] = []
+    for r in results:
+        if r.materialize_errors:
+            for err in r.materialize_errors:
+                if err not in all_mat_errors:
+                    all_mat_errors.append(err)
+    for err in all_mat_errors:
+        typer.echo(
+            typer.style("materialize      ", fg=typer.colors.YELLOW) + err,
+            err=True,
+        )
 
 
 def main() -> None:

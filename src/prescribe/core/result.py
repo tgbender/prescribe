@@ -17,3 +17,4 @@ class OrchestrationResult:
     error: str | None = None
     env_vars: dict[str, str] = field(default_factory=dict)
     diff: str | None = None
+    materialize_errors: list[str] = field(default_factory=list)

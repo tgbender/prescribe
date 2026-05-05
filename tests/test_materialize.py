@@ -151,3 +151,28 @@ def test_orchestrator_materialize_integration(fake_root, state_store):
             break
     else:
         pytest.fail("EDITOR not found in resolved env_vars")
+
+
+def test_orchestrator_materialize_errors_are_not_silent(fake_root, state_store) -> None:
+    """When materialize fails, the error must be surfaced in results, not swallowed.
+
+    Previously: _do_materialize wrapped the call in contextlib.suppress(Exception),
+    so failures were completely silent.
+    """
+    from prescribe.orchestrator import Orchestrator
+
+    def failing_materialize(*, env_vars, dry_run=False):
+        raise RuntimeError("launchctl not found")
+
+    spec_path = fake_root / "spec.toml"
+    spec_path.write_text(
+        "[[env]]\nname = 'EDITOR'\nvalue = 'nvim'\nmaterialize = true\nplatforms = ['macos', 'linux']\n"
+    )
+
+    orch = Orchestrator(state_store, _materialize_fn=failing_materialize)
+    results = orch.run(spec_path)
+
+    # At least one result should carry the materialize error
+    errors = [err for r in results for err in r.materialize_errors]
+    assert len(errors) >= 1, "materialize error was silently swallowed"
+    assert "launchctl not found" in errors[0]

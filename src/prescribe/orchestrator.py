@@ -108,9 +108,15 @@ def _spec_hash(spec: Spec) -> bytes:
 
 
 class Orchestrator:
-    def __init__(self, state_store: StateStore) -> None:
+    def __init__(
+        self,
+        state_store: StateStore,
+        *,
+        _materialize_fn: Callable[..., None] | None = None,
+    ) -> None:
         self.state_store = state_store
         self.planner = Planner()
+        self._materialize_fn = _materialize_fn
 
     def run(
         self,
@@ -202,10 +208,11 @@ class Orchestrator:
         # ── env ──
         resolved_env, materialize_names = self._resolve_env(spec.env, tags=tags, skip_tags=skip_tags)
 
-        # Materialize env vars to OS-level store (best-effort, fire-and-forget)
+        # Materialize env vars to OS-level store
+        materialize_errors: list[str] = []
         if not dry_run and materialize_names:
             mat_env = {k: v for k, v in resolved_env.items() if k in materialize_names}
-            self._do_materialize(mat_env)
+            materialize_errors.extend(self._do_materialize(mat_env))
 
         # Produce an env result so callers can inspect resolved vars
         # even when there are no [[files]] or [[shell]] targets
@@ -235,10 +242,12 @@ class Orchestrator:
             result.env_vars = resolved_env
             results.append(result)
 
-        # Attach env vars to all results for convenience
+        # Attach env vars and materialize errors to all results for convenience
         for r in results:
             if not r.env_vars:
                 r.env_vars = resolved_env
+            if materialize_errors:
+                r.materialize_errors = materialize_errors
 
         return results
 
@@ -638,12 +647,21 @@ class Orchestrator:
 
     # ── rollback ──────────────────────────────────────
 
-    def _do_materialize(self, env_vars: dict[str, str]) -> None:
-        """Write env vars to the OS-level persistent store."""
+    def _do_materialize(self, env_vars: dict[str, str]) -> list[str]:
+        """Write env vars to the OS-level persistent store.
+
+        Returns a list of error strings (empty if successful).
+        """
         from prescribe.materialize import materialize
 
-        with contextlib.suppress(Exception):
-            materialize(env_vars=env_vars, dry_run=False)
+        try:
+            if self._materialize_fn is not None:
+                self._materialize_fn(env_vars=env_vars, dry_run=False)
+            else:
+                materialize(env_vars=env_vars, dry_run=False)
+        except Exception as exc:
+            return [str(exc)]
+        return []
 
     def rollback(
         self,
