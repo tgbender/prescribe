@@ -89,9 +89,12 @@ class SpecLoader:
                 "Use [[files]], [[env]], and [[shell]] sections instead."
             )
 
-        files = self._parse_files(spec_path, data.get("files", []))
-        env_vars = self._parse_env(spec_path, data.get("env", []))
-        shells = self._parse_shell(spec_path, data.get("shell", []))
+        # Resolve [vars] section first
+        vars_dict = _resolve_vars_section(spec_path, data.get("vars", {}))
+
+        files = self._parse_files(spec_path, data.get("files", []), vars_dict)
+        env_vars = self._parse_env(spec_path, data.get("env", []), vars_dict)
+        shells = self._parse_shell(spec_path, data.get("shell", []), vars_dict)
 
         _validate_no_duplicate_overlapping_files(spec_path, files)
 
@@ -99,7 +102,7 @@ class SpecLoader:
 
     # ── files ─────────────────────────────────────────
 
-    def _parse_files(self, spec_path: Path, raw_list: Any) -> list[FileTarget]:
+    def _parse_files(self, spec_path: Path, raw_list: Any, vars_dict: dict[str, str]) -> list[FileTarget]:
         if not isinstance(raw_list, list):
             raise SpecError(f"spec {spec_path}: 'files' must be an array of tables")
         targets: list[FileTarget] = []
@@ -134,28 +137,33 @@ class SpecLoader:
 
     # ── env ───────────────────────────────────────────
 
-    def _parse_env(self, spec_path: Path, raw_list: Any) -> list[EnvTarget]:
+    def _parse_env(self, spec_path: Path, raw_list: Any, vars_dict: dict[str, str]) -> list[EnvTarget]:
         if not isinstance(raw_list, list):
             raise SpecError(f"spec {spec_path}: 'env' must be an array of tables")
         targets: list[EnvTarget] = []
         for index, raw in enumerate(raw_list):
-            targets.append(self._parse_env_target(spec_path, index, raw))
+            targets.append(self._parse_env_target(spec_path, index, raw, vars_dict))
         return targets
 
-    def _parse_env_target(self, spec_path: Path, index: int, raw: Any) -> EnvTarget:
+    def _parse_env_target(self, spec_path: Path, index: int, raw: Any, vars_dict: dict[str, str]) -> EnvTarget:
         ctx = f"spec {spec_path} env[{index}]"
         if not isinstance(raw, Mapping):
             raise SpecError(f"{ctx}: expected a table/object")
 
         name = _coerce_required_string(raw.get("name"), ctx, "name")
 
+        raw_value = _coerce_optional_string(raw.get("value"), ctx, "value")
+
+        def _expand_v(v: str) -> str:
+            return _expand(expand_spec_vars(v, vars_dict))
+
         return EnvTarget(
             name=str(name),
-            value=_coerce_optional_string(raw.get("value"), ctx, "value"),
-            prepend=_coerce_string_list(raw.get("prepend", []), ctx, "prepend"),
-            append=_coerce_string_list(raw.get("append", []), ctx, "append"),
-            path_prepend=_coerce_string_list(raw.get("path_prepend", []), ctx, "path_prepend"),
-            path_append=_coerce_string_list(raw.get("path_append", []), ctx, "path_append"),
+            value=_expand_v(raw_value) if raw_value else None,
+            prepend=[_expand_v(e) for e in _coerce_string_list(raw.get("prepend", []), ctx, "prepend")],
+            append=[_expand_v(e) for e in _coerce_string_list(raw.get("append", []), ctx, "append")],
+            path_prepend=[_expand_v(e) for e in _coerce_string_list(raw.get("path_prepend", []), ctx, "path_prepend")],
+            path_append=[_expand_v(e) for e in _coerce_string_list(raw.get("path_append", []), ctx, "path_append")],
             materialize=bool(raw.get("materialize", False)),
             platforms=_coerce_platforms(raw.get("platforms", []), ctx),
             machine=_coerce_string_list(raw.get("machine", []), ctx, "machine"),
@@ -167,7 +175,7 @@ class SpecLoader:
 
     # ── shell ─────────────────────────────────────────
 
-    def _parse_shell(self, spec_path: Path, raw_list: Any) -> list[ShellTarget]:
+    def _parse_shell(self, spec_path: Path, raw_list: Any, vars_dict: dict[str, str]) -> list[ShellTarget]:
         if not isinstance(raw_list, list):
             raise SpecError(f"spec {spec_path}: 'shell' must be an array of tables")
         targets: list[ShellTarget] = []
@@ -330,3 +338,39 @@ def _values_overlap(left: list[str], right: list[str]) -> bool:
     if "all" in left or "all" in right:
         return True
     return any(value in right for value in left)
+
+
+# ── vars resolution ──────────────────────────────────────
+
+
+def _resolve_vars_section(spec_path: Path, raw_vars: Any) -> dict[str, str]:
+    """Resolve [vars] section into a flat dict. Vars can reference $HOME, etc."""
+    if not isinstance(raw_vars, Mapping):
+        if raw_vars:
+            raise SpecError(f"spec {spec_path}: 'vars' must be a table/object")
+        return {}
+
+    result: dict[str, str] = {}
+    for key, value in raw_vars.items():
+        if not isinstance(key, str) or not key:
+            raise SpecError(f"spec {spec_path}: vars key must be a non-empty string")
+        if not isinstance(value, str):
+            raise SpecError(f"spec {spec_path}: vars.{key} must be a string")
+        # Expand ~ and process env vars ($HOME, etc.)
+        result[str(key)] = _expand(os.path.expandvars(str(value)))
+    return result
+
+
+def expand_spec_vars(value: str, vars_dict: dict[str, str]) -> str:
+    """Expand $VAR references in a string using vars_dict."""
+    result = value
+    for var_name, var_value in vars_dict.items():
+        result = result.replace(f"${var_name}", var_value)
+    return result
+
+
+def _expand(value: str) -> str:
+    """Expand ~ to home directory in a string."""
+    if value == "~" or value.startswith("~/"):
+        return str(Path.home()) + value[1:]
+    return value

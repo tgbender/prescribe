@@ -458,22 +458,27 @@ class Orchestrator:
                 materialize_names.add(et.name)
 
             if et.path_prepend:
-                path_prepends.setdefault(et.name, []).extend(et.path_prepend)
-                path_prepends.setdefault("PATH", []).extend(et.path_prepend)
+                expanded_entries = [_expand_tilde(e) for e in et.path_prepend]
+                path_prepends.setdefault(et.name, []).extend(expanded_entries)
+                path_prepends.setdefault("PATH", []).extend(expanded_entries)
             if et.path_append:
-                path_appends.setdefault(et.name, []).extend(et.path_append)
-                path_appends.setdefault("PATH", []).extend(et.path_append)
+                expanded_entries = [_expand_tilde(e) for e in et.path_append]
+                path_appends.setdefault(et.name, []).extend(expanded_entries)
+                path_appends.setdefault("PATH", []).extend(expanded_entries)
 
             # Collect prepend/append for PATH
             if et.prepend:
-                path_prepends.setdefault("PATH", []).extend(et.prepend)
+                expanded_prepends = [_expand_tilde(e) for e in et.prepend]
+                path_prepends.setdefault("PATH", []).extend(expanded_prepends)
             if et.append:
-                path_appends.setdefault("PATH", []).extend(et.append)
+                expanded_appends = [_expand_tilde(e) for e in et.append]
+                path_appends.setdefault("PATH", []).extend(expanded_appends)
 
             # Value: last one wins. Expand against local_env so later entries
             # can reference earlier ones (e.g., CARGO_HOME → PATH prepend)
             if et.value is not None:
                 expanded = _expandvars(et.value, local_env)
+                expanded = _expand_tilde(expanded)
                 resolved[et.name] = expanded
                 local_env[et.name] = expanded
 
@@ -929,7 +934,14 @@ def _expandvars(value: str, env: dict[str, str]) -> str:
         var = match.group(1) or match.group(2)
         return env.get(var, f"${var}")
 
-    return re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*) |\$\{([^}]+)\}", replacer, value, flags=re.VERBOSE)
+    return re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)|\$\{([^}]+)\}", replacer, value)
+
+
+def _expand_tilde(value: str) -> str:
+    """Expand ~ to home directory."""
+    if value == "~" or value.startswith("~/"):
+        return str(Path.home()) + value[1:]
+    return value
 
 
 def _resolve_active_files(
