@@ -17,7 +17,7 @@ class JsoncAdapter:
 
     def load(self, path: Path) -> Document:
         text = path.read_text(encoding="utf-8")
-        root = parse_jsonc(text)
+        root = parse_jsonc(text) or {}
         tree = parse_tree(text)
         return Document(
             path=path,
@@ -31,6 +31,14 @@ class JsoncAdapter:
     def dump(self, document: Document, path: Path) -> None:
         if document.source_text is None or document.baseline_root is None:
             raise JsoncParseError("jsonc document is missing source text for round-trip editing")
+
+        if document.syntax is None:
+            # Source had no parseable JSON structure (e.g., comment-only file).
+            # Fall back to standard JSON serialization.
+            import json
+
+            atomic_write_text(path, json.dumps(document.root, indent=2, ensure_ascii=False) + "\n")
+            return
 
         text = document.source_text
         diffs = diff_paths(document.baseline_root, document.root)

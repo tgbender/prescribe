@@ -362,10 +362,14 @@ def _resolve_vars_section(spec_path: Path, raw_vars: Any) -> dict[str, str]:
 
 
 def expand_spec_vars(value: str, vars_dict: dict[str, str]) -> str:
-    """Expand $VAR references in a string using vars_dict."""
+    """Expand $VAR references in a string using vars_dict.
+
+    Expands longest keys first to avoid prefix collisions (e.g., $A must not
+    corrupt $AB when both vars are defined).
+    """
     result = value
-    for var_name, var_value in vars_dict.items():
-        result = result.replace(f"${var_name}", var_value)
+    for var_name in sorted(vars_dict, key=len, reverse=True):
+        result = result.replace(f"${var_name}", vars_dict[var_name])
     return result
 
 

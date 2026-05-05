@@ -42,6 +42,8 @@ class Planner:
         raise ValueError(f"unsupported document format: {format_name}")
 
     def _plan_mapping(self, root: Any, desired: DesiredState) -> PlanResult:
+        if root is None:
+            root = {}
         operations: list[PlannedOperation] = []
         self._diff_mapping(root, desired.data, [], desired.path, operations)
         self._plan_deletions(root, desired.delete, desired.path, operations)

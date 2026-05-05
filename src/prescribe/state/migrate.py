@@ -280,6 +280,15 @@ def _rebuild(conn: sqlite3.Connection, op: RebuildTable, log: list[str]) -> None
             conn.execute(_index_ddl(op.table, idx))
             log.append(f"-- index {idx.name} recreated")
 
+    # Copy data for shared columns from archive → new table
+    old_cols = {row[1] for row in conn.execute(f"PRAGMA table_info('{archive}')").fetchall()}
+    new_cols = {c.name for c in table.columns}
+    shared = sorted(new_cols & old_cols)
+    if shared:
+        cols = ", ".join(shared)
+        conn.execute(f"INSERT INTO {op.table} ({cols}) SELECT {cols} FROM {archive}")
+        log.append(f"-- copied {len(shared)} shared columns from {archive}")
+
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
