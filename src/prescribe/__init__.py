@@ -22,6 +22,7 @@ from prescribe.core import (
     file_fingerprint,
 )
 from prescribe.document import Adapter, Document
+from prescribe.materialize import materialize
 from prescribe.orchestrator import (
     Orchestrator,
     condition_matches,
@@ -73,6 +74,8 @@ __all__ = [
     "config_dir",
     "data_dir",
     "default_state_path",
+    # materialize
+    "materialize",
     # shell
     "render_shell_block",
     # spec
