@@ -94,7 +94,7 @@ def _apply_plan_to_copy(document: Document, plan: list[PlannedOperation]) -> Doc
 
 def _empty_document_for(path: Path, adapter: Adapter) -> Document:
     """Create an empty document suitable for the format."""
-    fmt = getattr(adapter, "format", None) or "toml"
+    fmt = getattr(adapter, "format_name", None) or getattr(adapter, "format", None) or "toml"
     if fmt in {"toml", "yaml", "jsonc"}:
         return Document(path=path, format=fmt, root={})
     if fmt == "line":

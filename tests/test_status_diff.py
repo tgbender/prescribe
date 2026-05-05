@@ -92,3 +92,25 @@ def test_orchestrator_status_with_diff(fake_root, state_store):
     assert len(results) == 1
     assert results[0].diff is not None
     assert "+count = 2" in results[0].diff
+
+
+def test_status_diff_new_line_file(fake_root, state_store) -> None:
+    """A missing line file should produce a creation diff, not an adapter error."""
+    from prescribe.orchestrator import Orchestrator
+
+    spec_path = fake_root / "spec.toml"
+    spec_path.write_text(
+        "[[files]]\n"
+        "path = 'profile.sh'\n"
+        "format = 'line'\n"
+        "managed_block_id = 'prescribe-env'\n"
+        "lines = ['export EDITOR=nvim']\n"
+    )
+
+    results = Orchestrator(state_store).run(spec_path, dry_run=True, diff=True)
+
+    assert results[0].status == "dry-run"
+    assert results[0].error is None
+    assert results[0].diff is not None
+    assert "+# prescribe:begin prescribe-env" in results[0].diff
+    assert "+export EDITOR=nvim" in results[0].diff
