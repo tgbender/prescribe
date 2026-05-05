@@ -15,7 +15,7 @@ from prescribe.core.result import OrchestrationResult
 from prescribe.orchestrator import Orchestrator
 from prescribe.paths import config_dir, default_state_path
 from prescribe.spec import SpecLoader
-from prescribe.state import StateStore
+from prescribe.state import ManagedRecord, StateStore
 
 _DEFAULT_SPEC_DIR_ENV = "PRESCRIBE_SPEC_DIR"
 
@@ -103,6 +103,11 @@ class Presets:
             skip_tags=skip_tags,
             diff=diff,
         )
+
+    def list_managed(self) -> list[ManagedRecord]:
+        """List all config files managed by prescribe."""
+        self._store.initialize()
+        return self._store.list_managed()
 
 
 # ── module-level convenience ──────────────────────────────

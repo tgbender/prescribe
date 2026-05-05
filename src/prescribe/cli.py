@@ -88,7 +88,7 @@ def apply(
 
     tag_set = _parse_tags(tags)
     skip_set = _parse_tags(skip_tags)
-    results = Orchestrator(_make_store(state)).run(spec, dry_run=dry_run, tags=tag_set, skip_tags=skip_set)
+    results = Orchestrator(_make_store(state)).run(spec_obj, dry_run=dry_run, tags=tag_set, skip_tags=skip_set)
 
     if output_json:
         data = _results_to_json(spec_obj, results, display_status=False)
@@ -118,7 +118,7 @@ def status(
 
     tag_set = _parse_tags(tags)
     skip_set = _parse_tags(skip_tags)
-    results = Orchestrator(_make_store(state)).run(spec, dry_run=True, tags=tag_set, skip_tags=skip_set, diff=diff)
+    results = Orchestrator(_make_store(state)).run(spec_obj, dry_run=True, tags=tag_set, skip_tags=skip_set, diff=diff)
 
     if output_json:
         data = _results_to_json(spec_obj, results, display_status=True)

@@ -1,6 +1,7 @@
 import contextlib
 import json
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -178,11 +179,13 @@ class Orchestrator:
         results: list[OrchestrationResult] = []
 
         # ── files ──
-        # Partition: active files get processed, skipped produce status entries
+        # Resolve active vs skipped, but produce results in spec.files order
+        # so that CLI/JSON pairing stays aligned.
         active_files, skipped_files = _resolve_active_files(spec.files, tags=tags, skip_tags=skip_tags)
-        for _ in skipped_files:
-            results.append(OrchestrationResult(status="skipped", applied=False, changed=False, skipped=True))
-        for file_target in active_files:
+        for file_target in spec.files:
+            if file_target in skipped_files or file_target not in active_files:
+                results.append(OrchestrationResult(status="skipped", applied=False, changed=False, skipped=True))
+                continue
             results.append(
                 self._handle_file(
                     run_id,
@@ -538,20 +541,8 @@ class Orchestrator:
         # Determine shell type(s) to render for
         render_shells = target.shells if target.shells else ["bash"]  # default: posix
 
-        # Render blocks for each shell type
-        shell_env_vars: dict[str, str] = {}
-        for shell_type in render_shells:
-            lines = render_shell_block(
-                shell_type=shell_type,
-                env_vars={**resolved_env},  # shallow copy so PATH is not popped repeatedly
-                managed_block_id=target.managed_block_id,
-            )
-            # Store rendered lines for the last shell type (shell blocks are per-shell)
-            # Multiple shells targeting the same file means last one wins for that file
-            shell_env_vars[shell_type] = "\n".join(lines)
-
-        # For now, use the first shell type's rendered block
-        # TODO: support multiple shell types targeting different files
+        # For now, use the first shell type's rendered block.
+        # TODO: support multiple shell types targeting different files.
         first_shell = render_shells[0]
         rendered = render_shell_block(
             shell_type=first_shell,
@@ -928,7 +919,6 @@ def _jsonable(value: Any) -> Any:
 
 def _expandvars(value: str, env: dict[str, str]) -> str:
     """Expand $VAR and ${VAR} in a string using the given env dict."""
-    import re
 
     def replacer(match: re.Match[str]) -> str:
         var = match.group(1) or match.group(2)
