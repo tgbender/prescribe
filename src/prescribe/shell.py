@@ -14,7 +14,7 @@ def render_shell_block(*, shell_type: str, env_vars: dict[str, str], managed_blo
 
 def _render_xonsh(*, env_vars: dict[str, str], managed_block_id: str) -> list[str]:
     lines: list[str] = []
-    path_value = env_vars.pop("PATH", None)
+    path_value = env_vars.get("PATH")
     for name, value in sorted(env_vars.items()):
         lines.append(f"${name} = {_quote_xonsh(value)}")
     if path_value is not None:
@@ -33,7 +33,7 @@ def _render_posix(*, env_vars: dict[str, str], managed_block_id: str) -> list[st
 
 def _render_fish(*, env_vars: dict[str, str], managed_block_id: str) -> list[str]:
     lines: list[str] = []
-    path_value = env_vars.pop("PATH", None)
+    path_value = env_vars.get("PATH")
     for name, value in sorted(env_vars.items()):
         lines.append(f"set -gx {name} {_quote_fish(value)}")
     if path_value is not None:
