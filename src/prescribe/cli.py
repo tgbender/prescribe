@@ -245,10 +245,10 @@ def _results_to_json(
             entry["diff"] = r.diff
         data.append(entry)
 
-    # env entries don't produce individual results (merged into shell results)
-    # skip over them in results array
-    env_count = len(spec_obj.env)
-    idx += env_count
+    # env entries don't produce individual results (merged into shell results).
+    # Only the synthetic env result (when no files and no shells) consumes a slot.
+    if spec_obj.env and not spec_obj.files and not spec_obj.shell:
+        idx += 1
 
     for shell_target in spec_obj.shell:
         if idx >= len(results):
@@ -286,19 +286,18 @@ def _print_results(spec_obj: Spec, results: list[OrchestrationResult]) -> None:
         if result.diff:
             typer.echo(result.diff, nl=False)
 
-    # Env entries are merged — show them as a summary
-    env_count = len(spec_obj.env)
+    # Env entries are merged — show them as a summary.
+    # Only the synthetic env result (when no files and no shells) consumes a slot.
     active_env = 0
     skipped_env = 0
-    for i in range(len(spec_obj.env)):
-        if idx + i >= len(results):
-            break
-        r = results[idx + i]
-        if r.skipped:
-            skipped_env += 1
-        else:
-            active_env += 1
-    idx += env_count
+    if spec_obj.env and not spec_obj.files and not spec_obj.shell:
+        r = results[idx] if idx < len(results) else None
+        if r is not None:
+            idx += 1
+            if r.skipped:
+                skipped_env += 1
+            else:
+                active_env += 1
 
     if spec_obj.env:
         parts: list[str] = []
