@@ -155,7 +155,9 @@ def test_split_path_uses_os_pathsep() -> None:
 
 def test_split_path_filters_empty() -> None:
     """_split_path should filter empty entries."""
+    import os
+
     from prescribe.shell import _split_path
 
-    result = _split_path(":usr/local::/usr:")
+    result = _split_path(f"{os.pathsep}usr/local{os.pathsep}{os.pathsep}/usr{os.pathsep}")
     assert result == ["usr/local", "/usr"]

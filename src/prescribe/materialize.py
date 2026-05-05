@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 import xml.sax.saxutils as saxutils
+from importlib import import_module
 from pathlib import Path
 
 
@@ -60,8 +61,14 @@ def materialize(*, env_vars: dict[str, str], dry_run: bool = False) -> None:
 
 
 def _expand(value: str) -> str:
-    home = str(Path.home())
-    return value.replace("${HOME}", home).replace("$HOME", home)
+    home = Path.home()
+    if value == "$HOME" or value == "${HOME}":
+        return str(home)
+    if value.startswith("$HOME/"):
+        return str(home / value.removeprefix("$HOME/"))
+    if value.startswith("${HOME}/"):
+        return str(home / value.removeprefix("${HOME}/"))
+    return value.replace("${HOME}", str(home)).replace("$HOME", str(home))
 
 
 def _sh_escape(value: str) -> str:
@@ -215,20 +222,20 @@ def _materialize_windows(
     dry_run: bool,
 ) -> None:
     try:
-        from winregenv import REG_EXPAND_SZ, RegistryRoot, broadcast_setting_change  # type: ignore[import-not-found]
+        winregenv = import_module("winregenv")
     except ImportError as exc:
         raise RuntimeError("materialize on Windows requires winregenv. Install with: pip install winregenv") from exc
 
     if dry_run:
         return
 
-    hkcu_env = RegistryRoot("HKCU", root_prefix="Environment")
+    hkcu_env = winregenv.RegistryRoot("HKCU", root_prefix="Environment")
 
     for name, value in sorted(env_vars.items()):
-        vtype = REG_EXPAND_SZ if "%" in value else None
+        vtype = winregenv.REG_EXPAND_SZ if "%" in value else None
         hkcu_env.put_registry_value("", name, value, value_type=vtype)
 
     try:
-        broadcast_setting_change("Environment")
+        winregenv.broadcast_setting_change("Environment")
     except Exception as exc:
         print(f"prescribe: broadcast_setting_change failed: {exc}", file=sys.stderr)
