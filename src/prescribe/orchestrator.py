@@ -447,6 +447,9 @@ class Orchestrator:
         resolved: dict[str, str] = {}
         materialize_names: set[str] = set()
 
+        # Build a local env context: os.environ + progressively resolved values
+        local_env: dict[str, str] = dict(os.environ)
+
         for et in env_targets:
             if not condition_matches(target=et, tags=tags, skip_tags=skip_tags):
                 continue
@@ -456,8 +459,10 @@ class Orchestrator:
 
             if et.path_prepend:
                 path_prepends.setdefault(et.name, []).extend(et.path_prepend)
+                path_prepends.setdefault("PATH", []).extend(et.path_prepend)
             if et.path_append:
                 path_appends.setdefault(et.name, []).extend(et.path_append)
+                path_appends.setdefault("PATH", []).extend(et.path_append)
 
             # Collect prepend/append for PATH
             if et.prepend:
@@ -465,13 +470,16 @@ class Orchestrator:
             if et.append:
                 path_appends.setdefault("PATH", []).extend(et.append)
 
-            # Value: last one wins
+            # Value: last one wins. Expand against local_env so later entries
+            # can reference earlier ones (e.g., CARGO_HOME → PATH prepend)
             if et.value is not None:
-                resolved[et.name] = os.path.expandvars(et.value)
+                expanded = _expandvars(et.value, local_env)
+                resolved[et.name] = expanded
+                local_env[et.name] = expanded
 
         # Build PATH from prepends + existing + appends
         if "PATH" in path_prepends or "PATH" in path_appends:
-            current_path = os.environ.get("PATH", "")
+            current_path = local_env.get("PATH", "")
             current_entries = [p for p in current_path.split(os.pathsep) if p]
 
             prepend_entries = path_prepends.get("PATH", [])
@@ -481,7 +489,7 @@ class Orchestrator:
             seen: set[str] = set()
             deduped_prepends: list[str] = []
             for entry in prepend_entries:
-                expanded = os.path.expandvars(entry)
+                expanded = _expandvars(entry, local_env)
                 if expanded not in seen:
                     seen.add(expanded)
                     deduped_prepends.append(expanded)
@@ -489,7 +497,7 @@ class Orchestrator:
             # Deduplicate append entries
             deduped_appends: list[str] = []
             for entry in append_entries:
-                expanded = os.path.expandvars(entry)
+                expanded = _expandvars(entry, local_env)
                 if expanded not in seen:
                     seen.add(expanded)
                     deduped_appends.append(expanded)
@@ -911,6 +919,17 @@ def _jsonable(value: Any) -> Any:
 
 
 # ── diff helpers ───────────────────────────────────────────
+
+
+def _expandvars(value: str, env: dict[str, str]) -> str:
+    """Expand $VAR and ${VAR} in a string using the given env dict."""
+    import re
+
+    def replacer(match: re.Match[str]) -> str:
+        var = match.group(1) or match.group(2)
+        return env.get(var, f"${var}")
+
+    return re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*) |\$\{([^}]+)\}", replacer, value, flags=re.VERBOSE)
 
 
 def _resolve_active_files(
