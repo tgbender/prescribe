@@ -1,5 +1,7 @@
 """Shell block rendering."""
 
+import os
+
 
 def render_shell_block(*, shell_type: str, env_vars: dict[str, str], managed_block_id: str) -> list[str]:
     """Render a managed block with env var exports for a given shell type."""
@@ -63,7 +65,7 @@ _RENDERERS = {
 
 
 def _split_path(path_value: str) -> list[str]:
-    return [p for p in path_value.split(":") if p]
+    return [p for p in path_value.split(os.pathsep) if p]
 
 
 def _quote_xonsh(value: str) -> str:

@@ -4,7 +4,6 @@ from pathlib import Path
 from prescribe.atomic import atomic_write_text
 from prescribe.document import Document
 from prescribe.jsonc import (
-    JsoncParseError,
     diff_paths,
     modify_text,
     parse_jsonc,
@@ -29,12 +28,9 @@ class JsoncAdapter:
         )
 
     def dump(self, document: Document, path: Path) -> None:
-        if document.source_text is None or document.baseline_root is None:
-            raise JsoncParseError("jsonc document is missing source text for round-trip editing")
-
-        if document.syntax is None:
-            # Source had no parseable JSON structure (e.g., comment-only file).
-            # Fall back to standard JSON serialization.
+        if document.syntax is None or document.source_text is None or document.baseline_root is None:
+            # Either a new file (no source text / baseline) or a file with no parseable
+            # JSON structure (e.g., comment-only source). Fall back to standard JSON.
             import json
 
             atomic_write_text(path, json.dumps(document.root, indent=2, ensure_ascii=False) + "\n")

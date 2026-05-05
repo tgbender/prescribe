@@ -108,7 +108,7 @@ def test_process_new_file_invalid_run_id_raises(tmp_path: Path, state_store) -> 
     adapter = adapter_for_path(config, fmt="toml")
 
     # Call _process_new_file with run_id=None explicitly.
-    with pytest.raises(AssertionError):
+    with pytest.raises(RuntimeError, match="run_id"):
         orch._process_new_file(
             run_id=None,
             spec_hash=b"\x00",

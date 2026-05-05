@@ -161,7 +161,8 @@ class StateStore:
                 """,
                 (started.isoformat(), spec_hash, tool_version, host, platform),
             )
-            assert cursor.lastrowid is not None
+            if cursor.lastrowid is None:
+                raise RuntimeError("INSERT into runs did not produce a rowid")
             run_id = cursor.lastrowid
         return RunRecord(
             id=run_id,
@@ -207,7 +208,8 @@ class StateStore:
                     spec_hash,
                 ),
             )
-            assert cursor.lastrowid is not None
+            if cursor.lastrowid is None:
+                raise RuntimeError("INSERT into file_snapshots did not produce a rowid")
             snapshot_id = cursor.lastrowid
         return SnapshotRecord(
             id=snapshot_id,
@@ -292,7 +294,8 @@ class StateStore:
                     int(original_exists),
                 ),
             )
-            assert cursor.lastrowid is not None
+            if cursor.lastrowid is None:
+                raise RuntimeError("INSERT into file_checkpoints did not produce a rowid")
             checkpoint_id = cursor.lastrowid
         return CheckpointRecord(
             id=checkpoint_id,
@@ -334,7 +337,8 @@ class StateStore:
                     details,
                 ),
             )
-            assert cursor.lastrowid is not None
+            if cursor.lastrowid is None:
+                raise RuntimeError("INSERT into events did not produce a rowid")
             event_id = cursor.lastrowid
         return EventRecord(
             id=event_id,
@@ -442,7 +446,8 @@ class StateStore:
                     payload,
                 ),
             )
-            assert cursor.lastrowid is not None
+            if cursor.lastrowid is None:
+                raise RuntimeError("INSERT into change_batches did not produce a rowid")
             batch_id = cursor.lastrowid
         return ChangeBatchRecord(
             id=batch_id,
@@ -564,7 +569,8 @@ class StateStore:
                     int(original_exists),
                 ),
             )
-            assert cursor.lastrowid is not None
+            if cursor.lastrowid is None:
+                raise RuntimeError("INSERT into file_baselines did not produce a rowid")
             baseline_id = cursor.lastrowid
         return BaselineRecord(
             id=baseline_id,

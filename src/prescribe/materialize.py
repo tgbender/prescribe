@@ -11,7 +11,6 @@ tested without touching the real filesystem -- pass a tmp_path directly.
 
 from __future__ import annotations
 
-import contextlib
 import sys
 import xml.sax.saxutils as saxutils
 from pathlib import Path
@@ -134,20 +133,31 @@ def _maybe_reload_launchctl(
 ) -> None:
     import subprocess
 
+    errors: list[str] = []
     try:
         subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
-        result = subprocess.run(["launchctl", "load", str(plist_path)], capture_output=True, text=True)
-        if result.returncode != 0:
-            print(
-                f"prescribe: launchctl load failed: {result.stderr.strip()}",
-                file=sys.stderr,
-            )
-        with contextlib.suppress(Exception):
-            subprocess.run(["/bin/sh", str(script_path)], capture_output=True)
     except FileNotFoundError:
         pass
-    except Exception:
+    except Exception as exc:
+        errors.append(f"launchctl unload failed: {exc}")
+
+    try:
+        result = subprocess.run(["launchctl", "load", str(plist_path)], capture_output=True, text=True)
+        if result.returncode != 0:
+            errors.append(f"launchctl load failed: {result.stderr.strip()}")
+    except FileNotFoundError:
         pass
+    except Exception as exc:
+        errors.append(f"launchctl load failed: {exc}")
+
+    try:
+        subprocess.run(["/bin/sh", str(script_path)], capture_output=True)
+    except Exception as exc:
+        errors.append(f"shell script execution failed: {exc}")
+
+    if errors:
+        for err in errors:
+            print(f"prescribe: {err}", file=sys.stderr)
 
 
 # ── Linux ─────────────────────────────────────────────────────
@@ -181,12 +191,19 @@ def _materialize_linux(
 def _maybe_import_systemd(*, names: list[str]) -> None:
     import subprocess
 
-    with contextlib.suppress(Exception):
-        subprocess.run(
+    try:
+        result = subprocess.run(
             ["systemctl", "--user", "import-environment", *names],
             capture_output=True,
             timeout=5,
         )
+        if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="replace").strip()
+            print(f"prescribe: systemctl import-environment failed: {stderr}", file=sys.stderr)
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        print(f"prescribe: systemctl import-environment failed: {exc}", file=sys.stderr)
 
 
 # ── Windows ───────────────────────────────────────────────────
@@ -211,5 +228,7 @@ def _materialize_windows(
         vtype = REG_EXPAND_SZ if "%" in value else None
         hkcu_env.put_registry_value("", name, value, value_type=vtype)
 
-    with contextlib.suppress(Exception):
+    try:
         broadcast_setting_change("Environment")
+    except Exception as exc:
+        print(f"prescribe: broadcast_setting_change failed: {exc}", file=sys.stderr)

@@ -330,7 +330,8 @@ class Orchestrator:
             return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True, diff=diff_text)
 
         if target.path.exists():
-            assert run_id is not None
+            if run_id is None:
+                raise RuntimeError("run_id is None in _process_new_file")
             conflict = ConflictResult(
                 path=target.path,
                 changed=True,
@@ -616,7 +617,8 @@ class Orchestrator:
             if dry_run:
                 return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
 
-            assert run_id is not None
+            if run_id is None:
+                raise RuntimeError("run_id is None in _apply_shell_block")
             original_text = target.path.read_text(encoding="utf-8") if target.path.exists() else ""
             original_exists = target.path.exists()
 
@@ -757,7 +759,8 @@ class Orchestrator:
         written_text = new_bytes.decode("utf-8")
         new_stat = target.path.stat()
         new_hash = sha256_bytes(new_bytes)
-        assert run_id is not None
+        if run_id is None:
+            raise RuntimeError("run_id is None in _apply_and_record")
         existing_baseline = self.state_store.original_baseline(target.path, connection=connection)
         if existing_baseline is None:
             self.state_store.record_baseline(

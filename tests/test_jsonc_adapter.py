@@ -158,3 +158,29 @@ def test_jsonc_render_value_respects_custom_indent() -> None:
 
     result = _render_value({"a": 1}, indent="    ")
     assert '    "a": 1' in result
+
+
+def test_jsonc_new_file_created_from_empty_document(state_store, tmp_path: Path) -> None:
+    """A non-existent JSONC file should be created via standard JSON serialization.
+
+    This exercises the path where there is no source_text / baseline_root for
+    round-trip editing, ensuring the adapter falls back to json.dumps.
+    """
+    from prescribe.orchestrator import Orchestrator
+
+    config = tmp_path / "settings.jsonc"
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text(
+        "[[files]]\npath = 'settings.jsonc'\nformat = 'jsonc'\n[files.data]\ncount = 2\n\"editor.fontSize\" = 14\n"
+    )
+
+    orch = Orchestrator(state_store)
+    results = orch.run(spec_path)
+
+    assert config.exists()
+    assert results[0].status == "applied"
+
+    text = config.read_text()
+    assert '"count": 2' in text
+    assert '"editor":' in text
+    assert '"fontSize": 14' in text

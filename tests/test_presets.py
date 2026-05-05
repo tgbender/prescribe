@@ -115,3 +115,24 @@ def test_module_level_list_specs(tmp_path: Path) -> None:
     (tmp_path / "a.toml").write_text("")
     specs = list_specs(tmp_path)
     assert [p.name for p in specs] == ["a.toml"]
+
+
+def test_presets_list_managed_after_apply(tmp_path: Path, memory_state_store) -> None:
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config = config_dir / "config.toml"
+    config.write_text("title = 'hello'\n")
+
+    spec_dir = tmp_path / "specs"
+    spec_dir.mkdir()
+    spec = spec_dir / "spec.toml"
+    spec.write_text(f"[[files]]\npath = '{config}'\nformat = 'toml'\n[files.data]\ntitle = 'world'\n")
+
+    presets = Presets(state_store=memory_state_store)
+    presets.apply_all(spec_dir)
+
+    records = presets.list_managed()
+    assert len(records) == 1
+    assert records[0].path == config.resolve()
+    assert records[0].format == "toml"
+    assert records[0].last_applied_at.tzinfo is not None
