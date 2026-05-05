@@ -33,7 +33,10 @@ def test_platform_matches_current_platform() -> None:
 
 
 def test_platform_matches_any_selector() -> None:
-    assert platform_matches(["linux", "macos"]) is True
+    import sys
+
+    current = "macos" if sys.platform == "darwin" else "linux" if sys.platform.startswith("linux") else "windows"
+    assert platform_matches(["linux", "macos", current]) is True
 
 
 def test_machine_matches_current_machine() -> None:
@@ -42,11 +45,14 @@ def test_machine_matches_current_machine() -> None:
 
 
 def test_orchestrator_skips_non_matching_platform(make_text_file, state_store) -> None:
+    import sys
+
+    non_matching = "linux" if sys.platform == "win32" else "windows"
     config_toml = make_text_file("config.toml", "title = 'hello'\ncount = 1\n")
 
     spec_path = make_text_file(
         "spec.toml",
-        "[[files]]\npath = 'config.toml'\nformat = 'toml'\nplatforms = ['windows']\n[files.data]\ncount = 2\n",
+        f"[[files]]\npath = 'config.toml'\nformat = 'toml'\nplatforms = ['{non_matching}']\n[files.data]\ncount = 2\n",
     )
 
     store = state_store

@@ -28,7 +28,7 @@ def test_state_store_records_checked_snapshot_and_event(make_text_file, state_st
         summary="no changes",
     )
 
-    assert snapshot.path == source
+    assert snapshot.path == source.resolve()
     assert snapshot.content_hash == digest
     assert snapshot.hash_algo == "sha256"
     assert event.event_type == "checked"

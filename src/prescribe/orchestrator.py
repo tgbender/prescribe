@@ -507,7 +507,7 @@ class Orchestrator:
             seen: set[str] = set()
             deduped_prepends: list[str] = []
             for entry in prepend_entries:
-                expanded = _expandvars(entry, local_env)
+                expanded = _normalize_path_entry(_expandvars(entry, local_env))
                 if expanded not in seen:
                     seen.add(expanded)
                     deduped_prepends.append(expanded)
@@ -515,7 +515,7 @@ class Orchestrator:
             # Deduplicate append entries
             deduped_appends: list[str] = []
             for entry in append_entries:
-                expanded = _expandvars(entry, local_env)
+                expanded = _normalize_path_entry(_expandvars(entry, local_env))
                 if expanded not in seen:
                     seen.add(expanded)
                     deduped_appends.append(expanded)
@@ -951,8 +951,15 @@ def _expandvars(value: str, env: dict[str, str]) -> str:
 def _expand_tilde(value: str) -> str:
     """Expand ~ to home directory."""
     if value == "~" or value.startswith("~/"):
-        return str(Path.home()) + value[1:]
+        home = Path(os.environ.get("HOME") or Path.home())
+        return str(home / value[2:]) if value.startswith("~/") else str(home)
     return value
+
+
+def _normalize_path_entry(value: str) -> str:
+    if "$" in value or value.startswith("!"):
+        return value
+    return str(Path(value))
 
 
 def _resolve_active_files(

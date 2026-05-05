@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from prescribe.state import StateStore
+
+
+@pytest.fixture(autouse=True)
+def _portable_home(monkeypatch) -> None:
+    if "HOME" not in os.environ:
+        fallback = os.environ.get("USERPROFILE") or str(Path.home())
+        monkeypatch.setenv("HOME", fallback)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -105,7 +114,7 @@ def state_store(request) -> StateStore:
 
 @pytest.fixture()
 def memory_state_store() -> StateStore:
-    uri = "file::memory:?cache=shared"
+    uri = f"file:prescribe-{uuid.uuid4().hex}?mode=memory&cache=shared"
     connection = sqlite3.connect(uri, uri=True)
     store = StateStore(uri, connection_factory=lambda _: sqlite3.connect(uri, uri=True))
     store.initialize()

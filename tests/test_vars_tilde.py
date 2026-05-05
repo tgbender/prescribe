@@ -83,7 +83,7 @@ def test_tilde_expands_in_env_value():
     spec_path = Path(d) / "spec.toml"
     spec_path.write_text("[[env]]\nname = 'CARGO_HOME'\nvalue = '~/.cargo'\n")
     spec = SpecLoader().load(spec_path)
-    assert spec.env[0].value == f"{os.environ['HOME']}/.cargo"
+    assert spec.env[0].value == str(Path(os.environ["HOME"]) / ".cargo")
 
 
 def test_tilde_expands_in_prepend():
@@ -96,7 +96,7 @@ def test_tilde_expands_in_prepend():
     spec_path = Path(d) / "spec.toml"
     spec_path.write_text("[[env]]\nname = 'PATH'\nprepend = ['~/.local/bin']\n")
     spec = SpecLoader().load(spec_path)
-    assert spec.env[0].prepend == [f"{os.environ['HOME']}/.local/bin"]
+    assert spec.env[0].prepend == [str(Path(os.environ["HOME"]) / ".local" / "bin")]
 
 
 def test_tilde_expands_via_orchestrator(state_store):
@@ -118,6 +118,6 @@ def test_tilde_expands_via_orchestrator(state_store):
     resolved = results[0].env_vars
 
     home = os.environ["HOME"]
-    assert resolved["CARGO_HOME"] == f"{home}/.cargo"
+    assert resolved["CARGO_HOME"] == str(Path(home) / ".cargo")
     paths = resolved["PATH"].split(os.pathsep)
-    assert f"{home}/.cargo/bin" in paths
+    assert str(Path(home) / ".cargo" / "bin") in paths

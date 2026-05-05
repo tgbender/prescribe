@@ -15,7 +15,6 @@ def _clean_env(monkeypatch):
 
 class TestDataDir:
     def test_default_on_linux(self, monkeypatch):
-        monkeypatch.setattr("os.name", "posix")
         monkeypatch.delenv("HOME", raising=False)
         monkeypatch.setenv("XDG_DATA_HOME", "/home/user/.local/share")
         result = data_dir()
@@ -35,7 +34,6 @@ class TestDataDir:
 
 class TestConfigDir:
     def test_default_on_linux(self, monkeypatch):
-        monkeypatch.setattr("os.name", "posix")
         monkeypatch.setenv("XDG_CONFIG_HOME", "/home/user/.config")
         result = config_dir()
         assert result == Path("/home/user/.config/prescribe")
