@@ -32,6 +32,8 @@ All commands accept `--json` for machine-readable output and `--state` (or `PRES
 
 Mutating commands use a short-lived SQLite run lock to prevent concurrent writes. Prescribe also records durable ownership claims for managed keys, blocks, env vars, and assets; overlapping claims fail before writes unless ownership is explicitly taken with `--on-claim-conflict take` or approved interactively with `--on-claim-conflict prompt`.
 
+By default, prescribe refuses to place its SQLite state database on a network filesystem such as UNC, mapped network drives, SMB, SSHFS, or NFS. Keep state on a local disk for reliable locking. If you intentionally accept the risk, set `PRESCRIBE_ALLOW_NETWORK_STATE=1` or pass `--allow-network-state` to mutating commands.
+
 ---
 
 ## Spec format

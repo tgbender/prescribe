@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from prescribe.state import StateStore
+from prescribe.state import NetworkStatePathError, StateStore
+from prescribe.state.filesystem import is_network_filesystem_path
 
 
 def test_state_store_records_checked_snapshot_and_event(make_text_file, state_store) -> None:
@@ -85,6 +86,36 @@ def test_state_store_enables_wal_mode_for_file_db(tmp_path: Path) -> None:
     with store.connect() as conn:
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     assert mode == "wal"
+
+
+def test_state_store_rejects_network_state_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("prescribe.state.sqlite.is_network_filesystem_path", lambda path: True)
+
+    with pytest.raises(NetworkStatePathError, match="network filesystem"):
+        StateStore(tmp_path / "state.db")
+
+
+def test_state_store_allows_network_state_path_when_explicit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("prescribe.state.sqlite.is_network_filesystem_path", lambda path: True)
+
+    store = StateStore(tmp_path / "state.db", allow_network_state=True)
+
+    assert store.path == (tmp_path / "state.db").resolve()
+
+
+def test_state_store_allows_network_state_path_with_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("prescribe.state.sqlite.is_network_filesystem_path", lambda path: True)
+    monkeypatch.setenv("PRESCRIBE_ALLOW_NETWORK_STATE", "1")
+
+    store = StateStore(tmp_path / "state.db")
+
+    assert store.path == (tmp_path / "state.db").resolve()
+
+
+def test_windows_unc_state_paths_are_network_filesystems(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.platform", "win32")
+
+    assert is_network_filesystem_path(r"\\server\share\prescribe\state.db") is True
 
 
 def test_state_store_transaction_commits_on_success(state_store) -> None:

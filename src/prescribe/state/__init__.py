@@ -1,3 +1,4 @@
+from prescribe.state.filesystem import NetworkStatePathError, is_network_filesystem_path
 from prescribe.state.migrate import migrate
 from prescribe.state.models import (
     AssetBackup,
@@ -45,6 +46,7 @@ __all__ = [
     "ManagedClaim",
     "ManagedClaimRecord",
     "ManagedRecord",
+    "NetworkStatePathError",
     "Run",
     "RunRecord",
     "RunLock",
@@ -55,5 +57,6 @@ __all__ = [
     "StateStore",
     "TargetRun",
     "TargetRunRecord",
+    "is_network_filesystem_path",
     "migrate",
 ]

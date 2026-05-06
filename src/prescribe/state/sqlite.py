@@ -13,6 +13,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from prescribe.state.engine import engine_for_connection_factory, initialize_engine, session_scope
+from prescribe.state.filesystem import (
+    NetworkStatePathError,
+    is_network_filesystem_path,
+    network_state_allowed,
+)
 from prescribe.state.migrate import migrate as migrate_schema
 from prescribe.state.models import ManagedClaim, RunLock, SpecRun, TargetRun
 
@@ -164,9 +169,15 @@ class StateStore:
         path: Path | str,
         *,
         connection_factory: Callable[[Path], sqlite3.Connection] = sqlite3.connect,
+        allow_network_state: bool = False,
     ) -> None:
         raw_path = Path(path)
         self.path = raw_path if str(raw_path) == ":memory:" else _canonical_path(raw_path)
+        if not allow_network_state and not network_state_allowed() and is_network_filesystem_path(self.path):
+            raise NetworkStatePathError(
+                f"refusing to use SQLite state database on a network filesystem: {self.path}. "
+                "Move the state database to a local disk or set PRESCRIBE_ALLOW_NETWORK_STATE=1."
+            )
         self.connection_factory = connection_factory
         self._engine = engine_for_connection_factory(path=self.path, connection_factory=self._open_for_engine)
 

@@ -21,7 +21,7 @@ from prescribe.paths import config_dir, data_dir, default_state_path
 from prescribe.presets import Presets
 from prescribe.rollback import ConflictResolver
 from prescribe.spec import AssetTarget, EnvTarget, FileTarget, ShellTarget, Spec, SpecError, SpecLoader
-from prescribe.state import StateStore
+from prescribe.state import NetworkStatePathError, StateStore
 
 app = typer.Typer(help="Manage declarative config file changes.", add_completion=False)
 
@@ -61,13 +61,17 @@ def _callback(
     pass
 
 
-def _make_store(state: Path | None) -> StateStore:
-    if state is not None:
-        return StateStore(state)
-    env = os.environ.get("PRESCRIBE_STATE")
-    if env:
-        return StateStore(env)
-    return StateStore(default_state_path())
+def _make_store(state: Path | None, *, allow_network_state: bool = False) -> StateStore:
+    try:
+        if state is not None:
+            return StateStore(state, allow_network_state=allow_network_state)
+        env = os.environ.get("PRESCRIBE_STATE")
+        if env:
+            return StateStore(env, allow_network_state=allow_network_state)
+        return StateStore(default_state_path(), allow_network_state=allow_network_state)
+    except NetworkStatePathError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from None
 
 
 def _status_line(status: str, changed: bool, path: str, detail: str | None = None) -> str:
@@ -89,6 +93,11 @@ def apply(
     tags: str | None = typer.Option(None, "--tags", help="Only apply targets with these tags (comma-separated)."),
     skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
     explain_skips: bool = typer.Option(False, "--explain-skips", help="Show why targets were skipped."),
+    allow_network_state: bool = typer.Option(
+        False,
+        "--allow-network-state",
+        help="Allow the SQLite state database on a network filesystem.",
+    ),
     on_claim_conflict: str | None = typer.Option(
         None,
         "--on-claim-conflict",
@@ -105,7 +114,7 @@ def apply(
     tag_set = _parse_tags(tags)
     skip_set = _parse_tags(skip_tags)
     explain = _option_bool(explain_skips)
-    orchestrator = Orchestrator(_make_store(state))
+    orchestrator = Orchestrator(_make_store(state, allow_network_state=allow_network_state))
     claim_resolver = _make_claim_resolver(on_claim_conflict)
     if explain:
         if claim_resolver is None:
@@ -250,6 +259,11 @@ def apply_dir(
     tags: str | None = typer.Option(None, "--tags", help="Only apply targets with these tags (comma-separated)."),
     skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
     explain_skips: bool = typer.Option(False, "--explain-skips", help="Show why targets were skipped."),
+    allow_network_state: bool = typer.Option(
+        False,
+        "--allow-network-state",
+        help="Allow the SQLite state database on a network filesystem.",
+    ),
     on_claim_conflict: str | None = typer.Option(
         None,
         "--on-claim-conflict",
@@ -265,6 +279,7 @@ def apply_dir(
         tags=tags,
         skip_tags=skip_tags,
         explain_skips=explain_skips,
+        allow_network_state=allow_network_state,
         diff=False,
         display_status=dry_run,
         claim_resolver=_make_claim_resolver(on_claim_conflict),
@@ -479,9 +494,14 @@ def rollback(
         help="Behavior when a key was externally modified: prompt (default when TTY), revert, or ignore.",
     ),
     original: bool = typer.Option(False, "--original", help="Restore to pre-prescribe state (before first apply)."),
+    allow_network_state: bool = typer.Option(
+        False,
+        "--allow-network-state",
+        help="Allow the SQLite state database on a network filesystem.",
+    ),
 ) -> None:
     """Roll back managed changes to a config file."""
-    result = Orchestrator(_make_store(state)).rollback(
+    result = Orchestrator(_make_store(state, allow_network_state=allow_network_state)).rollback(
         path, dry_run=dry_run, original=original, conflict_resolver=_make_conflict_resolver(on_conflict)
     )
 
@@ -703,12 +723,13 @@ def _run_spec_directory(
     explain_skips: bool,
     diff: bool,
     display_status: bool,
+    allow_network_state: bool = False,
     claim_resolver: ClaimResolver | None = None,
 ) -> None:
     tag_set = _parse_tags(tags)
     skip_set = _parse_tags(skip_tags)
     explain = _option_bool(explain_skips)
-    store = _make_store(state)
+    store = _make_store(state, allow_network_state=allow_network_state)
     loader = SpecLoader()
     specs = Presets(state_store=store, loader=loader).list_specs(directory)
     payload: list[dict[str, object]] = []
