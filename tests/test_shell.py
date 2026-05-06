@@ -70,7 +70,7 @@ def test_render_cmd_uses_set_assignments() -> None:
     env = {"PATH": os.pathsep.join([r"C:\Tools\bin", r"C:\Apps\bin"]), "EDITOR": "nvim"}
     lines = render_shell_block(shell_type="cmd", env_vars=env, managed_block_id="test")
 
-    assert "set \"EDITOR=nvim\"" in lines
+    assert 'set "EDITOR=nvim"' in lines
     assert f'set "PATH={r"C:\Tools\bin"}{os.pathsep}{r"C:\Apps\bin"}"' in lines
 
 

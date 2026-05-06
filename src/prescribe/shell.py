@@ -110,7 +110,14 @@ def _quote_pwsh(value: str) -> str:
 
 
 def _escape_cmd(value: str) -> str:
-    return value.replace("%", "%%").replace("^", "^^").replace("&", "^&").replace("|", "^|").replace("<", "^<").replace(">", "^>")
+    return (
+        value.replace("%", "%%")
+        .replace("^", "^^")
+        .replace("&", "^&")
+        .replace("|", "^|")
+        .replace("<", "^<")
+        .replace(">", "^>")
+    )
 
 
 def _escape_posix(value: str) -> str:

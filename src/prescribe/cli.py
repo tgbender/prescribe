@@ -10,9 +10,8 @@ import typer
 from prescribe import __version__
 from prescribe.core.result import OrchestrationResult
 from prescribe.materialize import detect_platform
-from prescribe.paths import config_dir, data_dir
 from prescribe.orchestrator import Orchestrator, condition_matches, condition_skip_reason
-from prescribe.paths import default_state_path
+from prescribe.paths import config_dir, data_dir, default_state_path
 from prescribe.rollback import ConflictResolver
 from prescribe.spec import Spec, SpecError, SpecLoader
 from prescribe.state import StateStore

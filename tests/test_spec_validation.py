@@ -244,7 +244,7 @@ def test_spec_env_target_accepts_pwsh_shell(tmp_path: Path) -> None:
 
 def test_spec_env_target_unknown_shell_rejected(tmp_path: Path) -> None:
     spec_path = tmp_path / "spec.toml"
-    spec_path.write_text("[[env]]\nname = 'VAR'\nvalue = '1'\nshells = ['cmd']\n")
+    spec_path.write_text("[[env]]\nname = 'VAR'\nvalue = '1'\nshells = ['tcsh']\n")
 
     with pytest.raises(SpecError, match="unknown shell"):
         SpecLoader().load(spec_path)
