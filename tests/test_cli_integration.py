@@ -535,6 +535,30 @@ def test_validate_plan_json_includes_status(run, workdir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# doctor
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_reports_environment(run) -> None:
+    result = run("doctor")
+
+    assert result.returncode == 0
+    assert "platform" in result.stdout
+    assert "state path" in result.stdout
+    assert "path separator" in result.stdout
+
+
+def test_doctor_json_output(run) -> None:
+    result = run("doctor", "--json")
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert "platform" in data
+    assert "state_path" in data
+    assert data["path_separator"] == os.pathsep
+
+
+# ---------------------------------------------------------------------------
 # formats
 # ---------------------------------------------------------------------------
 

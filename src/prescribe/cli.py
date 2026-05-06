@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -8,6 +9,8 @@ import typer
 
 from prescribe import __version__
 from prescribe.core.result import OrchestrationResult
+from prescribe.materialize import detect_platform
+from prescribe.paths import config_dir, data_dir
 from prescribe.orchestrator import Orchestrator, condition_matches, condition_skip_reason
 from prescribe.paths import default_state_path
 from prescribe.rollback import ConflictResolver
@@ -234,6 +237,33 @@ def list_managed(
         date = r.last_applied_at.strftime("%Y-%m-%d %H:%M")
         missing = typer.style("  (deleted)", fg=typer.colors.RED) if not r.path.exists() else ""
         typer.echo(f"{fmt}  {date}  {r.path}{missing}")
+
+
+@app.command()
+def doctor(
+    output_json: bool = typer.Option(False, "--json", help="Output diagnostics as JSON."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
+) -> None:
+    """Report platform, path, shell, and materialization diagnostics."""
+    data = _doctor_data(state)
+    if output_json:
+        typer.echo(json.dumps(data, indent=2))
+        return
+
+    typer.echo(f"prescribe: {data['version']}")
+    typer.echo(f"platform: {data['platform']}")
+    typer.echo(f"materialize backend: {data['materialize_backend']}")
+    typer.echo(f"state path: {data['state_path']}")
+    typer.echo(f"data dir: {data['data_dir']}")
+    typer.echo(f"config dir: {data['config_dir']}")
+    typer.echo(f"path separator: {data['path_separator']}")
+    shells = data["available_shells"]
+    tools = data["tools"]
+    if not isinstance(shells, list) or not isinstance(tools, dict):
+        raise RuntimeError("doctor diagnostics have unexpected shape")
+    typer.echo(f"available shells: {', '.join(str(shell) for shell in shells)}")
+    typer.echo(f"uv: {tools.get('uv') or 'not found'}")
+    typer.echo(f"mise: {tools.get('mise') or 'not found'}")
 
 
 def _make_conflict_resolver(on_conflict: str | None) -> ConflictResolver:
@@ -508,3 +538,24 @@ def _validation_plan_results(
         return Orchestrator(store).run(
             spec_obj, dry_run=True, tags=tags, skip_tags=skip_tags, diff=diff, explain_skips=explain_skips
         )
+
+
+def _doctor_data(state: Path | None) -> dict[str, object]:
+    try:
+        materialize_backend = detect_platform()
+    except Exception as exc:
+        materialize_backend = f"unavailable: {exc}"
+    return {
+        "version": __version__,
+        "platform": sys.platform,
+        "materialize_backend": materialize_backend,
+        "state_path": str(_make_store(state).path),
+        "data_dir": str(data_dir()),
+        "config_dir": str(config_dir()),
+        "path_separator": os.pathsep,
+        "available_shells": ["bash", "zsh", "fish", "nu", "xonsh", "pwsh", "cmd"],
+        "tools": {
+            "uv": shutil.which("uv"),
+            "mise": shutil.which("mise"),
+        },
+    }
