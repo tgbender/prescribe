@@ -122,7 +122,8 @@ def test_detect_platform_returns_macos():
 
 @pytest.mark.xfail(sys.platform != "linux", reason="only meaningful on Linux")
 def test_detect_platform_returns_linux():
-    assert detect_platform() == "linux"
+    expected = "wsl" if "microsoft" in Path("/proc/version").read_text().lower() else "linux"
+    assert detect_platform() == expected
 
 
 @pytest.mark.xfail(sys.platform != "win32", reason="only meaningful on Windows")

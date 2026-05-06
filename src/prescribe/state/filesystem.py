@@ -4,7 +4,7 @@ import ctypes
 import os
 import sys
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 _NETWORK_FS_TYPES = {
     "9p",
@@ -52,7 +52,8 @@ def _is_windows_network_path(path: Path) -> bool:
     if not anchor:
         return False
 
-    drive_type = cast(int, ctypes.windll.kernel32.GetDriveTypeW(str(Path(anchor))))
+    windll = cast(Any, ctypes).windll
+    drive_type = cast(int, windll.kernel32.GetDriveTypeW(str(Path(anchor))))
     return drive_type == 4  # DRIVE_REMOTE
 
 

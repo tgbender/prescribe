@@ -53,7 +53,7 @@ def test_render_nushell_does_not_mutate_input_dict() -> None:
 
 
 def test_render_pwsh_uses_env_assignments() -> None:
-    env = {"PATH": os.pathsep.join([r"C:\Tools\bin", r"C:\Apps\bin"]), "EDITOR": "nvim"}
+    env = {"PATH": r"C:\Tools\bin;C:\Apps\bin", "EDITOR": "nvim"}
     lines = render_shell_block(shell_type="pwsh", env_vars=env, managed_block_id="test")
 
     assert "$env:EDITOR = 'nvim'" in lines

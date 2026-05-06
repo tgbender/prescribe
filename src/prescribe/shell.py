@@ -64,7 +64,7 @@ def _render_pwsh(*, env_vars: dict[str, str], managed_block_id: str) -> list[str
             continue
         lines.append(f"$env:{name} = {_quote_pwsh(value)}")
     if path_value is not None:
-        entries = ", ".join(_quote_pwsh(entry) for entry in _split_path(path_value))
+        entries = ", ".join(_quote_pwsh(entry) for entry in _split_windows_path(path_value))
         lines.append(f"$env:PATH = @({entries}) -join [IO.Path]::PathSeparator")
     return lines
 
@@ -92,6 +92,12 @@ _RENDERERS = {
 
 def _split_path(path_value: str) -> list[str]:
     return [p for p in path_value.split(os.pathsep) if p]
+
+
+def _split_windows_path(path_value: str) -> list[str]:
+    if ";" not in path_value:
+        return _split_path(path_value)
+    return [p for p in path_value.split(";") if p]
 
 
 def _quote_xonsh(value: str) -> str:
