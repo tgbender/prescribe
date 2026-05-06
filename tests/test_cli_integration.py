@@ -495,6 +495,45 @@ def test_validate_invalid_spec_exits_nonzero(run, workdir: Path) -> None:
     assert "[[targets]]" in result.stderr
 
 
+def test_validate_plan_reports_would_change_without_state(run, workdir: Path) -> None:
+    config = workdir / "config.toml"
+    config.write_text("count = 1\n")
+    spec = workdir / "spec.toml"
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    result = run("validate", "--plan", "spec.toml")
+
+    assert result.returncode == 0
+    assert "would change" in result.stdout
+    assert "config.toml" in result.stdout
+    assert not (workdir / ".prescribe" / "state.db").exists()
+
+
+def test_validate_plan_diff_outputs_unified_diff(run, workdir: Path) -> None:
+    config = workdir / "config.toml"
+    config.write_text("count = 1\n")
+    spec = workdir / "spec.toml"
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    result = run("validate", "--plan", "--diff", "spec.toml")
+
+    assert result.returncode == 0
+    assert "-count = 1" in result.stdout
+    assert "+count = 2" in result.stdout
+
+
+def test_validate_plan_json_includes_status(run, workdir: Path) -> None:
+    spec = workdir / "spec.toml"
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 1\n")
+
+    result = run("validate", "--plan", "--json", "spec.toml")
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["valid"] is True
+    assert data["targets"][0]["status"] == "would change"
+
+
 # ---------------------------------------------------------------------------
 # formats
 # ---------------------------------------------------------------------------

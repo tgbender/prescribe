@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import typer
@@ -148,6 +149,8 @@ def validate(
     tags: str | None = typer.Option(None, "--tags", help="Only consider targets with these tags (comma-separated)."),
     skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
     explain_skips: bool = typer.Option(False, "--explain-skips", help="Show why targets were skipped."),
+    plan: bool = typer.Option(False, "--plan", help="Show whether active targets would change."),
+    diff: bool = typer.Option(False, "--diff", help="Include diffs when used with --plan."),
 ) -> None:
     """Validate a spec and show which targets would be considered."""
     try:
@@ -159,7 +162,14 @@ def validate(
     tag_set = _parse_tags(tags)
     skip_set = _parse_tags(skip_tags)
     explain = _option_bool(explain_skips)
-    targets = _validation_targets(spec_obj, tags=tag_set, skip_tags=skip_set, explain_skips=explain)
+    targets = _validation_targets(
+        spec_obj,
+        tags=tag_set,
+        skip_tags=skip_set,
+        explain_skips=explain,
+        plan=_option_bool(plan),
+        diff=_option_bool(diff),
+    )
 
     if output_json:
         typer.echo(json.dumps({"valid": True, "targets": targets}, indent=2))
@@ -173,8 +183,12 @@ def validate(
         status = "active" if target["active"] else "skipped"
         label = typer.style(f"{target['type']:<6}", fg=typer.colors.BRIGHT_BLACK)
         detail = target.get("path") or target.get("name") or ""
+        if plan and target.get("status"):
+            status = str(target["status"])
         reason = f"  — {target['skip_reason']}" if explain and target.get("skip_reason") else ""
         typer.echo(f"{label}  {status:<7}  {detail}{reason}")
+        if plan and target.get("diff"):
+            typer.echo(str(target["diff"]), nl=False)
 
 
 @app.command(name="list")
@@ -429,7 +443,15 @@ def _validation_targets(
     tags: set[str] | None = None,
     skip_tags: set[str] | None = None,
     explain_skips: bool = False,
+    plan: bool = False,
+    diff: bool = False,
 ) -> list[dict[str, object]]:
+    plan_results = (
+        _validation_plan_results(spec_obj, tags=tags, skip_tags=skip_tags, diff=diff, explain_skips=explain_skips)
+        if plan
+        else []
+    )
+    result_idx = 0
     targets: list[dict[str, object]] = []
     for file_target in spec_obj.files:
         active = condition_matches(target=file_target, tags=tags, skip_tags=skip_tags)
@@ -441,7 +463,16 @@ def _validation_targets(
         }
         if explain_skips and not active:
             entry["skip_reason"] = condition_skip_reason(target=file_target, tags=tags, skip_tags=skip_tags)
+        if plan and result_idx < len(plan_results):
+            result = plan_results[result_idx]
+            result_idx += 1
+            entry["status"] = _display_status(result.status, result.changed)
+            entry["changed"] = result.changed
+            if result.diff:
+                entry["diff"] = result.diff
         targets.append(entry)
+    if spec_obj.env and not spec_obj.files and not spec_obj.shell and plan:
+        result_idx += 1
     for env_target in spec_obj.env:
         active = condition_matches(target=env_target, tags=tags, skip_tags=skip_tags)
         entry = {"type": "env", "name": env_target.name, "active": active}
@@ -453,5 +484,27 @@ def _validation_targets(
         entry = {"type": "shell", "path": str(shell_target.path), "shells": shell_target.shells, "active": active}
         if explain_skips and not active:
             entry["skip_reason"] = condition_skip_reason(target=shell_target, tags=tags, skip_tags=skip_tags)
+        if plan and result_idx < len(plan_results):
+            result = plan_results[result_idx]
+            result_idx += 1
+            entry["status"] = _display_status(result.status, result.changed)
+            entry["changed"] = result.changed
+            if result.diff:
+                entry["diff"] = result.diff
         targets.append(entry)
     return targets
+
+
+def _validation_plan_results(
+    spec_obj: Spec,
+    *,
+    tags: set[str] | None,
+    skip_tags: set[str] | None,
+    diff: bool,
+    explain_skips: bool,
+) -> list[OrchestrationResult]:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        store = StateStore(Path(tmpdir) / "state.db")
+        return Orchestrator(store).run(
+            spec_obj, dry_run=True, tags=tags, skip_tags=skip_tags, diff=diff, explain_skips=explain_skips
+        )
