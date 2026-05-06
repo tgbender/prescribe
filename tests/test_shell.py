@@ -52,6 +52,20 @@ def test_render_nushell_does_not_mutate_input_dict() -> None:
     assert "PATH" in env
 
 
+def test_render_pwsh_uses_env_assignments() -> None:
+    env = {"PATH": os.pathsep.join([r"C:\Tools\bin", r"C:\Apps\bin"]), "EDITOR": "nvim"}
+    lines = render_shell_block(shell_type="pwsh", env_vars=env, managed_block_id="test")
+
+    assert "$env:EDITOR = 'nvim'" in lines
+    assert "$env:PATH = @('C:\\Tools\\bin', 'C:\\Apps\\bin') -join [IO.Path]::PathSeparator" in lines
+
+
+def test_render_pwsh_escapes_single_quotes() -> None:
+    lines = render_shell_block(shell_type="pwsh", env_vars={"NAME": "Bob's"}, managed_block_id="test")
+
+    assert lines == ["$env:NAME = 'Bob''s'"]
+
+
 def test_shell_target_only_receives_matching_shell_env(tmp_path, state_store) -> None:
     from prescribe.orchestrator import Orchestrator
     from prescribe.spec import EnvTarget, ShellTarget, Spec

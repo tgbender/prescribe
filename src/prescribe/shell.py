@@ -56,6 +56,19 @@ def _render_nushell(*, env_vars: dict[str, str], managed_block_id: str) -> list[
     return lines
 
 
+def _render_pwsh(*, env_vars: dict[str, str], managed_block_id: str) -> list[str]:
+    lines: list[str] = []
+    path_value = env_vars.get("PATH")
+    for name, value in sorted(env_vars.items()):
+        if name == "PATH":
+            continue
+        lines.append(f"$env:{name} = {_quote_pwsh(value)}")
+    if path_value is not None:
+        entries = ", ".join(_quote_pwsh(entry) for entry in _split_path(path_value))
+        lines.append(f"$env:PATH = @({entries}) -join [IO.Path]::PathSeparator")
+    return lines
+
+
 # ── helpers ───────────────────────────────────────────────
 
 
@@ -65,6 +78,7 @@ _RENDERERS = {
     "zsh": _render_posix,
     "fish": _render_fish,
     "nu": _render_nushell,
+    "pwsh": _render_pwsh,
 }
 
 
@@ -81,6 +95,10 @@ def _quote_xonsh(value: str) -> str:
 def _quote_fish(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace("'", "\\'")
     return f"'{escaped}'"
+
+
+def _quote_pwsh(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
 
 
 def _escape_posix(value: str) -> str:

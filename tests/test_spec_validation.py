@@ -234,9 +234,17 @@ def test_spec_env_target_unknown_platform_rejected(tmp_path: Path) -> None:
         SpecLoader().load(spec_path)
 
 
-def test_spec_env_target_unknown_shell_rejected(tmp_path: Path) -> None:
+def test_spec_env_target_accepts_pwsh_shell(tmp_path: Path) -> None:
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[env]]\nname = 'VAR'\nvalue = '1'\nshells = ['pwsh']\n")
+
+    spec = SpecLoader().load(spec_path)
+    assert spec.env[0].shells == ["pwsh"]
+
+
+def test_spec_env_target_unknown_shell_rejected(tmp_path: Path) -> None:
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[env]]\nname = 'VAR'\nvalue = '1'\nshells = ['cmd']\n")
 
     with pytest.raises(SpecError, match="unknown shell"):
         SpecLoader().load(spec_path)
@@ -255,6 +263,15 @@ def test_spec_valid_shell_target(tmp_path: Path) -> None:
     assert len(spec.shell) == 1
     assert spec.shell[0].shells == ["xonsh"]
     assert spec.shell[0].managed_block_id == "prescribe-env"
+
+
+def test_spec_valid_pwsh_shell_target(tmp_path: Path) -> None:
+    spec_path = tmp_path / "spec.toml"
+    profile_path = tmp_path / "profile.ps1"
+    spec_path.write_text(f"[[shell]]\npath = '{profile_path}'\nmanaged_block_id = 'prescribe-env'\nshells = ['pwsh']\n")
+
+    spec = SpecLoader().load(spec_path)
+    assert spec.shell[0].shells == ["pwsh"]
 
 
 def test_spec_shell_target_requires_path(tmp_path: Path) -> None:
