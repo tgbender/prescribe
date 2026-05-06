@@ -177,6 +177,149 @@ def test_spec_uses_first_existing_path_from_fallback_list(tmp_path: Path) -> Non
     assert spec.files[0].path == existing.resolve()
 
 
+def test_spec_file_target_uses_named_location(tmp_path: Path) -> None:
+    existing = tmp_path / "existing" / "config.toml"
+    existing.parent.mkdir()
+    existing.write_text("title = 'hello'\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text(
+        "[locations.config]\n"
+        "candidates = ['missing/config.toml', 'existing/config.toml']\n"
+        "\n"
+        "[[files]]\n"
+        "location = 'config'\n"
+        "format = 'toml'\n"
+    )
+
+    spec = SpecLoader().load(spec_path)
+
+    assert spec.locations["config"].name == "config"
+    assert spec.files[0].path == existing.resolve()
+
+
+def test_spec_location_uses_first_existing_parent_when_no_file_exists(tmp_path: Path) -> None:
+    parent = tmp_path / "present"
+    parent.mkdir()
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text(
+        "[locations.config]\n"
+        "candidates = ['missing/config.toml', 'present/config.toml']\n"
+        "\n"
+        "[[files]]\n"
+        "location = 'config'\n"
+        "format = 'toml'\n"
+    )
+
+    spec = SpecLoader().load(spec_path)
+
+    assert spec.files[0].path == (parent / "config.toml").resolve()
+
+
+def test_spec_location_can_append_relative_child_path(tmp_path: Path) -> None:
+    root = tmp_path / "tool"
+    root.mkdir()
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text(
+        "[locations.tool]\n"
+        "kind = 'dir'\n"
+        "candidates = ['tool']\n"
+        "\n"
+        "[[files]]\n"
+        "location = 'tool'\n"
+        "path_append = 'config.toml'\n"
+        "format = 'toml'\n"
+    )
+
+    spec = SpecLoader().load(spec_path)
+
+    assert spec.files[0].path == (root / "config.toml").resolve()
+
+
+def test_spec_location_candidate_platform_filter(tmp_path: Path) -> None:
+    import sys
+
+    current = "windows" if sys.platform == "win32" else "macos" if sys.platform == "darwin" else "linux"
+    inactive = "linux" if current == "windows" else "windows"
+    active = tmp_path / "active.toml"
+    active.write_text("title = 'hello'\n")
+    inactive_path = tmp_path / "inactive.toml"
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text(
+        "[locations.config]\n"
+        "candidates = [\n"
+        f"  {{ path = '{inactive_path.as_posix()}', platforms = ['{inactive}'] }},\n"
+        f"  {{ path = '{active.as_posix()}', platforms = ['{current}'] }},\n"
+        "]\n"
+        "\n"
+        "[[files]]\n"
+        "location = 'config'\n"
+        "format = 'toml'\n"
+    )
+
+    spec = SpecLoader().load(spec_path)
+
+    assert spec.files[0].path == active.resolve()
+
+
+def test_spec_location_first_existing_mode_requires_existing_path(tmp_path: Path) -> None:
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text(
+        "[locations.config]\n"
+        "mode = 'first_existing'\n"
+        "candidates = ['missing/config.toml']\n"
+        "\n"
+        "[[files]]\n"
+        "location = 'config'\n"
+        "format = 'toml'\n"
+    )
+
+    with pytest.raises(SpecError, match="did not match an existing path"):
+        SpecLoader().load(spec_path)
+
+
+def test_spec_location_rejects_absolute_append(tmp_path: Path) -> None:
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text(
+        "[locations.tool]\n"
+        "candidates = ['tool']\n"
+        "\n"
+        "[[files]]\n"
+        "location = 'tool'\n"
+        f"path_append = '{(tmp_path / 'config.toml').as_posix()}'\n"
+        "format = 'toml'\n"
+    )
+
+    with pytest.raises(SpecError, match="must be a relative path"):
+        SpecLoader().load(spec_path)
+
+
+def test_spec_location_unknown_reference_rejected(tmp_path: Path) -> None:
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\nlocation = 'missing'\nformat = 'toml'\n")
+
+    with pytest.raises(SpecError, match="unknown location"):
+        SpecLoader().load(spec_path)
+
+
+def test_spec_shell_target_uses_named_location(tmp_path: Path) -> None:
+    profile = tmp_path / "profile.ps1"
+    profile.write_text("")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text(
+        "[locations.profile]\n"
+        "candidates = ['profile.ps1']\n"
+        "\n"
+        "[[shell]]\n"
+        "location = 'profile'\n"
+        "managed_block_id = 'prescribe-env'\n"
+        "shells = ['pwsh']\n"
+    )
+
+    spec = SpecLoader().load(spec_path)
+
+    assert spec.shell[0].path == profile.resolve()
+
+
 def test_spec_valid_line_file_with_block_id(tmp_path: Path) -> None:
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[files]]\npath = '.env'\nformat = 'line'\nmanaged_block_id = 'managed'\n")

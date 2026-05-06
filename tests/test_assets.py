@@ -82,6 +82,29 @@ def test_spec_loader_asset_uses_first_existing_path(tmp_path: Path) -> None:
     assert spec.assets[0].dest == second
 
 
+def test_spec_loader_asset_uses_dest_location_with_append(tmp_path: Path) -> None:
+    source = tmp_path / "repo" / "mcp.json"
+    source.parent.mkdir()
+    source.write_text("{}\n")
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text(
+        "[locations.agent]\n"
+        "kind = 'dir'\n"
+        "candidates = ['config']\n"
+        "\n"
+        "[[assets]]\n"
+        "source = 'repo/mcp.json'\n"
+        "dest_location = 'agent'\n"
+        "dest_append = 'mcp.json'\n"
+    )
+
+    spec = SpecLoader().load(spec_path)
+
+    assert spec.assets[0].dest == (config_dir / "mcp.json").resolve()
+
+
 def test_spec_loader_rejects_replace_for_file_mode(tmp_path: Path) -> None:
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[assets]]\nsource = 'repo/mcp.json'\ndest = 'out/mcp.json'\nreplace = true\n")

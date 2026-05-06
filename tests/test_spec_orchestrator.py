@@ -157,6 +157,30 @@ def test_spec_loader_and_orchestrator_apply_and_then_noop(tmp_path: Path, state_
     assert [result.applied for result in second] == [False, False]
 
 
+def test_orchestrator_applies_file_target_from_named_location(tmp_path: Path, state_store) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_toml = config_dir / "tool.toml"
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text(
+        "[locations.tool_config]\n"
+        "kind = 'file'\n"
+        "candidates = ['missing/tool.toml', 'config/tool.toml']\n"
+        "\n"
+        "[[files]]\n"
+        "location = 'tool_config'\n"
+        "format = 'toml'\n"
+        "\n"
+        "[files.data]\n"
+        "enabled = true\n"
+    )
+
+    results = Orchestrator(state_store).run(spec_path)
+
+    assert results[0].status == "applied"
+    assert config_toml.read_text() == "enabled = true\n"
+
+
 def test_orchestrator_conflict_when_file_changes_between_runs(tmp_path: Path, state_store) -> None:
     config_toml = tmp_path / "config.toml"
     config_toml.write_text("title = 'hello'\ncount = 1\n")

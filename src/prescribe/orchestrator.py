@@ -54,6 +54,7 @@ PLATFORM_MATCHERS: dict[str, Callable[[], bool]] = {
     "linux": lambda: sys.platform.startswith("linux"),
     "macos": lambda: sys.platform == "darwin",
     "windows": lambda: sys.platform == "win32",
+    "wsl": lambda: sys.platform.startswith("linux") and _is_wsl(),
 }
 
 
@@ -68,6 +69,13 @@ def platform_matches(selectors: list[str]) -> bool:
     if not selectors:
         return True
     return any(PLATFORM_MATCHERS.get(selector, lambda: False)() for selector in selectors)
+
+
+def _is_wsl() -> bool:
+    try:
+        return "microsoft" in Path("/proc/version").read_text(encoding="utf-8", errors="replace").lower()
+    except OSError:
+        return False
 
 
 def machine_matches(selectors: list[str]) -> bool:

@@ -1,4 +1,7 @@
 import os
+import shutil
+import socket
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -7,10 +10,12 @@ from typing import Any, cast
 import tomlkit
 
 KNOWN_FORMATS = frozenset({"toml", "yaml", "jsonc", "line"})
-KNOWN_PLATFORMS = frozenset({"linux", "macos", "windows"})
+KNOWN_PLATFORMS = frozenset({"linux", "macos", "windows", "wsl"})
 KNOWN_SHELLS = frozenset({"xonsh", "bash", "zsh", "fish", "nu", "pwsh", "cmd"})
 KNOWN_ASSET_MODES = frozenset({"file", "mirror"})
-KNOWN_SECTION_KEYS = frozenset({"files", "env", "shell", "assets"})
+KNOWN_LOCATION_MODES = frozenset({"first_existing_parent", "first_existing", "first", "required", "create_parent"})
+KNOWN_LOCATION_KINDS = frozenset({"file", "dir", "any"})
+KNOWN_SECTION_KEYS = frozenset({"files", "env", "shell", "assets", "locations"})
 
 
 class SpecError(Exception):
@@ -18,6 +23,22 @@ class SpecError(Exception):
 
 
 # ── target types ─────────────────────────────────────────
+
+
+@dataclass(slots=True)
+class LocationCandidate:
+    path: Path
+    platforms: list[str] = field(default_factory=list)
+    machine: list[str] = field(default_factory=list)
+    if_command_exists: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class Location:
+    name: str
+    candidates: list[LocationCandidate]
+    mode: str = "first_existing_parent"
+    kind: str = "any"
 
 
 @dataclass(slots=True)
@@ -85,6 +106,7 @@ class AssetTarget:
 class Spec:
     id: str | None = None
     path: Path = field(default_factory=Path)
+    locations: dict[str, Location] = field(default_factory=dict)
     files: list[FileTarget] = field(default_factory=list)
     env: list[EnvTarget] = field(default_factory=list)
     shell: list[ShellTarget] = field(default_factory=list)
@@ -110,31 +132,75 @@ class SpecLoader:
         # Resolve [vars] section first
         vars_dict = _resolve_vars_section(spec_path, data.get("vars", {}))
 
-        files = self._parse_files(spec_path, data.get("files", []), vars_dict)
+        locations = self._parse_locations(spec_path, data.get("locations", {}), vars_dict)
+        files = self._parse_files(spec_path, data.get("files", []), vars_dict, locations)
         env_vars = self._parse_env(spec_path, data.get("env", []), vars_dict)
-        shells = self._parse_shell(spec_path, data.get("shell", []), vars_dict)
-        assets = self._parse_assets(spec_path, data.get("assets", []), vars_dict)
+        shells = self._parse_shell(spec_path, data.get("shell", []), vars_dict, locations)
+        assets = self._parse_assets(spec_path, data.get("assets", []), vars_dict, locations)
 
         _validate_no_duplicate_overlapping_files(spec_path, files)
 
-        return Spec(path=spec_path, files=files, env=env_vars, shell=shells, assets=assets)
+        return Spec(path=spec_path, locations=locations, files=files, env=env_vars, shell=shells, assets=assets)
+
+    # ── locations ─────────────────────────────────────
+
+    def _parse_locations(self, spec_path: Path, raw_locations: Any, vars_dict: dict[str, str]) -> dict[str, Location]:
+        if raw_locations is None:
+            return {}
+        if not isinstance(raw_locations, Mapping):
+            raise SpecError(f"spec {spec_path}: 'locations' must be a table/object")
+        result: dict[str, Location] = {}
+        for raw_name, raw in raw_locations.items():
+            name = str(raw_name)
+            ctx = f"spec {spec_path} locations.{name}"
+            if not name:
+                raise SpecError(f"{ctx}: location name must be non-empty")
+            if not isinstance(raw, Mapping):
+                raise SpecError(f"{ctx}: expected a table/object")
+            raw_candidates = raw.get("candidates")
+            if not isinstance(raw_candidates, list) or not raw_candidates:
+                raise SpecError(f"{ctx}: key 'candidates' must be a non-empty list")
+            mode = _coerce_optional_string(raw.get("mode"), ctx, "mode") or "first_existing_parent"
+            if mode not in KNOWN_LOCATION_MODES:
+                raise SpecError(f"{ctx}: unknown mode {mode!r}, expected one of {sorted(KNOWN_LOCATION_MODES)}")
+            kind = _coerce_optional_string(raw.get("kind"), ctx, "kind") or "any"
+            if kind not in KNOWN_LOCATION_KINDS:
+                raise SpecError(f"{ctx}: unknown kind {kind!r}, expected one of {sorted(KNOWN_LOCATION_KINDS)}")
+            candidates = [
+                _parse_location_candidate(spec_path, index, candidate, vars_dict, ctx)
+                for index, candidate in enumerate(raw_candidates)
+            ]
+            result[name] = Location(name=name, candidates=candidates, mode=mode, kind=kind)
+        return result
 
     # ── files ─────────────────────────────────────────
 
-    def _parse_files(self, spec_path: Path, raw_list: Any, vars_dict: dict[str, str]) -> list[FileTarget]:
+    def _parse_files(
+        self,
+        spec_path: Path,
+        raw_list: Any,
+        vars_dict: dict[str, str],
+        locations: dict[str, Location],
+    ) -> list[FileTarget]:
         if not isinstance(raw_list, list):
             raise SpecError(f"spec {spec_path}: 'files' must be an array of tables")
         targets: list[FileTarget] = []
         for index, raw in enumerate(raw_list):
-            targets.append(self._parse_file_target(spec_path, index, raw, vars_dict))
+            targets.append(self._parse_file_target(spec_path, index, raw, vars_dict, locations))
         return targets
 
-    def _parse_file_target(self, spec_path: Path, index: int, raw: Any, vars_dict: dict[str, str]) -> FileTarget:
+    def _parse_file_target(
+        self,
+        spec_path: Path,
+        index: int,
+        raw: Any,
+        vars_dict: dict[str, str],
+        locations: dict[str, Location],
+    ) -> FileTarget:
         ctx = f"spec {spec_path} files[{index}]"
         if not isinstance(raw, Mapping):
             raise SpecError(f"{ctx}: expected a table/object")
 
-        path = _require_path(spec_path, raw, ctx)
         fmt = _require_format(raw, ctx)
 
         if fmt == "line" and "managed_block_id" not in raw:
@@ -161,7 +227,18 @@ class SpecLoader:
             except OSError as exc:
                 raise SpecError(f"{ctx}: failed to read text_from {text_path}: {exc}") from exc
         return FileTarget(
-            path=_resolve_target_path(spec_path, expand_spec_vars(path, vars_dict), paths),
+            path=_resolve_target_from_spec(
+                spec_path,
+                raw,
+                ctx,
+                vars_dict,
+                locations,
+                path_key="path",
+                location_key="location",
+                append_key="path_append",
+                fallback_paths=paths,
+                destination=False,
+            ),
             format=fmt,
             priority=_coerce_optional_int(raw.get("priority"), ctx, "priority", default=0),
             data=_coerce_mapping(raw.get("data", {}), ctx, "data"),
@@ -214,24 +291,47 @@ class SpecLoader:
 
     # ── shell ─────────────────────────────────────────
 
-    def _parse_shell(self, spec_path: Path, raw_list: Any, vars_dict: dict[str, str]) -> list[ShellTarget]:
+    def _parse_shell(
+        self,
+        spec_path: Path,
+        raw_list: Any,
+        vars_dict: dict[str, str],
+        locations: dict[str, Location],
+    ) -> list[ShellTarget]:
         if not isinstance(raw_list, list):
             raise SpecError(f"spec {spec_path}: 'shell' must be an array of tables")
         targets: list[ShellTarget] = []
         for index, raw in enumerate(raw_list):
-            targets.append(self._parse_shell_target(spec_path, index, raw, vars_dict))
+            targets.append(self._parse_shell_target(spec_path, index, raw, vars_dict, locations))
         return targets
 
-    def _parse_shell_target(self, spec_path: Path, index: int, raw: Any, vars_dict: dict[str, str]) -> ShellTarget:
+    def _parse_shell_target(
+        self,
+        spec_path: Path,
+        index: int,
+        raw: Any,
+        vars_dict: dict[str, str],
+        locations: dict[str, Location],
+    ) -> ShellTarget:
         ctx = f"spec {spec_path} shell[{index}]"
         if not isinstance(raw, Mapping):
             raise SpecError(f"{ctx}: expected a table/object")
 
-        path = _require_path(spec_path, raw, ctx)
         block_id = _coerce_required_string(raw.get("managed_block_id"), ctx, "managed_block_id")
 
         return ShellTarget(
-            path=_resolve_target_path(spec_path, expand_spec_vars(path, vars_dict), []),
+            path=_resolve_target_from_spec(
+                spec_path,
+                raw,
+                ctx,
+                vars_dict,
+                locations,
+                path_key="path",
+                location_key="location",
+                append_key="path_append",
+                fallback_paths=[],
+                destination=False,
+            ),
             managed_block_id=str(block_id),
             shells=_coerce_shells(raw.get("shells", []), ctx),
             platforms=_coerce_platforms(raw.get("platforms", []), ctx),
@@ -241,21 +341,33 @@ class SpecLoader:
 
     # ── assets ────────────────────────────────────────
 
-    def _parse_assets(self, spec_path: Path, raw_list: Any, vars_dict: dict[str, str]) -> list[AssetTarget]:
+    def _parse_assets(
+        self,
+        spec_path: Path,
+        raw_list: Any,
+        vars_dict: dict[str, str],
+        locations: dict[str, Location],
+    ) -> list[AssetTarget]:
         if not isinstance(raw_list, list):
             raise SpecError(f"spec {spec_path}: 'assets' must be an array of tables")
         targets: list[AssetTarget] = []
         for index, raw in enumerate(raw_list):
-            targets.append(self._parse_asset_target(spec_path, index, raw, vars_dict))
+            targets.append(self._parse_asset_target(spec_path, index, raw, vars_dict, locations))
         return targets
 
-    def _parse_asset_target(self, spec_path: Path, index: int, raw: Any, vars_dict: dict[str, str]) -> AssetTarget:
+    def _parse_asset_target(
+        self,
+        spec_path: Path,
+        index: int,
+        raw: Any,
+        vars_dict: dict[str, str],
+        locations: dict[str, Location],
+    ) -> AssetTarget:
         ctx = f"spec {spec_path} assets[{index}]"
         if not isinstance(raw, Mapping):
             raise SpecError(f"{ctx}: expected a table/object")
 
         source = _coerce_required_string(raw.get("source"), ctx, "source")
-        dest = _coerce_required_string(raw.get("dest"), ctx, "dest")
         mode = _coerce_optional_string(raw.get("mode"), ctx, "mode") or ("mirror" if _has_glob(source) else "file")
         if mode not in KNOWN_ASSET_MODES:
             raise SpecError(f"{ctx}: unknown mode {mode!r}, expected one of {sorted(KNOWN_ASSET_MODES)}")
@@ -273,7 +385,18 @@ class SpecLoader:
             _resolve_destination_path(spec_path, expand_spec_vars(p, vars_dict))
             for p in _coerce_string_list(raw.get("paths", []), ctx, "paths")
         ]
-        dest_path = _resolve_asset_dest_path(spec_path, expand_spec_vars(dest, vars_dict), paths)
+        dest_path = _resolve_target_from_spec(
+            spec_path,
+            raw,
+            ctx,
+            vars_dict,
+            locations,
+            path_key="dest",
+            location_key="dest_location",
+            append_key="dest_append",
+            fallback_paths=[str(path) for path in paths],
+            destination=True,
+        )
 
         return AssetTarget(
             source=str(_resolve_source_pattern(spec_path, expand_spec_vars(source, vars_dict))),
@@ -292,6 +415,121 @@ class SpecLoader:
 
 
 # ── helpers ───────────────────────────────────────────────
+
+
+def _parse_location_candidate(
+    spec_path: Path,
+    index: int,
+    raw: Any,
+    vars_dict: dict[str, str],
+    parent_ctx: str,
+) -> LocationCandidate:
+    ctx = f"{parent_ctx}.candidates[{index}]"
+    if isinstance(raw, str):
+        path = raw
+        platforms: list[str] = []
+        machine: list[str] = []
+        if_command_exists: list[str] = []
+    elif isinstance(raw, Mapping):
+        path = _coerce_required_string(raw.get("path"), ctx, "path")
+        platforms = _coerce_platforms(raw.get("platforms", []), ctx)
+        machine = _coerce_string_list(raw.get("machine", []), ctx, "machine")
+        if_command_exists = _coerce_string_list(raw.get("if_command_exists", []), ctx, "if_command_exists")
+    else:
+        raise SpecError(f"{ctx}: candidate must be a string or table/object")
+    return LocationCandidate(
+        path=_resolve_destination_path(spec_path, expand_spec_vars(path, vars_dict)),
+        platforms=platforms,
+        machine=machine,
+        if_command_exists=if_command_exists,
+    )
+
+
+def _resolve_target_from_spec(
+    spec_path: Path,
+    raw: Mapping[str, Any],
+    ctx: str,
+    vars_dict: dict[str, str],
+    locations: dict[str, Location],
+    *,
+    path_key: str,
+    location_key: str,
+    append_key: str,
+    fallback_paths: list[str],
+    destination: bool,
+) -> Path:
+    path = _coerce_optional_string(raw.get(path_key), ctx, path_key)
+    location_name = _coerce_optional_string(raw.get(location_key), ctx, location_key)
+    append = _coerce_optional_string(raw.get(append_key), ctx, append_key)
+    if path and location_name:
+        raise SpecError(f"{ctx}: specify either '{path_key}' or '{location_key}', not both")
+    if append and not location_name:
+        raise SpecError(f"{ctx}: '{append_key}' requires '{location_key}'")
+    if location_name:
+        if fallback_paths:
+            raise SpecError(f"{ctx}: 'paths' cannot be used with '{location_key}'")
+        location = locations.get(location_name)
+        if location is None:
+            raise SpecError(f"{ctx}: unknown location {location_name!r}")
+        resolved = _resolve_location(spec_path, location, ctx)
+        if append:
+            resolved = _append_relative_path(spec_path, resolved, expand_spec_vars(append, vars_dict), ctx, append_key)
+        return resolved
+    if not path:
+        raise SpecError(f"{ctx}: missing required key '{path_key}' or '{location_key}'")
+    if append:
+        raise SpecError(f"{ctx}: '{append_key}' requires '{location_key}'")
+    expanded = expand_spec_vars(path, vars_dict)
+    return (
+        _resolve_asset_dest_path(spec_path, expanded, [_resolve_destination_path(spec_path, p) for p in fallback_paths])
+        if destination
+        else _resolve_target_path(spec_path, expanded, fallback_paths)
+    )
+
+
+def _resolve_location(spec_path: Path, location: Location, ctx: str) -> Path:
+    candidates = [candidate.path for candidate in location.candidates if _location_candidate_matches(candidate)]
+    if not candidates:
+        raise SpecError(f"{ctx}: location {location.name!r} has no active candidates")
+    if location.kind == "file":
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_dir():
+                raise SpecError(f"{ctx}: location {location.name!r} expected file but found directory: {candidate}")
+    elif location.kind == "dir":
+        for candidate in candidates:
+            if candidate.exists() and not candidate.is_dir():
+                raise SpecError(f"{ctx}: location {location.name!r} expected directory but found file: {candidate}")
+
+    if location.mode in {"first", "create_parent"}:
+        return candidates[0]
+    if location.mode in {"first_existing", "required"}:
+        for candidate in candidates:
+            if candidate.exists() or candidate.is_symlink():
+                return candidate
+        raise SpecError(f"{ctx}: location {location.name!r} did not match an existing path")
+    for candidate in candidates:
+        if candidate.exists() or candidate.is_symlink():
+            return candidate
+    for candidate in candidates:
+        if candidate.parent.exists():
+            return candidate
+    return candidates[0]
+
+
+def _location_candidate_matches(candidate: LocationCandidate) -> bool:
+    if not _platform_selectors_match(candidate.platforms):
+        return False
+    if not _machine_selectors_match(candidate.machine):
+        return False
+    return all(shutil.which(command) is not None for command in candidate.if_command_exists)
+
+
+def _append_relative_path(spec_path: Path, base: Path, raw_append: str, ctx: str, field_name: str) -> Path:
+    expanded = os.path.expandvars(_expand_user(raw_append))
+    append = Path(expanded)
+    if append.is_absolute():
+        raise SpecError(f"{ctx}: key '{field_name}' must be a relative path")
+    return (base / append).resolve()
 
 
 def _require_path(spec_path: Path, raw: Mapping[str, Any], ctx: str) -> str:
@@ -466,6 +704,38 @@ def _values_overlap(left: list[str], right: list[str]) -> bool:
     if "all" in left or "all" in right:
         return True
     return any(value in right for value in left)
+
+
+def _platform_selectors_match(selectors: list[str]) -> bool:
+    if not selectors:
+        return True
+    return any(_platform_selector_matches(selector) for selector in selectors)
+
+
+def _platform_selector_matches(selector: str) -> bool:
+    if selector == "macos":
+        return sys.platform == "darwin"
+    if selector == "windows":
+        return sys.platform == "win32"
+    if selector == "linux":
+        return sys.platform.startswith("linux")
+    if selector == "wsl":
+        return sys.platform.startswith("linux") and _is_wsl()
+    return False
+
+
+def _is_wsl() -> bool:
+    try:
+        return "microsoft" in Path("/proc/version").read_text(encoding="utf-8", errors="replace").lower()
+    except OSError:
+        return False
+
+
+def _machine_selectors_match(selectors: list[str]) -> bool:
+    if not selectors:
+        return True
+    machine = os.environ.get("PRESCRIBE_MACHINE") or socket.gethostname().split(".")[0]
+    return any(selector == machine or selector == "all" for selector in selectors)
 
 
 # ── vars resolution ──────────────────────────────────────

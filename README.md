@@ -50,6 +50,50 @@ LOCAL_BIN = "$HOME/.local/bin"
 TOOLS_BIN = "~/tools/bin"
 ```
 
+### `[locations]` — reusable path resolution
+
+Use named locations when several targets need the same fallback path logic.
+
+```toml
+[locations.codex_home]
+kind = "dir"
+mode = "first_existing_parent"
+candidates = [
+  { path = "$USERPROFILE/.codex", platforms = ["windows"] },
+  { path = "~/.codex", platforms = ["linux", "macos", "wsl"] },
+]
+
+[locations.cursor_mcp]
+kind = "file"
+candidates = [
+  { path = "$APPDATA/Cursor/User/mcp.json", platforms = ["windows"] },
+  { path = "~/Library/Application Support/Cursor/User/mcp.json", platforms = ["macos"] },
+  { path = "~/.config/Cursor/User/mcp.json", platforms = ["linux", "wsl"] },
+]
+```
+
+- `candidates` — non-empty list of paths, or tables with `path`, `platforms`, `machine`, and `if_command_exists`
+- `mode` — `first_existing_parent` (default), `first_existing`, `required`, `first`, or `create_parent`
+- `kind` — `file`, `dir`, or `any`; existing candidates with the wrong kind are rejected
+
+Targets can reference a location instead of repeating paths:
+
+```toml
+[[files]]
+location = "cursor_mcp"
+format = "jsonc"
+
+[files.data]
+"mcpServers.local.command" = "uvx"
+
+[[assets]]
+source = "codex/skills/**/*.md"
+dest_location = "codex_home"
+dest_append = "skills"
+mode = "mirror"
+replace = true
+```
+
 ### `[[files]]` — config file management
 
 ```toml
@@ -77,6 +121,7 @@ tags = ["work"]
 - `priority` — lower wins when multiple entries target the same file (default 0)
 - `delete` — list of dotted keys to remove
 - `format` — `toml`, `yaml`, `jsonc`, or `line`
+- `location` / `path_append` — use a named `[locations]` entry, optionally with a relative child path
 - `paths` — fallback list if `path` doesn't exist
 - `text` / `text_from` — for `format = "line"` managed blocks, define block content inline or from a file
 
@@ -102,6 +147,7 @@ tags = ["agent"]
 
 - `source` — file path or glob pattern, relative to the spec file unless absolute
 - `dest` — destination file for `mode = "file"` or destination directory for `mode = "mirror"`
+- `dest_location` / `dest_append` — use a named `[locations]` entry, optionally with a relative child path
 - `paths` — fallback destination list; the first existing path wins, then first existing parent
 - `mode` — `file` or `mirror`; glob sources default to `mirror`, otherwise `file`
 - `delete_extra` — reserved for future mirror pruning; currently must stay `false`
