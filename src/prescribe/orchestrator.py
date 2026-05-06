@@ -205,7 +205,8 @@ class Orchestrator:
             if file_target in skipped_files or file_target not in active_files:
                 reason = condition_skip_reason(target=file_target, tags=tags, skip_tags=skip_tags)
                 if reason is None:
-                    reason = "lower priority target selected"
+                    winner = _active_file_for_path(active_files, file_target.path)
+                    reason = _priority_skip_reason(file_target, winner)
                 results.append(
                     OrchestrationResult(
                         status="skipped",
@@ -1044,6 +1045,22 @@ def _resolve_active_files(
             seen[ft.path] = ft
 
     return list(seen.values()), skipped
+
+
+def _active_file_for_path(active_files: list[FileTarget], path: Path) -> FileTarget | None:
+    for file_target in active_files:
+        if file_target.path == path:
+            return file_target
+    return None
+
+
+def _priority_skip_reason(target: FileTarget, winner: FileTarget | None) -> str:
+    if winner is None:
+        return "lower priority target selected"
+    return (
+        "lower priority target selected "
+        f"(winner path {winner.path}, winner priority {winner.priority}; skipped priority {target.priority})"
+    )
 
 
 def _maybe_diff(
