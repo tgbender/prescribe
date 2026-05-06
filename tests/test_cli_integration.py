@@ -475,12 +475,7 @@ def test_validate_json_reports_active_and_skipped_targets(run, workdir: Path) ->
 def test_validate_explain_skips_includes_reason(run, workdir: Path) -> None:
     non_current = "linux" if sys.platform == "win32" else "windows"
     spec = workdir / "spec.toml"
-    spec.write_text(
-        "[[files]]\n"
-        "path = 'linux.toml'\n"
-        "format = 'toml'\n"
-        f"platforms = ['{non_current}']\n"
-    )
+    spec.write_text(f"[[files]]\npath = 'linux.toml'\nformat = 'toml'\nplatforms = ['{non_current}']\n")
 
     result = run("validate", "--explain-skips", "--json", "spec.toml")
 
@@ -599,12 +594,7 @@ def test_apply_with_skip_tags_filter(run, workdir: Path) -> None:
 
 def test_status_explain_skips_shows_reason(run, workdir: Path) -> None:
     spec = workdir / "spec.toml"
-    spec.write_text(
-        "[[files]]\n"
-        "path = 'secret.toml'\n"
-        "format = 'toml'\n"
-        "tags = ['secrets']\n"
-    )
+    spec.write_text("[[files]]\npath = 'secret.toml'\nformat = 'toml'\ntags = ['secrets']\n")
 
     result = run("status", "--skip-tags", "secrets", "--explain-skips", "spec.toml")
 
@@ -615,12 +605,7 @@ def test_status_explain_skips_shows_reason(run, workdir: Path) -> None:
 
 def test_status_json_includes_skip_reason_when_explained(run, workdir: Path) -> None:
     spec = workdir / "spec.toml"
-    spec.write_text(
-        "[[files]]\n"
-        "path = 'agent.toml'\n"
-        "format = 'toml'\n"
-        "tags = ['agent']\n"
-    )
+    spec.write_text("[[files]]\npath = 'agent.toml'\nformat = 'toml'\ntags = ['agent']\n")
 
     result = run("status", "--tags", "base", "--explain-skips", "--json", "spec.toml")
 

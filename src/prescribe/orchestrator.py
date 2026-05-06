@@ -664,9 +664,7 @@ class Orchestrator:
             diff_text = _maybe_diff(document, plan, adapter, target.path) if diff else None
 
             if dry_run:
-                return OrchestrationResult(
-                    status="dry-run", applied=False, changed=True, dry_run=True, diff=diff_text
-                )
+                return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True, diff=diff_text)
 
             if run_id is None:
                 raise RuntimeError("run_id is None in _apply_shell_block")

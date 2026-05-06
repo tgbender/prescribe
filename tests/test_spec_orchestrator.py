@@ -12,8 +12,7 @@ from prescribe.orchestrator import (
     machine_matches,
     platform_matches,
 )
-from prescribe.spec import FileTarget
-from prescribe.spec import SpecLoader
+from prescribe.spec import FileTarget, SpecLoader
 
 
 def test_platform_matches_empty_list_is_always_true() -> None:

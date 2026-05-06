@@ -89,15 +89,18 @@ def apply(
 
     tag_set = _parse_tags(tags)
     skip_set = _parse_tags(skip_tags)
-    results = Orchestrator(_make_store(state)).run(
-        spec_obj, dry_run=dry_run, tags=tag_set, skip_tags=skip_set, explain_skips=explain_skips
-    )
+    explain = _option_bool(explain_skips)
+    orchestrator = Orchestrator(_make_store(state))
+    if explain:
+        results = orchestrator.run(spec_obj, dry_run=dry_run, tags=tag_set, skip_tags=skip_set, explain_skips=True)
+    else:
+        results = orchestrator.run(spec_obj, dry_run=dry_run, tags=tag_set, skip_tags=skip_set)
 
     if output_json:
-        data = _results_to_json(spec_obj, results, display_status=False, explain_skips=explain_skips)
+        data = _results_to_json(spec_obj, results, display_status=False, explain_skips=explain)
         typer.echo(json.dumps(data, indent=2))
     else:
-        _print_results(spec_obj, results, explain_skips=explain_skips)
+        _print_results(spec_obj, results, explain_skips=explain)
 
     if any(r.status in {"error", "conflict"} for r in results):
         raise typer.Exit(1)
@@ -122,15 +125,20 @@ def status(
 
     tag_set = _parse_tags(tags)
     skip_set = _parse_tags(skip_tags)
-    results = Orchestrator(_make_store(state)).run(
-        spec_obj, dry_run=True, tags=tag_set, skip_tags=skip_set, diff=diff, explain_skips=explain_skips
-    )
+    explain = _option_bool(explain_skips)
+    orchestrator = Orchestrator(_make_store(state))
+    if explain:
+        results = orchestrator.run(
+            spec_obj, dry_run=True, tags=tag_set, skip_tags=skip_set, diff=diff, explain_skips=True
+        )
+    else:
+        results = orchestrator.run(spec_obj, dry_run=True, tags=tag_set, skip_tags=skip_set, diff=diff)
 
     if output_json:
-        data = _results_to_json(spec_obj, results, display_status=True, explain_skips=explain_skips)
+        data = _results_to_json(spec_obj, results, display_status=True, explain_skips=explain)
         typer.echo(json.dumps(data, indent=2))
     else:
-        _print_results(spec_obj, results, explain_skips=explain_skips)
+        _print_results(spec_obj, results, explain_skips=explain)
 
 
 @app.command()
@@ -150,7 +158,8 @@ def validate(
 
     tag_set = _parse_tags(tags)
     skip_set = _parse_tags(skip_tags)
-    targets = _validation_targets(spec_obj, tags=tag_set, skip_tags=skip_set, explain_skips=explain_skips)
+    explain = _option_bool(explain_skips)
+    targets = _validation_targets(spec_obj, tags=tag_set, skip_tags=skip_set, explain_skips=explain)
 
     if output_json:
         typer.echo(json.dumps({"valid": True, "targets": targets}, indent=2))
@@ -164,7 +173,7 @@ def validate(
         status = "active" if target["active"] else "skipped"
         label = typer.style(f"{target['type']:<6}", fg=typer.colors.BRIGHT_BLACK)
         detail = target.get("path") or target.get("name") or ""
-        reason = f"  — {target['skip_reason']}" if explain_skips and target.get("skip_reason") else ""
+        reason = f"  — {target['skip_reason']}" if explain and target.get("skip_reason") else ""
         typer.echo(f"{label}  {status:<7}  {detail}{reason}")
 
 
@@ -408,6 +417,10 @@ def _parse_tags(raw: str | None) -> set[str] | None:
     if not raw:
         return None
     return {t.strip() for t in raw.split(",") if t.strip()}
+
+
+def _option_bool(value: object) -> bool:
+    return value if isinstance(value, bool) else False
 
 
 def _validation_targets(
