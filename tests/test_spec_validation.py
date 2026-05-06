@@ -274,6 +274,15 @@ def test_spec_valid_pwsh_shell_target(tmp_path: Path) -> None:
     assert spec.shell[0].shells == ["pwsh"]
 
 
+def test_spec_valid_cmd_shell_target(tmp_path: Path) -> None:
+    spec_path = tmp_path / "spec.toml"
+    profile_path = tmp_path / "profile.cmd"
+    spec_path.write_text(f"[[shell]]\npath = '{profile_path}'\nmanaged_block_id = 'prescribe-env'\nshells = ['cmd']\n")
+
+    spec = SpecLoader().load(spec_path)
+    assert spec.shell[0].shells == ["cmd"]
+
+
 def test_spec_shell_target_requires_path(tmp_path: Path) -> None:
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[shell]]\nmanaged_block_id = 'block'\n")

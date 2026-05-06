@@ -69,6 +69,13 @@ def _render_pwsh(*, env_vars: dict[str, str], managed_block_id: str) -> list[str
     return lines
 
 
+def _render_cmd(*, env_vars: dict[str, str], managed_block_id: str) -> list[str]:
+    lines: list[str] = []
+    for name, value in sorted(env_vars.items()):
+        lines.append(f'set "{name}={_escape_cmd(value)}"')
+    return lines
+
+
 # ── helpers ───────────────────────────────────────────────
 
 
@@ -79,6 +86,7 @@ _RENDERERS = {
     "fish": _render_fish,
     "nu": _render_nushell,
     "pwsh": _render_pwsh,
+    "cmd": _render_cmd,
 }
 
 
@@ -99,6 +107,10 @@ def _quote_fish(value: str) -> str:
 
 def _quote_pwsh(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+def _escape_cmd(value: str) -> str:
+    return value.replace("%", "%%").replace("^", "^^").replace("&", "^&").replace("|", "^|").replace("<", "^<").replace(">", "^>")
 
 
 def _escape_posix(value: str) -> str:
