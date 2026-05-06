@@ -101,3 +101,28 @@ def test_shell_target_only_receives_matching_shell_env(tmp_path, state_store) ->
     assert "GLOBAL_EDITOR" in content
     assert "BASH_ONLY" in content
     assert "FISH_ONLY" not in content
+
+
+def test_shell_path_block_uses_only_spec_path_entries(tmp_path, state_store, monkeypatch) -> None:
+    from prescribe.orchestrator import Orchestrator
+    from prescribe.spec import EnvTarget, ShellTarget, Spec
+
+    monkeypatch.setenv("PATH", os.pathsep.join(["/system/bin", "/other/bin"]))
+    bashrc = tmp_path / ".bashrc"
+    spec = Spec(
+        env=[
+            EnvTarget(name="TOOLS_HOME", value="~/tools", path_prepend=["$TOOLS_HOME/bin"]),
+            EnvTarget(name="PATH", append=["~/apps/bin"]),
+        ],
+        shell=[ShellTarget(path=bashrc, managed_block_id="prescribe-env", shells=["bash"])],
+    )
+
+    result = Orchestrator(state_store).run(spec)[0]
+
+    assert result.status == "applied"
+    content = bashrc.read_text(encoding="utf-8")
+    assert "TOOLS_HOME" in content
+    assert "tools" in content
+    assert "apps" in content
+    assert "/system/bin" not in content
+    assert "/other/bin" not in content
