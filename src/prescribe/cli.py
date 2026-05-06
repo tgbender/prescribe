@@ -509,6 +509,7 @@ def _results_to_json(
             "source": asset_target.source,
             "dest": str(asset_target.dest),
             "mode": asset_target.mode,
+            "replace": asset_target.replace,
             "status": _display_status(r.status, r.changed) if display_status else r.status,
             "applied": r.applied,
             "changed": r.changed,
@@ -763,6 +764,7 @@ def _validation_targets(
             "source": asset_target.source,
             "dest": str(asset_target.dest),
             "mode": asset_target.mode,
+            "replace": asset_target.replace,
             "active": active,
         }
         if explain_skips and not active:

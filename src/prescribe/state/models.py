@@ -97,3 +97,25 @@ class FileBaseline(Base):
     original_exists = Column(Boolean, nullable=False)
 
     __table_args__ = (Index("idx_file_baselines_path_id", "path", "id"),)
+
+
+class AssetBackup(Base):
+    __tablename__ = "asset_backups"
+
+    id = Column(Integer, primary_key=True, default=snowflake_id)
+    run_id = Column(Integer, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    target_dest = Column(Text, nullable=False)
+    original_path = Column(Text, nullable=False)
+    backup_path = Column(Text, nullable=False)
+    created_at = Column(Text, nullable=False)
+    hash_algo = Column(Text, nullable=False)
+    content_hash = Column(LargeBinary, nullable=False)
+    size = Column(Integer, nullable=False)
+    mtime_ns = Column(Integer)
+    file_type = Column(Text, nullable=False)
+    restored_at = Column(Text)
+
+    __table_args__ = (
+        Index("idx_asset_backups_original_path_id", "original_path", "id"),
+        Index("idx_asset_backups_target_dest_id", "target_dest", "id"),
+    )

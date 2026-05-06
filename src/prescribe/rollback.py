@@ -12,6 +12,7 @@ from prescribe._util import (
     sha256_bytes,
 )
 from prescribe.adapters import adapter_for_path
+from prescribe.backups import restore_backup
 from prescribe.core.result import OrchestrationResult
 from prescribe.document import Document
 from prescribe.state import StateStore
@@ -33,6 +34,11 @@ def perform_rollback(
 
     batches = state_store.change_batches(path, connection=connection)
     if not batches:
+        backups = [
+            backup for backup in state_store.asset_backups(path, connection=connection) if backup.restored_at is None
+        ]
+        if backups:
+            return _restore_asset_backups(path, state_store, backups, dry_run=dry_run, connection=connection)
         return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
 
     format_name = batches[-1].format
@@ -46,6 +52,11 @@ def perform_rollback(
 
     if format_name == "asset":
         return _rollback_asset(path, state_store, batches, dry_run=dry_run, resolver=resolver, connection=connection)
+    if format_name == "asset-displaced":
+        backups = [
+            backup for backup in state_store.asset_backups(path, connection=connection) if backup.restored_at is None
+        ]
+        return _restore_asset_backups(path, state_store, backups, dry_run=dry_run, connection=connection)
 
     checkpoint = state_store.latest_checkpoint(path, connection=connection)
     if not path.exists():
@@ -284,6 +295,40 @@ def _rollback_asset(
         connection=connection,
     )
     return OrchestrationResult(status="rolled-back", applied=True, changed=True)
+
+
+def _restore_asset_backups(
+    path: Path,
+    state_store: StateStore,
+    backups: list[Any],
+    *,
+    dry_run: bool,
+    connection: sqlite3.Connection | None,
+) -> OrchestrationResult:
+    if not backups:
+        return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
+    if path.exists() or path.is_symlink():
+        return OrchestrationResult(
+            status="conflict",
+            applied=False,
+            changed=True,
+            error=f"cannot restore displaced asset because path exists: {path}",
+            dry_run=dry_run,
+        )
+    if dry_run:
+        return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
+    for backup in reversed(backups):
+        restore_backup(backup_path=backup.backup_path, original_path=backup.original_path)
+        state_store.mark_asset_backup_restored(backup.id, connection=connection)
+    state_store.record_event(
+        run_id=backups[-1].run_id,
+        event_type="restore",
+        path=path,
+        changed=True,
+        summary=f"restored {len(backups)} displaced asset backup(s)",
+        connection=connection,
+    )
+    return OrchestrationResult(status="restored", applied=True, changed=True)
 
 
 def _rollback_mapping(

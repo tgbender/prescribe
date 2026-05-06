@@ -92,15 +92,21 @@ tags = ["agent"]
 source = "codex/skills/**/*.md"
 dest = "~/.codex/skills"
 mode = "mirror"
+replace = true
 tags = ["agent"]
 ```
 
 - `source` — file path or glob pattern, relative to the spec file unless absolute
 - `dest` — destination file for `mode = "file"` or destination directory for `mode = "mirror"`
+- `paths` — fallback destination list; the first existing path wins, then first existing parent
 - `mode` — `file` or `mirror`; glob sources default to `mirror`, otherwise `file`
 - `delete_extra` — reserved for future mirror pruning; currently must stay `false`
+- `replace` — for `mode = "mirror"`, move extra destination files into Prescribe backup storage instead of leaving them active
+- `max_displace_bytes` — maximum size of an extra file that `replace` may move; defaults to 10 MiB
+- `allow_binary` — allow `replace` to move binary-looking extra files; defaults to `false`
 
 Asset destinations are replaced at the path itself. If the destination is a symlink or hardlink, Prescribe avoids mutating the linked target content; rollback restores previous file content and restores symlink destinations when possible.
+When `replace = true`, Prescribe refuses broad destinations such as the home directory or filesystem roots, refuses directories, and moves extra files/symlinks to managed backup storage before recording a restore manifest.
 
 For shell snippets or other file fragments that should not own the whole file, use `format = "line"` managed blocks instead:
 

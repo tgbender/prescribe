@@ -15,6 +15,7 @@ from typing import Any
 
 from prescribe._util import _MISSING, mapping_value, sha256_bytes
 from prescribe.adapters import adapter_for_path
+from prescribe.backups import move_to_backup
 from prescribe.core import DesiredState, Planner, detect_conflict
 from prescribe.core.apply import apply_operations
 from prescribe.core.conflict import (
@@ -126,7 +127,16 @@ def _spec_hash(spec: Spec) -> bytes:
         "env": [{"name": e.name, "value": e.value} for e in spec.env],
         "shell": [{"path": str(s.path), "managed_block_id": s.managed_block_id} for s in spec.shell],
         "assets": [
-            {"source": a.source, "dest": str(a.dest), "mode": a.mode, "delete_extra": a.delete_extra}
+            {
+                "source": a.source,
+                "dest": str(a.dest),
+                "mode": a.mode,
+                "delete_extra": a.delete_extra,
+                "paths": [str(path) for path in a.paths],
+                "replace": a.replace,
+                "max_displace_bytes": a.max_displace_bytes,
+                "allow_binary": a.allow_binary,
+            }
             for a in spec.assets
         ],
     }
@@ -356,6 +366,13 @@ class Orchestrator:
                     error=f"asset source matched no files: {target.source}",
                 )
 
+            replace_extras: list[Path] = []
+            if target.replace:
+                replace_extras = _asset_extra_paths(target, entries)
+                unsafe = _unsafe_asset_replace_reason(target, replace_extras)
+                if unsafe is not None:
+                    return OrchestrationResult(status="error", applied=False, changed=False, error=unsafe)
+
             changed = False
             diffs: list[str] = []
             for source, dest in entries:
@@ -401,6 +418,19 @@ class Orchestrator:
                         original=current,
                         connection=connection,
                     )
+
+            if target.replace and replace_extras:
+                changed = True
+                if diff:
+                    diffs.append(_asset_replace_diff(replace_extras))
+                if not dry_run:
+                    for extra in replace_extras:
+                        self._displace_asset_extra(
+                            run_id=run_id,
+                            target=target,
+                            path=extra,
+                            connection=connection,
+                        )
 
             if not changed:
                 return OrchestrationResult(
@@ -521,6 +551,58 @@ class Orchestrator:
             path=dest,
             changed=True,
             summary="materialized asset",
+            connection=connection,
+        )
+
+    def _displace_asset_extra(
+        self,
+        *,
+        run_id: int | None,
+        target: AssetTarget,
+        path: Path,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        if run_id is None:
+            raise RuntimeError("run_id is None in _displace_asset_extra")
+        backup_path, content_hash, size, mtime_ns, file_type = move_to_backup(
+            state_store=self.state_store,
+            run_id=run_id,
+            path=path,
+        )
+        self.state_store.record_asset_backup(
+            run_id=run_id,
+            target_dest=target.dest,
+            original_path=path,
+            backup_path=backup_path,
+            content_hash=content_hash,
+            size=size,
+            mtime_ns=mtime_ns,
+            file_type=file_type,
+            connection=connection,
+        )
+        self.state_store.record_change_batch(
+            run_id=run_id,
+            path=path,
+            operations=[
+                {
+                    "kind": "displace_file",
+                    "key": "file",
+                    "value": None,
+                    "before_value": str(backup_path),
+                    "before_exists": True,
+                    "reason": "asset replace displaced extra file",
+                }
+            ],
+            original_exists=True,
+            format="asset-displaced",
+            connection=connection,
+        )
+        self.state_store.record_event(
+            run_id=run_id,
+            event_type="displaced",
+            path=path,
+            changed=True,
+            summary=f"moved extra asset to backup {backup_path}",
             connection=connection,
         )
 
@@ -1344,6 +1426,56 @@ def _asset_destination_state(path: Path) -> _AssetDestinationState:
     )
 
 
+def _asset_extra_paths(target: AssetTarget, entries: list[tuple[Path, Path]]) -> list[Path]:
+    if not target.dest.exists() or not target.dest.is_dir():
+        return []
+    desired = {dest.resolve() for _, dest in entries}
+    extras: list[Path] = []
+    for path in sorted(target.dest.rglob("*")):
+        if path.resolve() in desired:
+            continue
+        if path.is_symlink() or path.is_file():
+            extras.append(path)
+    return extras
+
+
+def _unsafe_asset_replace_reason(target: AssetTarget, extras: list[Path]) -> str | None:
+    if not extras:
+        return None
+    if not _safe_asset_replace_root(target.dest):
+        return f"asset replace destination is too broad: {target.dest}"
+    for path in extras:
+        if path.is_symlink():
+            continue
+        if path.is_dir():
+            return f"asset replace will not displace directories; clean up first: {path}"
+        size = path.stat().st_size
+        if size > target.max_displace_bytes:
+            return (
+                f"asset replace refused to displace {path}: size {size} exceeds "
+                f"max_displace_bytes {target.max_displace_bytes}"
+            )
+        if not target.allow_binary and _looks_binary(path):
+            return f"asset replace refused to displace binary-looking file: {path}"
+    return None
+
+
+def _safe_asset_replace_root(path: Path) -> bool:
+    resolved = path.resolve()
+    home = Path(os.environ.get("HOME") or Path.home()).resolve()
+    if resolved == home:
+        return False
+    if resolved.parent == resolved:
+        return False
+    anchor = Path(resolved.anchor)
+    return resolved != anchor
+
+
+def _looks_binary(path: Path) -> bool:
+    sample = path.read_bytes()[:4096]
+    return b"\0" in sample
+
+
 def _asset_source_base(source_pattern: str) -> Path:
     parts = Path(source_pattern).parts
     base_parts: list[str] = []
@@ -1371,6 +1503,12 @@ def _asset_diff(dest: Path, current_text: str | None, desired_text: str) -> str:
             tofile=str(dest) + tofile_suffix,
         )
     )
+
+
+def _asset_replace_diff(extras: list[Path]) -> str:
+    lines = ["# asset replace would move extra files to backup:\n"]
+    lines.extend(f"# - {path}\n" for path in extras)
+    return "".join(lines)
 
 
 def _maybe_diff(

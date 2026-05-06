@@ -68,6 +68,10 @@ class AssetTarget:
     dest: Path
     mode: str = "file"
     delete_extra: bool = False
+    paths: list[Path] = field(default_factory=list)
+    replace: bool = False
+    max_displace_bytes: int = 10 * 1024 * 1024
+    allow_binary: bool = False
     platforms: list[str] = field(default_factory=list)
     machine: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
@@ -257,12 +261,29 @@ class SpecLoader:
             raise SpecError(f"{ctx}: unknown mode {mode!r}, expected one of {sorted(KNOWN_ASSET_MODES)}")
         if bool(raw.get("delete_extra", False)):
             raise SpecError(f"{ctx}: delete_extra is not implemented yet")
+        replace = bool(raw.get("replace", False))
+        if replace and mode != "mirror":
+            raise SpecError(f"{ctx}: replace is only supported with mode 'mirror'")
+        max_displace_bytes = _coerce_optional_int(
+            raw.get("max_displace_bytes"), ctx, "max_displace_bytes", default=10 * 1024 * 1024
+        )
+        if max_displace_bytes < 0:
+            raise SpecError(f"{ctx}: key 'max_displace_bytes' must be non-negative")
+        paths = [
+            _resolve_destination_path(spec_path, expand_spec_vars(p, vars_dict))
+            for p in _coerce_string_list(raw.get("paths", []), ctx, "paths")
+        ]
+        dest_path = _resolve_asset_dest_path(spec_path, expand_spec_vars(dest, vars_dict), paths)
 
         return AssetTarget(
             source=str(_resolve_source_pattern(spec_path, expand_spec_vars(source, vars_dict))),
-            dest=_resolve_destination_path(spec_path, expand_spec_vars(dest, vars_dict)),
+            dest=dest_path,
             mode=mode,
             delete_extra=bool(raw.get("delete_extra", False)),
+            paths=paths,
+            replace=replace,
+            max_displace_bytes=max_displace_bytes,
+            allow_binary=bool(raw.get("allow_binary", False)),
             platforms=_coerce_platforms(raw.get("platforms", []), ctx),
             machine=_coerce_string_list(raw.get("machine", []), ctx, "machine"),
             tags=_coerce_string_list(raw.get("tags", []), ctx, "tags"),
@@ -384,6 +405,18 @@ def _resolve_destination_path(spec_path: Path, raw_path: str) -> Path:
     if not candidate.is_absolute():
         candidate = spec_path.parent / candidate
     return candidate.parent.resolve() / candidate.name
+
+
+def _resolve_asset_dest_path(spec_path: Path, primary: str, additional_paths: list[Path]) -> Path:
+    primary_path = _resolve_destination_path(spec_path, primary)
+    candidates = [primary_path, *additional_paths]
+    for candidate in candidates:
+        if candidate.exists() or candidate.is_symlink():
+            return candidate
+    for candidate in candidates:
+        if candidate.parent.exists():
+            return candidate
+    return primary_path
 
 
 def _has_glob(value: str) -> bool:

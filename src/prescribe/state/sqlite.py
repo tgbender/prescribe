@@ -87,6 +87,22 @@ class BaselineRecord:
     original_exists: bool
 
 
+@dataclass(slots=True)
+class AssetBackupRecord:
+    id: int
+    run_id: int
+    target_dest: Path
+    original_path: Path
+    backup_path: Path
+    created_at: datetime
+    hash_algo: str
+    content_hash: bytes
+    size: int
+    mtime_ns: int | None
+    file_type: str
+    restored_at: datetime | None
+
+
 class StateStore:
     def __init__(
         self,
@@ -612,6 +628,115 @@ class StateStore:
             original_exists=bool(row[6]),
         )
 
+    def record_asset_backup(
+        self,
+        *,
+        run_id: int,
+        target_dest: Path | str,
+        original_path: Path | str,
+        backup_path: Path | str,
+        content_hash: bytes,
+        size: int,
+        file_type: str,
+        hash_algo: str = "sha256",
+        mtime_ns: int | None = None,
+        created_at: datetime | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> AssetBackupRecord:
+        created = _utcnow(created_at)
+        target_text = str(_canonical_path(target_dest))
+        original_text = str(_canonical_path(original_path))
+        backup_text = str(_canonical_path(backup_path))
+        with self._connection(connection) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO asset_backups (
+                    run_id, target_dest, original_path, backup_path, created_at, hash_algo,
+                    content_hash, size, mtime_ns, file_type, restored_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                """,
+                (
+                    run_id,
+                    target_text,
+                    original_text,
+                    backup_text,
+                    created.isoformat(),
+                    hash_algo,
+                    content_hash,
+                    size,
+                    mtime_ns,
+                    file_type,
+                ),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("INSERT into asset_backups did not produce a rowid")
+            backup_id = cursor.lastrowid
+        return AssetBackupRecord(
+            id=backup_id,
+            run_id=run_id,
+            target_dest=Path(target_text),
+            original_path=Path(original_text),
+            backup_path=Path(backup_text),
+            created_at=created,
+            hash_algo=hash_algo,
+            content_hash=content_hash,
+            size=size,
+            mtime_ns=mtime_ns,
+            file_type=file_type,
+            restored_at=None,
+        )
+
+    def asset_backups(
+        self,
+        path: Path | str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[AssetBackupRecord]:
+        path_text = str(_canonical_path(path))
+        with self._connection(connection) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, run_id, target_dest, original_path, backup_path, created_at, hash_algo,
+                       content_hash, size, mtime_ns, file_type, restored_at
+                FROM asset_backups
+                WHERE original_path = ?
+                ORDER BY id ASC
+                """,
+                (path_text,),
+            ).fetchall()
+        return [_asset_backup_from_row(row) for row in rows]
+
+    def unrestored_asset_backups_for_target(
+        self,
+        target_dest: Path | str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[AssetBackupRecord]:
+        target_text = str(_canonical_path(target_dest))
+        with self._connection(connection) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, run_id, target_dest, original_path, backup_path, created_at, hash_algo,
+                       content_hash, size, mtime_ns, file_type, restored_at
+                FROM asset_backups
+                WHERE target_dest = ? AND restored_at IS NULL
+                ORDER BY id ASC
+                """,
+                (target_text,),
+            ).fetchall()
+        return [_asset_backup_from_row(row) for row in rows]
+
+    def mark_asset_backup_restored(
+        self,
+        backup_id: int,
+        *,
+        restored_at: datetime | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        restored = _utcnow(restored_at)
+        with self._connection(connection) as conn:
+            conn.execute("UPDATE asset_backups SET restored_at = ? WHERE id = ?", (restored.isoformat(), backup_id))
+
     def latest_run_id(self, *, connection: sqlite3.Connection | None = None) -> int | None:
         with self._connection(connection) as conn:
             row = conn.execute("SELECT id FROM runs ORDER BY id DESC LIMIT 1").fetchone()
@@ -673,3 +798,20 @@ def _from_jsonable(value: Any) -> Any:
     if isinstance(value, list):
         return [_from_jsonable(item) for item in value]
     return value
+
+
+def _asset_backup_from_row(row: sqlite3.Row | tuple[Any, ...]) -> AssetBackupRecord:
+    return AssetBackupRecord(
+        id=row[0],
+        run_id=row[1],
+        target_dest=Path(row[2]),
+        original_path=Path(row[3]),
+        backup_path=Path(row[4]),
+        created_at=_parse_datetime(row[5]),
+        hash_algo=row[6],
+        content_hash=row[7],
+        size=row[8],
+        mtime_ns=row[9],
+        file_type=row[10],
+        restored_at=None if row[11] is None else _parse_datetime(row[11]),
+    )
