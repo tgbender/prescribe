@@ -114,3 +114,28 @@ def test_status_diff_new_line_file(fake_root, state_store) -> None:
     assert results[0].diff is not None
     assert "+# prescribe:begin prescribe-env" in results[0].diff
     assert "+export EDITOR=nvim" in results[0].diff
+
+
+def test_orchestrator_status_with_shell_diff(fake_root, state_store) -> None:
+    from prescribe.orchestrator import Orchestrator
+
+    profile = fake_root / ".bashrc"
+    profile.write_text("# existing\n")
+    spec_path = fake_root / "spec.toml"
+    spec_path.write_text(
+        "[[env]]\n"
+        "name = 'EDITOR'\n"
+        "value = 'nvim'\n"
+        "\n"
+        "[[shell]]\n"
+        "path = '.bashrc'\n"
+        "managed_block_id = 'prescribe-env'\n"
+        "shells = ['bash']\n"
+    )
+
+    results = Orchestrator(state_store).run(spec_path, dry_run=True, diff=True)
+
+    assert results[0].status == "dry-run"
+    assert results[0].diff is not None
+    assert "+# prescribe:begin prescribe-env" in results[0].diff
+    assert '+export EDITOR="nvim"' in results[0].diff

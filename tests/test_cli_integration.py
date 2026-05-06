@@ -625,3 +625,25 @@ def test_status_diff_no_changes_no_output(run, workdir: Path) -> None:
     assert result.returncode == 0
     # Should NOT contain diff markers — nothing changed
     assert "-count = 2" not in result.stdout
+
+
+def test_status_diff_shows_shell_target_diff(run, workdir: Path) -> None:
+    profile = workdir / ".bashrc"
+    profile.write_text("# existing\n")
+    spec = workdir / "spec.toml"
+    spec.write_text(
+        "[[env]]\n"
+        "name = 'EDITOR'\n"
+        "value = 'nvim'\n"
+        "\n"
+        "[[shell]]\n"
+        "path = '.bashrc'\n"
+        "managed_block_id = 'prescribe-env'\n"
+        "shells = ['bash']\n"
+    )
+
+    result = run("status", "--diff", "spec.toml")
+
+    assert result.returncode == 0
+    assert "+# prescribe:begin prescribe-env" in result.stdout
+    assert '+export EDITOR="nvim"' in result.stdout

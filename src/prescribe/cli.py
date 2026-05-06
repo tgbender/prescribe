@@ -365,6 +365,8 @@ def _print_results(spec_obj: Spec, results: list[OrchestrationResult]) -> None:
         idx += 1
         detail = result.conflict.reason if result.conflict else result.error or None
         typer.echo(_status_line(result.status, result.changed, str(shell_target.path), detail))
+        if result.diff:
+            typer.echo(result.diff, nl=False)
 
     # Surface materialize errors
     all_mat_errors: list[str] = []
