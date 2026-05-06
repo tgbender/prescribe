@@ -31,7 +31,7 @@ def test_env_var_expands_using_resolved_vars(state_store, monkeypatch):
 
     # PATH prepend should expand $CARGO_HOME using the RESOLVED value, not the process env
     paths = resolved["PATH"].split(os.pathsep)
-    assert f"{os.environ['HOME']}/.cargo/bin" in paths
+    assert str(Path(os.environ["HOME"]) / ".cargo" / "bin") in paths
     # Should NOT contain the fake process env value
     assert "/fake/from/env/bin" not in paths
 
@@ -55,7 +55,7 @@ def test_env_var_expands_in_path_prepend(state_store, monkeypatch):
     resolved = results[0].env_vars
 
     paths = resolved["PATH"].split(os.pathsep)
-    assert f"{os.environ['HOME']}/tools/bin" in paths
+    assert str(Path(os.environ["HOME"]) / "tools" / "bin") in paths
 
 
 def test_env_var_expands_in_append_using_resolved(state_store, monkeypatch):
@@ -79,5 +79,5 @@ def test_env_var_expands_in_append_using_resolved(state_store, monkeypatch):
     resolved = results[0].env_vars
 
     paths = resolved["PATH"].split(os.pathsep)
-    assert f"{os.environ['HOME']}/apps/bin" in paths
+    assert str(Path(os.environ["HOME"]) / "apps" / "bin") in paths
     assert "/wrong/path/bin" not in paths

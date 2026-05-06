@@ -33,7 +33,10 @@ def test_platform_matches_current_platform() -> None:
 
 
 def test_platform_matches_any_selector() -> None:
-    assert platform_matches(["linux", "macos"]) is True
+    import sys
+
+    current = "macos" if sys.platform == "darwin" else "linux" if sys.platform.startswith("linux") else "windows"
+    assert platform_matches(["linux", "macos", current]) is True
 
 
 def test_machine_matches_current_machine() -> None:
@@ -42,11 +45,14 @@ def test_machine_matches_current_machine() -> None:
 
 
 def test_orchestrator_skips_non_matching_platform(make_text_file, state_store) -> None:
+    import sys
+
+    non_matching = "linux" if sys.platform == "win32" else "windows"
     config_toml = make_text_file("config.toml", "title = 'hello'\ncount = 1\n")
 
     spec_path = make_text_file(
         "spec.toml",
-        "[[files]]\npath = 'config.toml'\nformat = 'toml'\nplatforms = ['windows']\n[files.data]\ncount = 2\n",
+        f"[[files]]\npath = 'config.toml'\nformat = 'toml'\nplatforms = ['{non_matching}']\n[files.data]\ncount = 2\n",
     )
 
     store = state_store
@@ -623,3 +629,43 @@ def test_orchestrator_rollback_records_conflict_resolution_in_db(tmp_path: Path,
     details = json.loads(event.details)
     assert "count" in details["force_reverted"]
     assert "color" in details["skipped"]
+
+
+def test_orchestrator_rollback_original_preserves_unmanaged_edits(tmp_path: Path, state_store) -> None:
+    config_toml = tmp_path / "config.toml"
+    config_toml.write_text("count = 1\nexternal = 'keep'\n")
+
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    orchestrator = Orchestrator(state_store)
+    applied = orchestrator.run(spec_path)
+    assert applied[0].status == "applied"
+
+    config_toml.write_text("count = 2\nexternal = 'manual'\n")
+
+    rolled_back = orchestrator.rollback(config_toml, original=True)
+
+    assert rolled_back.status == "rolled-back"
+    parsed = TomlAdapter().load(config_toml).root
+    assert parsed["count"] == 1
+    assert parsed["external"] == "manual"
+
+
+def test_orchestrator_rollback_original_skips_externally_modified_managed_key(tmp_path: Path, state_store) -> None:
+    config_toml = tmp_path / "config.toml"
+    config_toml.write_text("count = 1\n")
+
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    orchestrator = Orchestrator(state_store)
+    applied = orchestrator.run(spec_path)
+    assert applied[0].status == "applied"
+
+    config_toml.write_text("count = 99\n")
+
+    rolled_back = orchestrator.rollback(config_toml, original=True, conflict_resolver=lambda key: False)
+
+    assert rolled_back.status == "noop"
+    assert TomlAdapter().load(config_toml).root["count"] == 99

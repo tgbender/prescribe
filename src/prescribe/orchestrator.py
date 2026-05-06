@@ -229,17 +229,19 @@ class Orchestrator:
 
         # ── shell blocks ──
         for shell_target in spec.shell:
+            shell_type = _shell_type_for_target(shell_target)
+            shell_env, _ = self._resolve_env(spec.env, tags=tags, skip_tags=skip_tags, shell_type=shell_type)
             result = self._handle_shell(
                 run_id,
                 spec_hash,
                 shell_target,
-                resolved_env,
+                shell_env,
                 dry_run=dry_run,
                 tags=tags,
                 skip_tags=skip_tags,
                 connection=connection,
             )
-            result.env_vars = resolved_env
+            result.env_vars = shell_env
             results.append(result)
 
         # Attach env vars and materialize errors to all results for convenience
@@ -443,6 +445,7 @@ class Orchestrator:
         *,
         tags: set[str] | None = None,
         skip_tags: set[str] | None = None,
+        shell_type: str | None = None,
     ) -> tuple[dict[str, str], set[str]]:
         """Filter, merge, and resolve env targets into a flat name→value dict.
 
@@ -465,6 +468,8 @@ class Orchestrator:
 
         for et in env_targets:
             if not condition_matches(target=et, tags=tags, skip_tags=skip_tags):
+                continue
+            if shell_type is not None and et.shells and shell_type not in et.shells:
                 continue
 
             if et.materialize:
@@ -507,7 +512,7 @@ class Orchestrator:
             seen: set[str] = set()
             deduped_prepends: list[str] = []
             for entry in prepend_entries:
-                expanded = _expandvars(entry, local_env)
+                expanded = _normalize_path_entry(_expandvars(entry, local_env))
                 if expanded not in seen:
                     seen.add(expanded)
                     deduped_prepends.append(expanded)
@@ -515,7 +520,7 @@ class Orchestrator:
             # Deduplicate append entries
             deduped_appends: list[str] = []
             for entry in append_entries:
-                expanded = _expandvars(entry, local_env)
+                expanded = _normalize_path_entry(_expandvars(entry, local_env))
                 if expanded not in seen:
                     seen.add(expanded)
                     deduped_appends.append(expanded)
@@ -548,14 +553,8 @@ class Orchestrator:
         if not condition_matches(target=target, tags=tags, skip_tags=skip_tags):
             return OrchestrationResult(status="skipped", applied=False, changed=False, skipped=True)
 
-        # Determine shell type(s) to render for
-        render_shells = target.shells if target.shells else ["bash"]  # default: posix
-
-        # For now, use the first shell type's rendered block.
-        # TODO: support multiple shell types targeting different files.
-        first_shell = render_shells[0]
         rendered = render_shell_block(
-            shell_type=first_shell,
+            shell_type=_shell_type_for_target(target),
             env_vars=dict(resolved_env),
             managed_block_id=target.managed_block_id,
         )
@@ -822,6 +821,11 @@ def _file_desired(target: FileTarget) -> DesiredState:
     )
 
 
+def _shell_type_for_target(target: ShellTarget) -> str:
+    render_shells = target.shells if target.shells else ["bash"]
+    return render_shells[0]
+
+
 def _empty_document(path: Path, fmt: str) -> Document:
     if fmt in {"toml", "yaml", "jsonc"}:
         return Document(path=path, format=fmt, root={})
@@ -951,8 +955,15 @@ def _expandvars(value: str, env: dict[str, str]) -> str:
 def _expand_tilde(value: str) -> str:
     """Expand ~ to home directory."""
     if value == "~" or value.startswith("~/"):
-        return str(Path.home()) + value[1:]
+        home = Path(os.environ.get("HOME") or Path.home())
+        return str(home / value[2:]) if value.startswith("~/") else str(home)
     return value
+
+
+def _normalize_path_entry(value: str) -> str:
+    if "$" in value or value.startswith("!"):
+        return value
+    return str(Path(value))
 
 
 def _resolve_active_files(

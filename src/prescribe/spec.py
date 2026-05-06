@@ -107,10 +107,10 @@ class SpecLoader:
             raise SpecError(f"spec {spec_path}: 'files' must be an array of tables")
         targets: list[FileTarget] = []
         for index, raw in enumerate(raw_list):
-            targets.append(self._parse_file_target(spec_path, index, raw))
+            targets.append(self._parse_file_target(spec_path, index, raw, vars_dict))
         return targets
 
-    def _parse_file_target(self, spec_path: Path, index: int, raw: Any) -> FileTarget:
+    def _parse_file_target(self, spec_path: Path, index: int, raw: Any, vars_dict: dict[str, str]) -> FileTarget:
         ctx = f"spec {spec_path} files[{index}]"
         if not isinstance(raw, Mapping):
             raise SpecError(f"{ctx}: expected a table/object")
@@ -121,8 +121,9 @@ class SpecLoader:
         if fmt == "line" and "managed_block_id" not in raw:
             raise SpecError(f"{ctx}: format 'line' requires 'managed_block_id'")
 
+        paths = [expand_spec_vars(p, vars_dict) for p in _coerce_string_list(raw.get("paths", []), ctx, "paths")]
         return FileTarget(
-            path=_resolve_target_path(spec_path, path, _coerce_string_list(raw.get("paths", []), ctx, "paths")),
+            path=_resolve_target_path(spec_path, expand_spec_vars(path, vars_dict), paths),
             format=fmt,
             priority=_coerce_optional_int(raw.get("priority"), ctx, "priority", default=0),
             data=_coerce_mapping(raw.get("data", {}), ctx, "data"),
@@ -180,10 +181,10 @@ class SpecLoader:
             raise SpecError(f"spec {spec_path}: 'shell' must be an array of tables")
         targets: list[ShellTarget] = []
         for index, raw in enumerate(raw_list):
-            targets.append(self._parse_shell_target(spec_path, index, raw))
+            targets.append(self._parse_shell_target(spec_path, index, raw, vars_dict))
         return targets
 
-    def _parse_shell_target(self, spec_path: Path, index: int, raw: Any) -> ShellTarget:
+    def _parse_shell_target(self, spec_path: Path, index: int, raw: Any, vars_dict: dict[str, str]) -> ShellTarget:
         ctx = f"spec {spec_path} shell[{index}]"
         if not isinstance(raw, Mapping):
             raise SpecError(f"{ctx}: expected a table/object")
@@ -192,7 +193,7 @@ class SpecLoader:
         block_id = _coerce_required_string(raw.get("managed_block_id"), ctx, "managed_block_id")
 
         return ShellTarget(
-            path=_resolve_target_path(spec_path, path, []),
+            path=_resolve_target_path(spec_path, expand_spec_vars(path, vars_dict), []),
             managed_block_id=str(block_id),
             shells=_coerce_shells(raw.get("shells", []), ctx),
             platforms=_coerce_platforms(raw.get("platforms", []), ctx),
@@ -292,7 +293,7 @@ def _resolve_target_path(spec_path: Path, primary: str, additional_paths: list[s
 
 
 def _resolve_candidate_path(spec_path: Path, raw_path: str) -> Path:
-    expanded = os.path.expandvars(os.path.expanduser(raw_path))
+    expanded = os.path.expandvars(_expand_user(raw_path))
     candidate = Path(expanded)
     if not candidate.is_absolute():
         candidate = spec_path.parent / candidate
@@ -376,5 +377,15 @@ def expand_spec_vars(value: str, vars_dict: dict[str, str]) -> str:
 def _expand(value: str) -> str:
     """Expand ~ to home directory in a string."""
     if value == "~" or value.startswith("~/"):
-        return str(Path.home()) + value[1:]
+        return str(_home_path() / value[2:]) if value.startswith("~/") else str(_home_path())
     return value
+
+
+def _expand_user(value: str) -> str:
+    if value == "~" or value.startswith("~/"):
+        return str(_home_path() / value[2:]) if value.startswith("~/") else str(_home_path())
+    return os.path.expanduser(value)
+
+
+def _home_path() -> Path:
+    return Path(os.environ.get("HOME") or Path.home())

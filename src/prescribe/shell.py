@@ -18,11 +18,13 @@ def _render_xonsh(*, env_vars: dict[str, str], managed_block_id: str) -> list[st
     lines: list[str] = []
     path_value = env_vars.get("PATH")
     for name, value in sorted(env_vars.items()):
+        if name == "PATH":
+            continue
         lines.append(f"${name} = {_quote_xonsh(value)}")
     if path_value is not None:
         entries = _split_path(path_value)
         path_literal = ", ".join(_quote_xonsh(e) for e in entries)
-        lines.append(f"$PATH = [{path_literal}] + $PATH")
+        lines.append(f"$PATH = [{path_literal}]")
     return lines
 
 
@@ -37,11 +39,13 @@ def _render_fish(*, env_vars: dict[str, str], managed_block_id: str) -> list[str
     lines: list[str] = []
     path_value = env_vars.get("PATH")
     for name, value in sorted(env_vars.items()):
+        if name == "PATH":
+            continue
         lines.append(f"set -gx {name} {_quote_fish(value)}")
     if path_value is not None:
         entries = _split_path(path_value)
-        for entry in reversed(entries):
-            lines.append(f"fish_add_path --prepend {_quote_fish(entry)}")
+        path_literal = " ".join(_quote_fish(entry) for entry in entries)
+        lines.append(f"set -gx PATH {path_literal}")
     return lines
 
 

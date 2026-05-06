@@ -20,9 +20,16 @@ def _ensure_xdg_defaults() -> None:
     consistency across all Unix systems.
     """
     if sys.platform == "darwin":
-        home = str(Path.home())
+        home = os.environ.get("HOME") or str(Path.home())
         os.environ.setdefault("XDG_DATA_HOME", f"{home}/.local/share")
         os.environ.setdefault("XDG_CONFIG_HOME", f"{home}/.config")
+
+
+def _xdg_dir(env_name: str) -> Path | None:
+    env = os.environ.get(env_name)
+    if env:
+        return Path(env) / _APP_NAME
+    return None
 
 
 def data_dir() -> Path:
@@ -36,6 +43,11 @@ def data_dir() -> Path:
     if env:
         return Path(env)
     _ensure_xdg_defaults()
+    xdg = _xdg_dir("XDG_DATA_HOME")
+    if xdg is not None:
+        return xdg
+    if sys.platform.startswith("linux"):
+        return Path(os.environ.get("HOME") or Path.home()) / ".local" / "share" / _APP_NAME
     return Path(user_data_dir(_APP_NAME))
 
 
@@ -50,6 +62,11 @@ def config_dir() -> Path:
     if env:
         return Path(env)
     _ensure_xdg_defaults()
+    xdg = _xdg_dir("XDG_CONFIG_HOME")
+    if xdg is not None:
+        return xdg
+    if sys.platform.startswith("linux"):
+        return Path(os.environ.get("HOME") or Path.home()) / ".config" / _APP_NAME
     return Path(user_config_dir(_APP_NAME))
 
 

@@ -154,19 +154,7 @@ def perform_rollback_original(
         )
         return OrchestrationResult(status="rolled-back", applied=True, changed=True)
 
-    if dry_run:
-        return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(baseline.content_text, encoding="utf-8")
-    _record_rollback_event(
-        state_store,
-        path,
-        "rollback-original",
-        "restored to pre-prescribe baseline",
-        connection=connection,
-    )
-    return OrchestrationResult(status="rolled-back", applied=True, changed=True)
+    return perform_rollback(path, state_store, dry_run=dry_run, resolver=resolver, connection=connection)
 
 
 def perform_restore(

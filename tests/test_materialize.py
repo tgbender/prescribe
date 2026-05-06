@@ -137,12 +137,15 @@ def test_orchestrator_materialize_integration(fake_root, state_store):
     """Full integration: [[env]] with materialize=true calls materialize()."""
     from prescribe.orchestrator import Orchestrator
 
-    spec_path = fake_root / "spec.toml"
-    spec_path.write_text(
-        "[[env]]\nname = 'EDITOR'\nvalue = 'nvim'\nmaterialize = true\nplatforms = ['macos', 'linux']\n"
-    )
+    calls = []
 
-    orch = Orchestrator(state_store)
+    def recording_materialize(*, env_vars, dry_run=False):
+        calls.append(dict(env_vars))
+
+    spec_path = fake_root / "spec.toml"
+    spec_path.write_text("[[env]]\nname = 'EDITOR'\nvalue = 'nvim'\nmaterialize = true\n")
+
+    orch = Orchestrator(state_store, _materialize_fn=recording_materialize)
     results = orch.run(spec_path)
     # Verify env vars are resolved and flagged for materialize
     for r in results:
@@ -151,6 +154,7 @@ def test_orchestrator_materialize_integration(fake_root, state_store):
             break
     else:
         pytest.fail("EDITOR not found in resolved env_vars")
+    assert calls == [{"EDITOR": "nvim"}]
 
 
 def test_orchestrator_materialize_errors_are_not_silent(fake_root, state_store) -> None:
@@ -165,9 +169,7 @@ def test_orchestrator_materialize_errors_are_not_silent(fake_root, state_store) 
         raise RuntimeError("launchctl not found")
 
     spec_path = fake_root / "spec.toml"
-    spec_path.write_text(
-        "[[env]]\nname = 'EDITOR'\nvalue = 'nvim'\nmaterialize = true\nplatforms = ['macos', 'linux']\n"
-    )
+    spec_path.write_text("[[env]]\nname = 'EDITOR'\nvalue = 'nvim'\nmaterialize = true\n")
 
     orch = Orchestrator(state_store, _materialize_fn=failing_materialize)
     results = orch.run(spec_path)
