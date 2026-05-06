@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -471,6 +472,24 @@ def test_validate_json_reports_active_and_skipped_targets(run, workdir: Path) ->
     assert data["targets"][0]["path"].endswith("agent.toml")
 
 
+def test_validate_explain_skips_includes_reason(run, workdir: Path) -> None:
+    non_current = "linux" if sys.platform == "win32" else "windows"
+    spec = workdir / "spec.toml"
+    spec.write_text(
+        "[[files]]\n"
+        "path = 'linux.toml'\n"
+        "format = 'toml'\n"
+        f"platforms = ['{non_current}']\n"
+    )
+
+    result = run("validate", "--explain-skips", "--json", "spec.toml")
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["targets"][0]["active"] is False
+    assert data["targets"][0]["skip_reason"] == "platform did not match"
+
+
 def test_validate_invalid_spec_exits_nonzero(run, workdir: Path) -> None:
     spec = workdir / "spec.toml"
     spec.write_text("[[targets]]\npath = 'old.toml'\nformat = 'toml'\n")
@@ -576,6 +595,39 @@ def test_apply_with_skip_tags_filter(run, workdir: Path) -> None:
     assert result.returncode == 0
     # Should NOT have been applied — file unchanged
     assert config.read_text().startswith("count = 1\n")
+
+
+def test_status_explain_skips_shows_reason(run, workdir: Path) -> None:
+    spec = workdir / "spec.toml"
+    spec.write_text(
+        "[[files]]\n"
+        "path = 'secret.toml'\n"
+        "format = 'toml'\n"
+        "tags = ['secrets']\n"
+    )
+
+    result = run("status", "--skip-tags", "secrets", "--explain-skips", "spec.toml")
+
+    assert result.returncode == 0
+    assert "skipped" in result.stdout
+    assert "skip-tags matched" in result.stdout
+
+
+def test_status_json_includes_skip_reason_when_explained(run, workdir: Path) -> None:
+    spec = workdir / "spec.toml"
+    spec.write_text(
+        "[[files]]\n"
+        "path = 'agent.toml'\n"
+        "format = 'toml'\n"
+        "tags = ['agent']\n"
+    )
+
+    result = run("status", "--tags", "base", "--explain-skips", "--json", "spec.toml")
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data[0]["status"] == "skipped"
+    assert data[0]["skip_reason"] == "tags did not match"
 
 
 # ── status --diff ──────────────────────────────────────────

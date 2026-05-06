@@ -7,10 +7,12 @@ from prescribe.adapters.toml import TomlAdapter
 from prescribe.core import Planner
 from prescribe.orchestrator import (
     Orchestrator,
+    condition_skip_reason,
     current_machine,
     machine_matches,
     platform_matches,
 )
+from prescribe.spec import FileTarget
 from prescribe.spec import SpecLoader
 
 
@@ -42,6 +44,12 @@ def test_platform_matches_any_selector() -> None:
 def test_machine_matches_current_machine() -> None:
     assert machine_matches([current_machine()]) is True
     assert machine_matches(["not-the-current-machine"]) is False
+
+
+def test_condition_skip_reason_reports_first_failed_condition(tmp_path: Path) -> None:
+    target = FileTarget(path=tmp_path / "config.toml", format="toml", tags=["secrets"])
+
+    assert condition_skip_reason(target=target, skip_tags={"secrets"}) == "skip-tags matched"
 
 
 def test_orchestrator_skips_non_matching_platform(make_text_file, state_store) -> None:
