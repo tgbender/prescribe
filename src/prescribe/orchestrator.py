@@ -256,7 +256,13 @@ class Orchestrator:
         # ── shell blocks ──
         for shell_target in spec.shell:
             shell_type = _shell_type_for_target(shell_target)
-            shell_env, _ = self._resolve_env(spec.env, tags=tags, skip_tags=skip_tags, shell_type=shell_type)
+            shell_env, _ = self._resolve_env(
+                spec.env,
+                tags=tags,
+                skip_tags=skip_tags,
+                shell_type=shell_type,
+                include_current_path=False,
+            )
             result = self._handle_shell(
                 run_id,
                 spec_hash,
@@ -483,6 +489,7 @@ class Orchestrator:
         tags: set[str] | None = None,
         skip_tags: set[str] | None = None,
         shell_type: str | None = None,
+        include_current_path: bool = True,
     ) -> tuple[dict[str, str], set[str]]:
         """Filter, merge, and resolve env targets into a flat name→value dict.
 
@@ -540,7 +547,7 @@ class Orchestrator:
         # Build PATH from prepends + existing + appends
         if "PATH" in path_prepends or "PATH" in path_appends:
             current_path = local_env.get("PATH", "")
-            current_entries = [p for p in current_path.split(os.pathsep) if p]
+            current_entries = [p for p in current_path.split(os.pathsep) if p] if include_current_path else []
 
             prepend_entries = path_prepends.get("PATH", [])
             append_entries = path_appends.get("PATH", [])
