@@ -66,6 +66,20 @@ def test_render_pwsh_escapes_single_quotes() -> None:
     assert lines == ["$env:NAME = 'Bob''s'"]
 
 
+def test_render_cmd_uses_set_assignments() -> None:
+    env = {"PATH": os.pathsep.join([r"C:\Tools\bin", r"C:\Apps\bin"]), "EDITOR": "nvim"}
+    lines = render_shell_block(shell_type="cmd", env_vars=env, managed_block_id="test")
+
+    assert "set \"EDITOR=nvim\"" in lines
+    assert f'set "PATH={r"C:\Tools\bin"}{os.pathsep}{r"C:\Apps\bin"}"' in lines
+
+
+def test_render_cmd_escapes_percent_signs() -> None:
+    lines = render_shell_block(shell_type="cmd", env_vars={"PROMPT_TEXT": "%USERPROFILE%"}, managed_block_id="test")
+
+    assert lines == ['set "PROMPT_TEXT=%%USERPROFILE%%"']
+
+
 def test_shell_target_only_receives_matching_shell_env(tmp_path, state_store) -> None:
     from prescribe.orchestrator import Orchestrator
     from prescribe.spec import EnvTarget, ShellTarget, Spec
