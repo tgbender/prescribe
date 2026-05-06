@@ -30,7 +30,7 @@ All commands accept `--json` for machine-readable output and `--state` (or `PRES
 
 ## Spec format
 
-A spec has three optional sections: `[vars]`, `[[files]]`, `[[env]]`, and `[[shell]]`.
+A spec has an optional `[vars]` section and four optional target sections: `[[files]]`, `[[assets]]`, `[[env]]`, and `[[shell]]`.
 
 ### `[vars]` — reusable variables
 
@@ -70,6 +70,30 @@ tags = ["work"]
 - `delete` — list of dotted keys to remove
 - `format` — `toml`, `yaml`, `jsonc`, or `line`
 - `paths` — fallback list if `path` doesn't exist
+
+### `[[assets]]` — repo-owned file materialization
+
+Use assets when your dotfiles repo should own a whole file or tree at the destination.
+Unlike `[[files]]`, an asset replaces the destination file with the source content.
+Prescribe still records checkpoints, detects external edits on later applies, and can roll back created or overwritten files.
+
+```toml
+[[assets]]
+source = "codex/mcp.json"
+dest = "~/.codex/mcp.json"
+tags = ["agent"]
+
+[[assets]]
+source = "codex/skills/**/*.md"
+dest = "~/.codex/skills"
+mode = "mirror"
+tags = ["agent"]
+```
+
+- `source` — file path or glob pattern, relative to the spec file unless absolute
+- `dest` — destination file for `mode = "file"` or destination directory for `mode = "mirror"`
+- `mode` — `file` or `mirror`; glob sources default to `mirror`, otherwise `file`
+- `delete_extra` — reserved for future mirror pruning; currently must stay `false`
 
 ### `[[env]]` — environment variables
 

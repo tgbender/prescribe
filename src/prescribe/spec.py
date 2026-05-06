@@ -9,7 +9,8 @@ import tomlkit
 KNOWN_FORMATS = frozenset({"toml", "yaml", "jsonc", "line"})
 KNOWN_PLATFORMS = frozenset({"linux", "macos", "windows"})
 KNOWN_SHELLS = frozenset({"xonsh", "bash", "zsh", "fish", "nu", "pwsh", "cmd"})
-KNOWN_SECTION_KEYS = frozenset({"files", "env", "shell"})
+KNOWN_ASSET_MODES = frozenset({"file", "mirror"})
+KNOWN_SECTION_KEYS = frozenset({"files", "env", "shell", "assets"})
 
 
 class SpecError(Exception):
@@ -61,6 +62,18 @@ class ShellTarget:
     tags: list[str] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class AssetTarget:
+    source: str
+    dest: Path
+    mode: str = "file"
+    delete_extra: bool = False
+    platforms: list[str] = field(default_factory=list)
+    machine: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    if_command_exists: list[str] = field(default_factory=list)
+
+
 # ── spec ──────────────────────────────────────────────────
 
 
@@ -71,6 +84,7 @@ class Spec:
     files: list[FileTarget] = field(default_factory=list)
     env: list[EnvTarget] = field(default_factory=list)
     shell: list[ShellTarget] = field(default_factory=list)
+    assets: list[AssetTarget] = field(default_factory=list)
 
 
 # ── loader ────────────────────────────────────────────────
@@ -95,10 +109,11 @@ class SpecLoader:
         files = self._parse_files(spec_path, data.get("files", []), vars_dict)
         env_vars = self._parse_env(spec_path, data.get("env", []), vars_dict)
         shells = self._parse_shell(spec_path, data.get("shell", []), vars_dict)
+        assets = self._parse_assets(spec_path, data.get("assets", []), vars_dict)
 
         _validate_no_duplicate_overlapping_files(spec_path, files)
 
-        return Spec(path=spec_path, files=files, env=env_vars, shell=shells)
+        return Spec(path=spec_path, files=files, env=env_vars, shell=shells, assets=assets)
 
     # ── files ─────────────────────────────────────────
 
@@ -201,6 +216,40 @@ class SpecLoader:
             tags=_coerce_string_list(raw.get("tags", []), ctx, "tags"),
         )
 
+    # ── assets ────────────────────────────────────────
+
+    def _parse_assets(self, spec_path: Path, raw_list: Any, vars_dict: dict[str, str]) -> list[AssetTarget]:
+        if not isinstance(raw_list, list):
+            raise SpecError(f"spec {spec_path}: 'assets' must be an array of tables")
+        targets: list[AssetTarget] = []
+        for index, raw in enumerate(raw_list):
+            targets.append(self._parse_asset_target(spec_path, index, raw, vars_dict))
+        return targets
+
+    def _parse_asset_target(self, spec_path: Path, index: int, raw: Any, vars_dict: dict[str, str]) -> AssetTarget:
+        ctx = f"spec {spec_path} assets[{index}]"
+        if not isinstance(raw, Mapping):
+            raise SpecError(f"{ctx}: expected a table/object")
+
+        source = _coerce_required_string(raw.get("source"), ctx, "source")
+        dest = _coerce_required_string(raw.get("dest"), ctx, "dest")
+        mode = _coerce_optional_string(raw.get("mode"), ctx, "mode") or ("mirror" if _has_glob(source) else "file")
+        if mode not in KNOWN_ASSET_MODES:
+            raise SpecError(f"{ctx}: unknown mode {mode!r}, expected one of {sorted(KNOWN_ASSET_MODES)}")
+        if bool(raw.get("delete_extra", False)):
+            raise SpecError(f"{ctx}: delete_extra is not implemented yet")
+
+        return AssetTarget(
+            source=str(_resolve_source_pattern(spec_path, expand_spec_vars(source, vars_dict))),
+            dest=_resolve_candidate_path(spec_path, expand_spec_vars(dest, vars_dict)),
+            mode=mode,
+            delete_extra=bool(raw.get("delete_extra", False)),
+            platforms=_coerce_platforms(raw.get("platforms", []), ctx),
+            machine=_coerce_string_list(raw.get("machine", []), ctx, "machine"),
+            tags=_coerce_string_list(raw.get("tags", []), ctx, "tags"),
+            if_command_exists=_coerce_string_list(raw.get("if_command_exists", []), ctx, "if_command_exists"),
+        )
+
 
 # ── helpers ───────────────────────────────────────────────
 
@@ -298,6 +347,20 @@ def _resolve_candidate_path(spec_path: Path, raw_path: str) -> Path:
     if not candidate.is_absolute():
         candidate = spec_path.parent / candidate
     return candidate.resolve()
+
+
+def _resolve_source_pattern(spec_path: Path, raw_path: str) -> Path:
+    expanded = os.path.expandvars(_expand_user(raw_path))
+    candidate = Path(expanded)
+    if not candidate.is_absolute():
+        candidate = spec_path.parent / candidate
+    if _has_glob(str(candidate)):
+        return candidate
+    return candidate.resolve()
+
+
+def _has_glob(value: str) -> bool:
+    return any(char in value for char in "*?[")
 
 
 def _normalize_toml_value(value: Any) -> Any:

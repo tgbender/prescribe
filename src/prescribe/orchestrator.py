@@ -1,4 +1,6 @@
 import contextlib
+import difflib
+import glob
 import json
 import os
 import re
@@ -24,7 +26,7 @@ from prescribe.core.result import OrchestrationResult
 from prescribe.document import Adapter, Document
 from prescribe.rollback import ConflictResolver, perform_rollback
 from prescribe.shell import render_shell_block
-from prescribe.spec import EnvTarget, FileTarget, ShellTarget, Spec
+from prescribe.spec import AssetTarget, EnvTarget, FileTarget, ShellTarget, Spec
 from prescribe.state import StateStore
 from prescribe.state.sqlite import ChangeBatchRecord
 
@@ -57,7 +59,7 @@ def machine_matches(selectors: list[str]) -> bool:
 
 def condition_matches(
     *,
-    target: FileTarget | EnvTarget | ShellTarget,
+    target: FileTarget | EnvTarget | ShellTarget | AssetTarget,
     tags: set[str] | None = None,
     skip_tags: set[str] | None = None,
 ) -> bool:
@@ -67,7 +69,7 @@ def condition_matches(
 
 def condition_skip_reason(
     *,
-    target: FileTarget | EnvTarget | ShellTarget,
+    target: FileTarget | EnvTarget | ShellTarget | AssetTarget,
     tags: set[str] | None = None,
     skip_tags: set[str] | None = None,
 ) -> str | None:
@@ -112,6 +114,10 @@ def _spec_hash(spec: Spec) -> bytes:
         ],
         "env": [{"name": e.name, "value": e.value} for e in spec.env],
         "shell": [{"path": str(s.path), "managed_block_id": s.managed_block_id} for s in spec.shell],
+        "assets": [
+            {"source": a.source, "dest": str(a.dest), "mode": a.mode, "delete_extra": a.delete_extra}
+            for a in spec.assets
+        ],
     }
     return sha256_bytes(json.dumps(data, sort_keys=True, default=str).encode())
 
@@ -242,7 +248,7 @@ class Orchestrator:
 
         # Produce an env result so callers can inspect resolved vars
         # even when there are no [[files]] or [[shell]] targets
-        if spec.env and not spec.files and not spec.shell:
+        if spec.env and not spec.files and not spec.shell and not spec.assets:
             results.append(
                 OrchestrationResult(
                     status="applied" if not dry_run else "dry-run",
@@ -278,6 +284,22 @@ class Orchestrator:
             result.env_vars = shell_env
             results.append(result)
 
+        # ── assets ──
+        for asset_target in spec.assets:
+            results.append(
+                self._handle_asset(
+                    run_id,
+                    spec_hash,
+                    asset_target,
+                    dry_run=dry_run,
+                    tags=tags,
+                    skip_tags=skip_tags,
+                    diff=diff,
+                    explain_skips=explain_skips,
+                    connection=connection,
+                )
+            )
+
         # Attach env vars and materialize errors to all results for convenience
         for r in results:
             if not r.env_vars:
@@ -286,6 +308,205 @@ class Orchestrator:
                 r.materialize_errors = materialize_errors
 
         return results
+
+    # ── asset handling ────────────────────────────────
+
+    def _handle_asset(
+        self,
+        run_id: int | None,
+        spec_hash: bytes,
+        target: AssetTarget,
+        *,
+        dry_run: bool = False,
+        tags: set[str] | None = None,
+        skip_tags: set[str] | None = None,
+        diff: bool = False,
+        explain_skips: bool = False,
+        connection: sqlite3.Connection | None = None,
+    ) -> OrchestrationResult:
+        if not condition_matches(target=target, tags=tags, skip_tags=skip_tags):
+            return OrchestrationResult(
+                status="skipped",
+                applied=False,
+                changed=False,
+                skipped=True,
+                skip_reason=condition_skip_reason(target=target, tags=tags, skip_tags=skip_tags)
+                if explain_skips
+                else None,
+            )
+
+        try:
+            entries = _asset_entries(target)
+            if not entries:
+                return OrchestrationResult(
+                    status="error",
+                    applied=False,
+                    changed=False,
+                    error=f"asset source matched no files: {target.source}",
+                )
+
+            changed = False
+            diffs: list[str] = []
+            for source, dest in entries:
+                source_text = source.read_text(encoding="utf-8")
+                current_text = dest.read_text(encoding="utf-8") if dest.exists() else None
+                if current_text == source_text:
+                    if run_id is not None and not dry_run:
+                        stat = dest.stat()
+                        self.state_store.record_checked(
+                            run_id=run_id,
+                            path=dest,
+                            content_hash=sha256_bytes(dest.read_bytes()),
+                            size=stat.st_size,
+                            mtime_ns=stat.st_mtime_ns,
+                            format="asset",
+                            spec_hash=spec_hash,
+                            summary="no changes",
+                            connection=connection,
+                        )
+                    continue
+
+                conflict = self._asset_conflict(dest, connection=connection)
+                if conflict is not None:
+                    if run_id is not None and not dry_run:
+                        self._record_conflict(run_id, conflict, connection=connection)
+                    return OrchestrationResult(
+                        status="conflict",
+                        applied=False,
+                        changed=True,
+                        conflict=conflict,
+                        dry_run=dry_run,
+                    )
+
+                changed = True
+                if diff:
+                    diffs.append(_asset_diff(dest, current_text, source_text))
+                if not dry_run:
+                    self._apply_asset(
+                        run_id=run_id,
+                        spec_hash=spec_hash,
+                        source_text=source_text,
+                        dest=dest,
+                        original_text=current_text,
+                        connection=connection,
+                    )
+
+            if not changed:
+                return OrchestrationResult(
+                    status="dry-run" if dry_run else "noop",
+                    applied=False,
+                    changed=False,
+                    dry_run=dry_run,
+                )
+            return OrchestrationResult(
+                status="dry-run" if dry_run else "applied",
+                applied=not dry_run,
+                changed=True,
+                dry_run=dry_run,
+                diff="".join(diffs) if diffs else None,
+            )
+        except Exception as exc:
+            if run_id is not None:
+                self.state_store.record_event(
+                    run_id=run_id,
+                    event_type="error",
+                    path=target.dest,
+                    changed=False,
+                    summary=str(exc),
+                    details=f"{exc.__class__.__name__}: {exc}",
+                    connection=connection,
+                )
+            return OrchestrationResult(status="error", applied=False, changed=False, error=str(exc))
+
+    def _asset_conflict(
+        self,
+        dest: Path,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> ConflictResult | None:
+        snapshot = self.state_store.latest_snapshot(dest, connection=connection)
+        if snapshot is None or not dest.exists():
+            return None
+        baseline = file_fingerprint(
+            snapshot.path,
+            snapshot.hash_algo,
+            snapshot.content_hash,
+            snapshot.size,
+            snapshot.mtime_ns,
+        )
+        current = _current_fingerprint(dest)
+        return detect_conflict(baseline, current)
+
+    def _apply_asset(
+        self,
+        *,
+        run_id: int | None,
+        spec_hash: bytes,
+        source_text: str,
+        dest: Path,
+        original_text: str | None,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        if run_id is None:
+            raise RuntimeError("run_id is None in _apply_asset")
+        original_exists = original_text is not None
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(source_text, encoding="utf-8")
+        stat = dest.stat()
+        content_hash = sha256_bytes(dest.read_bytes())
+        existing_baseline = self.state_store.original_baseline(dest, connection=connection)
+        if existing_baseline is None:
+            self.state_store.record_baseline(
+                run_id=run_id,
+                path=dest,
+                content_text=original_text or "",
+                format="asset",
+                original_exists=original_exists,
+                connection=connection,
+            )
+        self.state_store.record_checkpoint(
+            run_id=run_id,
+            path=dest,
+            content_text=source_text,
+            format="asset",
+            original_exists=original_exists,
+            connection=connection,
+        )
+        self.state_store.record_snapshot(
+            run_id=run_id,
+            path=dest,
+            content_hash=content_hash,
+            size=stat.st_size,
+            mtime_ns=stat.st_mtime_ns,
+            format="asset",
+            spec_hash=spec_hash,
+            connection=connection,
+        )
+        self.state_store.record_change_batch(
+            run_id=run_id,
+            path=dest,
+            operations=[
+                {
+                    "kind": "replace_file",
+                    "key": "file",
+                    "value": source_text,
+                    "before_value": original_text,
+                    "before_exists": original_exists,
+                    "reason": "asset materialized",
+                }
+            ],
+            original_exists=original_exists,
+            format="asset",
+            connection=connection,
+        )
+        self.state_store.record_event(
+            run_id=run_id,
+            event_type="applied",
+            path=dest,
+            changed=True,
+            summary="materialized asset",
+            connection=connection,
+        )
 
     # ── file handling ─────────────────────────────────
 
@@ -1067,6 +1288,52 @@ def _priority_skip_reason(target: FileTarget, winner: FileTarget | None) -> str:
     return (
         "lower priority target selected "
         f"(winner path {winner.path}, winner priority {winner.priority}; skipped priority {target.priority})"
+    )
+
+
+def _asset_entries(target: AssetTarget) -> list[tuple[Path, Path]]:
+    if target.mode == "file":
+        source = Path(target.source)
+        if not source.exists() or not source.is_file():
+            return []
+        return [(source, target.dest)]
+
+    matches = sorted(Path(match).resolve() for match in glob.glob(target.source, recursive=True))
+    files = [match for match in matches if match.is_file()]
+    base = _asset_source_base(target.source)
+    entries: list[tuple[Path, Path]] = []
+    for source in files:
+        rel = source.relative_to(base)
+        entries.append((source, target.dest / rel))
+    return entries
+
+
+def _asset_source_base(source_pattern: str) -> Path:
+    parts = Path(source_pattern).parts
+    base_parts: list[str] = []
+    for part in parts:
+        if any(char in part for char in "*?["):
+            break
+        base_parts.append(part)
+    if not base_parts:
+        return Path(".").resolve()
+    base = Path(*base_parts)
+    if base.is_file():
+        return base.parent
+    return base.resolve()
+
+
+def _asset_diff(dest: Path, current_text: str | None, desired_text: str) -> str:
+    before = [] if current_text is None else current_text.splitlines(keepends=True)
+    after = desired_text.splitlines(keepends=True)
+    tofile_suffix = " (new)" if current_text is None else " (desired)"
+    return "".join(
+        difflib.unified_diff(
+            before,
+            after,
+            fromfile=str(dest),
+            tofile=str(dest) + tofile_suffix,
+        )
     )
 
 

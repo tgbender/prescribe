@@ -34,6 +34,7 @@ from prescribe.paths import config_dir, data_dir, default_state_path
 from prescribe.presets import Presets, apply_all, default_spec_dir, discover_specs, list_specs, status
 from prescribe.shell import render_shell_block
 from prescribe.spec import (
+    AssetTarget,
     EnvTarget,
     FileTarget,
     ShellTarget,
@@ -87,6 +88,7 @@ __all__ = [
     # shell
     "render_shell_block",
     # spec
+    "AssetTarget",
     "EnvTarget",
     "FileTarget",
     "ShellTarget",

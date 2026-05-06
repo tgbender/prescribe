@@ -342,8 +342,8 @@ def _results_to_json(
         data.append(entry)
 
     # env entries don't produce individual results (merged into shell results).
-    # Only the synthetic env result (when no files and no shells) consumes a slot.
-    if spec_obj.env and not spec_obj.files and not spec_obj.shell:
+    # Only the synthetic env result (when no files, shell, or assets) consumes a slot.
+    if spec_obj.env and not spec_obj.files and not spec_obj.shell and not spec_obj.assets:
         idx += 1
 
     for shell_target in spec_obj.shell:
@@ -369,6 +369,30 @@ def _results_to_json(
         if r.materialize_errors:
             shell_entry["materialize_errors"] = r.materialize_errors
         data.append(shell_entry)
+
+    for asset_target in spec_obj.assets:
+        if idx >= len(results):
+            break
+        r = results[idx]
+        idx += 1
+        asset_entry: dict[str, object] = {
+            "type": "asset",
+            "source": asset_target.source,
+            "dest": str(asset_target.dest),
+            "mode": asset_target.mode,
+            "status": _display_status(r.status, r.changed) if display_status else r.status,
+            "applied": r.applied,
+            "changed": r.changed,
+        }
+        if r.error:
+            asset_entry["error"] = r.error
+        if r.conflict:
+            asset_entry["conflict"] = r.conflict.reason
+        if r.diff:
+            asset_entry["diff"] = r.diff
+        if explain_skips and r.skip_reason:
+            asset_entry["skip_reason"] = r.skip_reason
+        data.append(asset_entry)
 
     # Include materialize_errors from any result in the top-level output
     all_mat_errors: list[str] = []
@@ -404,10 +428,10 @@ def _print_results(spec_obj: Spec, results: list[OrchestrationResult], *, explai
             typer.echo(result.diff, nl=False)
 
     # Env entries are merged — show them as a summary.
-    # Only the synthetic env result (when no files and no shells) consumes a slot.
+    # Only the synthetic env result (when no files, shell, or assets) consumes a slot.
     active_env = 0
     skipped_env = 0
-    if spec_obj.env and not spec_obj.files and not spec_obj.shell:
+    if spec_obj.env and not spec_obj.files and not spec_obj.shell and not spec_obj.assets:
         r = results[idx] if idx < len(results) else None
         if r is not None:
             idx += 1
@@ -434,6 +458,18 @@ def _print_results(spec_obj: Spec, results: list[OrchestrationResult], *, explai
         if explain_skips and result.skip_reason:
             detail = result.skip_reason
         typer.echo(_status_line(result.status, result.changed, str(shell_target.path), detail))
+        if result.diff:
+            typer.echo(result.diff, nl=False)
+
+    for asset_target in spec_obj.assets:
+        if idx >= len(results):
+            break
+        result = results[idx]
+        idx += 1
+        detail = result.conflict.reason if result.conflict else result.error or asset_target.source
+        if explain_skips and result.skip_reason:
+            detail = result.skip_reason
+        typer.echo(_status_line(result.status, result.changed, str(asset_target.dest), detail))
         if result.diff:
             typer.echo(result.diff, nl=False)
 
@@ -500,7 +536,7 @@ def _validation_targets(
             if result.diff:
                 entry["diff"] = result.diff
         targets.append(entry)
-    if spec_obj.env and not spec_obj.files and not spec_obj.shell and plan:
+    if spec_obj.env and not spec_obj.files and not spec_obj.shell and not spec_obj.assets and plan:
         result_idx += 1
     for env_target in spec_obj.env:
         active = condition_matches(target=env_target, tags=tags, skip_tags=skip_tags)
@@ -513,6 +549,25 @@ def _validation_targets(
         entry = {"type": "shell", "path": str(shell_target.path), "shells": shell_target.shells, "active": active}
         if explain_skips and not active:
             entry["skip_reason"] = condition_skip_reason(target=shell_target, tags=tags, skip_tags=skip_tags)
+        if plan and result_idx < len(plan_results):
+            result = plan_results[result_idx]
+            result_idx += 1
+            entry["status"] = _display_status(result.status, result.changed)
+            entry["changed"] = result.changed
+            if result.diff:
+                entry["diff"] = result.diff
+        targets.append(entry)
+    for asset_target in spec_obj.assets:
+        active = condition_matches(target=asset_target, tags=tags, skip_tags=skip_tags)
+        entry = {
+            "type": "asset",
+            "source": asset_target.source,
+            "dest": str(asset_target.dest),
+            "mode": asset_target.mode,
+            "active": active,
+        }
+        if explain_skips and not active:
+            entry["skip_reason"] = condition_skip_reason(target=asset_target, tags=tags, skip_tags=skip_tags)
         if plan and result_idx < len(plan_results):
             result = plan_results[result_idx]
             result_idx += 1

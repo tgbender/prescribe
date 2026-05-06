@@ -44,6 +44,9 @@ def perform_rollback(
             error=f"missing format history for {path}",
         )
 
+    if format_name == "asset":
+        return _rollback_asset(path, state_store, batches, dry_run=dry_run, resolver=resolver, connection=connection)
+
     checkpoint = state_store.latest_checkpoint(path, connection=connection)
     if not path.exists():
         if checkpoint is None or not checkpoint.original_exists:
@@ -226,6 +229,56 @@ def rollback_batch(
     if format_name == "line":
         return _rollback_line(document, operations, resolver)
     raise ValueError(f"unsupported document format for rollback: {format_name}")
+
+
+def _rollback_asset(
+    path: Path,
+    state_store: StateStore,
+    batches: list[Any],
+    *,
+    dry_run: bool,
+    resolver: ConflictResolver,
+    connection: sqlite3.Connection | None,
+) -> OrchestrationResult:
+    changed = False
+    skipped = False
+    for batch in reversed(batches):
+        for operation in reversed(batch.operations):
+            if operation.get("kind") != "replace_file":
+                return OrchestrationResult(
+                    status="error",
+                    applied=False,
+                    changed=False,
+                    error=f"unsupported rollback asset operation: {operation.get('kind')}",
+                )
+            current_text = path.read_text(encoding="utf-8") if path.exists() else None
+            expected = operation.get("value")
+            if current_text != expected and not (resolver is not None and resolver("file")):
+                skipped = True
+                continue
+            before_exists = bool(operation.get("before_exists"))
+            before_value = operation.get("before_value")
+            if dry_run:
+                return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
+            if before_exists:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("" if before_value is None else str(before_value), encoding="utf-8")
+            elif path.exists():
+                path.unlink()
+            changed = True
+
+    if not changed:
+        return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
+
+    state_store.record_event(
+        run_id=batches[-1].run_id,
+        event_type="rollback",
+        path=path,
+        changed=True,
+        summary="rolled back asset" + ("; skipped externally modified version" if skipped else ""),
+        connection=connection,
+    )
+    return OrchestrationResult(status="rolled-back", applied=True, changed=True)
 
 
 def _rollback_mapping(
