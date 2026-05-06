@@ -8,7 +8,7 @@ import tomlkit
 
 KNOWN_FORMATS = frozenset({"toml", "yaml", "jsonc", "line"})
 KNOWN_PLATFORMS = frozenset({"linux", "macos", "windows"})
-KNOWN_SHELLS = frozenset({"xonsh", "bash", "zsh", "fish", "nu"})
+KNOWN_SHELLS = frozenset({"xonsh", "bash", "zsh", "fish", "nu", "pwsh"})
 KNOWN_SECTION_KEYS = frozenset({"files", "env", "shell"})
 
 
