@@ -8,13 +8,19 @@ from pathlib import Path
 import typer
 
 from prescribe import __version__
+from prescribe.claims import (
+    ClaimConflict,
+    ClaimResolver,
+    compute_claims,
+    detect_internal_claim_conflicts,
+)
 from prescribe.core.result import OrchestrationResult
 from prescribe.materialize import detect_platform
 from prescribe.orchestrator import Orchestrator, condition_matches, condition_skip_reason
 from prescribe.paths import config_dir, data_dir, default_state_path
 from prescribe.presets import Presets
 from prescribe.rollback import ConflictResolver
-from prescribe.spec import Spec, SpecError, SpecLoader
+from prescribe.spec import AssetTarget, EnvTarget, FileTarget, ShellTarget, Spec, SpecError, SpecLoader
 from prescribe.state import StateStore
 
 app = typer.Typer(help="Manage declarative config file changes.", add_completion=False)
@@ -83,6 +89,11 @@ def apply(
     tags: str | None = typer.Option(None, "--tags", help="Only apply targets with these tags (comma-separated)."),
     skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
     explain_skips: bool = typer.Option(False, "--explain-skips", help="Show why targets were skipped."),
+    on_claim_conflict: str | None = typer.Option(
+        None,
+        "--on-claim-conflict",
+        help="Behavior when another spec owns a claim: prompt (TTY default), fail (non-TTY default), or take.",
+    ),
 ) -> None:
     """Apply a spec file to its target config files, env vars, and shell blocks."""
     try:
@@ -95,10 +106,29 @@ def apply(
     skip_set = _parse_tags(skip_tags)
     explain = _option_bool(explain_skips)
     orchestrator = Orchestrator(_make_store(state))
+    claim_resolver = _make_claim_resolver(on_claim_conflict)
     if explain:
-        results = orchestrator.run(spec_obj, dry_run=dry_run, tags=tag_set, skip_tags=skip_set, explain_skips=True)
-    else:
+        if claim_resolver is None:
+            results = orchestrator.run(spec_obj, dry_run=dry_run, tags=tag_set, skip_tags=skip_set, explain_skips=True)
+        else:
+            results = orchestrator.run(
+                spec_obj,
+                dry_run=dry_run,
+                tags=tag_set,
+                skip_tags=skip_set,
+                explain_skips=True,
+                claim_resolver=claim_resolver,
+            )
+    elif claim_resolver is None:
         results = orchestrator.run(spec_obj, dry_run=dry_run, tags=tag_set, skip_tags=skip_set)
+    else:
+        results = orchestrator.run(
+            spec_obj,
+            dry_run=dry_run,
+            tags=tag_set,
+            skip_tags=skip_set,
+            claim_resolver=claim_resolver,
+        )
 
     if output_json:
         data = _results_to_json(spec_obj, results, display_status=False, explain_skips=explain)
@@ -220,6 +250,11 @@ def apply_dir(
     tags: str | None = typer.Option(None, "--tags", help="Only apply targets with these tags (comma-separated)."),
     skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
     explain_skips: bool = typer.Option(False, "--explain-skips", help="Show why targets were skipped."),
+    on_claim_conflict: str | None = typer.Option(
+        None,
+        "--on-claim-conflict",
+        help="Behavior when another spec owns a claim: prompt (TTY default), fail (non-TTY default), or take.",
+    ),
 ) -> None:
     """Apply all top-level spec TOML files in a directory."""
     _run_spec_directory(
@@ -232,6 +267,7 @@ def apply_dir(
         explain_skips=explain_skips,
         diff=False,
         display_status=dry_run,
+        claim_resolver=_make_claim_resolver(on_claim_conflict),
     )
 
 
@@ -276,9 +312,16 @@ def validate_dir(
     specs = Presets().list_specs(directory)
     payload: list[dict[str, object]] = []
     had_error = False
+    all_claims = []
     for spec_path in specs:
         try:
             spec_obj = SpecLoader().load(spec_path)
+            all_claims.extend(
+                compute_claims(
+                    spec_obj,
+                    include=lambda target: _claim_target_matches(target, tags=tag_set, skip_tags=skip_set),
+                )
+            )
             targets = _validation_targets(
                 spec_obj,
                 tags=tag_set,
@@ -291,6 +334,18 @@ def validate_dir(
         except SpecError as exc:
             had_error = True
             payload.append({"spec": str(spec_path), "valid": False, "error": str(exc), "targets": []})
+    claim_conflicts = detect_internal_claim_conflicts(all_claims)
+    if claim_conflicts:
+        had_error = True
+        for conflict in claim_conflicts:
+            payload.append(
+                {
+                    "spec": conflict.claim.spec_path or "",
+                    "valid": False,
+                    "error": _claim_conflict_message(conflict),
+                    "targets": [],
+                }
+            )
 
     if output_json:
         typer.echo(json.dumps({"valid": not had_error, "specs": payload}, indent=2))
@@ -400,6 +455,15 @@ def _make_conflict_resolver(on_conflict: str | None) -> ConflictResolver:
         return lambda key: True
     if effective == "prompt":
         return lambda key: typer.confirm(f"  '{key}' was externally modified. Revert anyway?")
+    return None
+
+
+def _make_claim_resolver(on_claim_conflict: str | None) -> ClaimResolver | None:
+    effective = on_claim_conflict or ("prompt" if sys.stdin.isatty() else "fail")
+    if effective == "take":
+        return lambda _conflict: True
+    if effective == "prompt":
+        return lambda conflict: typer.confirm(f"{_claim_conflict_message(conflict)}. Take ownership?")
     return None
 
 
@@ -639,6 +703,7 @@ def _run_spec_directory(
     explain_skips: bool,
     diff: bool,
     display_status: bool,
+    claim_resolver: ClaimResolver | None = None,
 ) -> None:
     tag_set = _parse_tags(tags)
     skip_set = _parse_tags(skip_tags)
@@ -649,6 +714,7 @@ def _run_spec_directory(
     payload: list[dict[str, object]] = []
     display_items: list[tuple[Path, Spec | None, list[OrchestrationResult], str | None]] = []
     had_error = False
+    loaded_specs: list[tuple[Path, Spec]] = []
     for spec_path in specs:
         try:
             spec_obj = loader.load(spec_path)
@@ -657,28 +723,50 @@ def _run_spec_directory(
             payload.append({"spec": str(spec_path), "error": str(exc), "results": []})
             display_items.append((spec_path, None, [], str(exc)))
             continue
-        results = Orchestrator(store).run(
-            spec_obj,
-            dry_run=dry_run,
-            tags=tag_set,
-            skip_tags=skip_set,
-            diff=diff,
-            explain_skips=explain,
-        )
-        if any(r.status in {"error", "conflict"} for r in results):
-            had_error = True
-        payload.append(
-            {
-                "spec": str(spec_path),
-                "results": _results_to_json(
-                    spec_obj,
-                    results,
-                    display_status=display_status,
-                    explain_skips=explain,
-                ),
-            }
-        )
-        display_items.append((spec_path, spec_obj, results, None))
+        loaded_specs.append((spec_path, spec_obj))
+    claim_conflicts = detect_internal_claim_conflicts(
+        [
+            claim
+            for _, spec_obj in loaded_specs
+            for claim in compute_claims(
+                spec_obj,
+                include=lambda target: _claim_target_matches(target, tags=tag_set, skip_tags=skip_set),
+            )
+        ]
+    )
+    if claim_conflicts:
+        had_error = True
+        for conflict in claim_conflicts:
+            payload.append(
+                {"spec": conflict.claim.spec_path or "", "error": _claim_conflict_message(conflict), "results": []}
+            )
+            display_items.append((Path(conflict.claim.spec_path or ""), None, [], _claim_conflict_message(conflict)))
+
+    if not had_error:
+        for spec_path, spec_obj in loaded_specs:
+            results = Orchestrator(store).run(
+                spec_obj,
+                dry_run=dry_run,
+                tags=tag_set,
+                skip_tags=skip_set,
+                diff=diff,
+                explain_skips=explain,
+                claim_resolver=claim_resolver,
+            )
+            if any(r.status in {"error", "conflict"} for r in results):
+                had_error = True
+            payload.append(
+                {
+                    "spec": str(spec_path),
+                    "results": _results_to_json(
+                        spec_obj,
+                        results,
+                        display_status=display_status,
+                        explain_skips=explain,
+                    ),
+                }
+            )
+            display_items.append((spec_path, spec_obj, results, None))
 
     if output_json:
         typer.echo(json.dumps(payload, indent=2))
@@ -700,6 +788,19 @@ def _run_spec_directory(
 
 def _option_bool(value: object) -> bool:
     return value if isinstance(value, bool) else False
+
+
+def _claim_target_matches(target: object, *, tags: set[str] | None, skip_tags: set[str] | None) -> bool:
+    if not isinstance(target, (FileTarget, EnvTarget, ShellTarget, AssetTarget)):
+        return False
+    return condition_matches(target=target, tags=tags, skip_tags=skip_tags)
+
+
+def _claim_conflict_message(conflict: ClaimConflict) -> str:
+    claim = conflict.claim
+    return (
+        f"claim conflict: {claim.target_type} {claim.subject} {claim.address} is managed by {conflict.existing_owner}"
+    )
 
 
 def _validation_targets(

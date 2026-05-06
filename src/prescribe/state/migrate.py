@@ -315,11 +315,15 @@ def migrate(conn: sqlite3.Connection, dry_run: bool = False) -> list[str]:
         if current.lower() != v.lower():
             conn.execute(f"PRAGMA {k}={v}")
 
-    existing_tables = set(_list_user_tables(conn))
-    all_ops: list[Op] = []
-    for table in Base.metadata.sorted_tables:
-        actual = _read_table(conn, table.name) if table.name in existing_tables else None
-        all_ops.extend(_diff_table(table, actual))
+    def _compute_ops() -> list[Op]:
+        existing_tables = set(_list_user_tables(conn))
+        ops: list[Op] = []
+        for table in Base.metadata.sorted_tables:
+            actual = _read_table(conn, table.name) if table.name in existing_tables else None
+            ops.extend(_diff_table(table, actual))
+        return ops
+
+    all_ops = _compute_ops()
 
     log: list[str] = []
     if not all_ops:
@@ -337,6 +341,10 @@ def migrate(conn: sqlite3.Connection, dry_run: bool = False) -> list[str]:
 
     conn.execute("BEGIN IMMEDIATE")
     try:
+        all_ops = _compute_ops()
+        if not all_ops:
+            conn.execute("COMMIT")
+            return log
         for op in all_ops:
             _exec_op(conn, op, log)
         conn.execute("COMMIT")

@@ -16,6 +16,14 @@ from typing import Any
 from prescribe._util import _MISSING, mapping_value, sha256_bytes
 from prescribe.adapters import adapter_for_path
 from prescribe.backups import move_to_backup
+from prescribe.claims import (
+    Claim,
+    ClaimConflict,
+    ClaimResolver,
+    compute_claims,
+    detect_internal_claim_conflicts,
+    persist_claims,
+)
 from prescribe.core import DesiredState, Planner, detect_conflict
 from prescribe.core.apply import apply_operations
 from prescribe.core.conflict import (
@@ -164,6 +172,7 @@ class Orchestrator:
         skip_tags: set[str] | None = None,
         diff: bool = False,
         explain_skips: bool = False,
+        claim_resolver: ClaimResolver | None = None,
     ) -> list[OrchestrationResult]:
         from prescribe.spec import SpecLoader
 
@@ -174,6 +183,11 @@ class Orchestrator:
         else:
             spec_obj = spec
             spec_hash = _spec_hash(spec_obj)
+
+        claims = _active_claims(spec_obj, tags=tags, skip_tags=skip_tags)
+        claim_conflicts = detect_internal_claim_conflicts(claims)
+        if claim_conflicts:
+            return [_claim_conflict_result(claim_conflicts[0])]
 
         if dry_run:
             self.state_store.initialize()
@@ -189,24 +203,66 @@ class Orchestrator:
             )
 
         self.state_store.initialize()
-        with self.state_store.transaction() as connection:
-            run = self.state_store.start_run(
-                spec_hash=spec_hash,
-                tool_version=tool_version,
-                platform=sys.platform,
-                host=current_machine(),
-                connection=connection,
-            )
-            return self._run_all(
-                run_id=run.id,
-                spec_hash=spec_hash,
-                spec=spec_obj,
-                dry_run=False,
-                tags=tags,
-                skip_tags=skip_tags,
-                diff=diff,
-                explain_skips=explain_skips,
-                connection=connection,
+        lock_owner = _lock_owner()
+        lock = self.state_store.acquire_lock("global", owner=lock_owner)
+        if lock.owner != lock_owner:
+            return [
+                OrchestrationResult(
+                    status="error",
+                    applied=False,
+                    changed=False,
+                    error=f"another prescribe write is active: {lock.owner} until {lock.expires_at.isoformat()}",
+                )
+            ]
+        try:
+            claim_conflicts = persist_claims(self.state_store, claims, resolver=claim_resolver)
+            if claim_conflicts:
+                return [_claim_conflict_result(claim_conflicts[0])]
+            with self.state_store.transaction() as connection:
+                run = self.state_store.start_run(
+                    spec_hash=spec_hash,
+                    tool_version=tool_version,
+                    platform=sys.platform,
+                    host=current_machine(),
+                    command="apply",
+                    cwd=Path.cwd(),
+                    connection=connection,
+                )
+                results = self._run_all(
+                    run_id=run.id,
+                    spec_hash=spec_hash,
+                    spec=spec_obj,
+                    dry_run=False,
+                    tags=tags,
+                    skip_tags=skip_tags,
+                    diff=diff,
+                    explain_skips=explain_skips,
+                    connection=connection,
+                )
+            self._record_target_runs(run.id, spec_obj, results)
+            status = "failed" if any(result.status in {"error", "conflict"} for result in results) else "completed"
+            self.state_store.finish_run(run.id, status=status)
+            return results
+        finally:
+            self.state_store.release_lock("global", owner=lock_owner)
+
+    def _record_target_runs(self, run_id: int, spec: Spec, results: list[OrchestrationResult]) -> None:
+        spec_run = self.state_store.record_spec_run(
+            run_id=run_id,
+            spec_path=spec.path,
+            spec_hash=None,
+            order_index=0,
+            valid=True,
+        )
+        for result, (target_type, target) in zip(results, _iter_targets_for_ledger(spec), strict=False):
+            self.state_store.record_target_run(
+                run_id=run_id,
+                spec_run_id=spec_run.id,
+                target_type=target_type,
+                path_or_name=_target_label(target_type, target),
+                status=result.status,
+                changed=result.changed,
+                skip_reason=result.skip_reason,
             )
 
     def _run_all(
@@ -1050,22 +1106,36 @@ class Orchestrator:
         conflict_resolver: ConflictResolver = None,
     ) -> OrchestrationResult:
         path = Path(target_path)
+        lock_owner = _lock_owner()
+        if not dry_run:
+            lock = self.state_store.acquire_lock("global", owner=lock_owner)
+            if lock.owner != lock_owner:
+                return OrchestrationResult(
+                    status="error",
+                    applied=False,
+                    changed=False,
+                    error=f"another prescribe write is active: {lock.owner} until {lock.expires_at.isoformat()}",
+                )
         if not dry_run:
             self.state_store.initialize()
         elif not self.state_store.path.exists():
             return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=True)
 
-        if not dry_run:
-            with self.state_store.transaction() as connection:
-                return perform_rollback(
-                    path,
-                    self.state_store,
-                    dry_run=False,
-                    original=original,
-                    resolver=conflict_resolver,
-                    connection=connection,
-                )
-        return perform_rollback(path, self.state_store, dry_run=True, original=original, resolver=conflict_resolver)
+        try:
+            if not dry_run:
+                with self.state_store.transaction() as connection:
+                    return perform_rollback(
+                        path,
+                        self.state_store,
+                        dry_run=False,
+                        original=original,
+                        resolver=conflict_resolver,
+                        connection=connection,
+                    )
+            return perform_rollback(path, self.state_store, dry_run=True, original=original, resolver=conflict_resolver)
+        finally:
+            if not dry_run:
+                self.state_store.release_lock("global", owner=lock_owner)
 
     # ── conflict helpers ──────────────────────────────
 
@@ -1387,6 +1457,57 @@ def _priority_skip_reason(target: FileTarget, winner: FileTarget | None) -> str:
         "lower priority target selected "
         f"(winner path {winner.path}, winner priority {winner.priority}; skipped priority {target.priority})"
     )
+
+
+def _lock_owner() -> str:
+    return f"{current_machine()}:{os.getpid()}"
+
+
+def _active_claims(spec: Spec, *, tags: set[str] | None, skip_tags: set[str] | None) -> list[Claim]:
+    active_files, _ = _resolve_active_files(spec.files, tags=tags, skip_tags=skip_tags)
+    active_ids = {id(target) for target in active_files}
+    for env_target in spec.env:
+        if condition_matches(target=env_target, tags=tags, skip_tags=skip_tags):
+            active_ids.add(id(env_target))
+    for shell_target in spec.shell:
+        if condition_matches(target=shell_target, tags=tags, skip_tags=skip_tags):
+            active_ids.add(id(shell_target))
+    for asset_target in spec.assets:
+        if condition_matches(target=asset_target, tags=tags, skip_tags=skip_tags):
+            active_ids.add(id(asset_target))
+    return compute_claims(spec, include=lambda target: id(target) in active_ids)
+
+
+def _claim_conflict_result(conflict: ClaimConflict) -> OrchestrationResult:
+    claim = conflict.claim
+    return OrchestrationResult(
+        status="error",
+        applied=False,
+        changed=False,
+        error=(
+            "claim conflict: "
+            f"{claim.target_type} {claim.subject} {claim.address} is managed by {conflict.existing_owner}"
+        ),
+    )
+
+
+def _iter_targets_for_ledger(spec: Spec) -> list[tuple[str, object]]:
+    targets: list[tuple[str, object]] = [("file", target) for target in spec.files]
+    if spec.env and not spec.files and not spec.shell and not spec.assets:
+        targets.append(("env", spec.env[0]))
+    targets.extend(("shell", target) for target in spec.shell)
+    targets.extend(("asset", target) for target in spec.assets)
+    return targets
+
+
+def _target_label(target_type: str, target: object) -> str:
+    if isinstance(target, EnvTarget):
+        return target.name
+    if isinstance(target, AssetTarget):
+        return str(target.dest)
+    if isinstance(target, (FileTarget, ShellTarget)):
+        return str(target.path)
+    return ""
 
 
 def _asset_entries(target: AssetTarget) -> list[tuple[Path, Path]]:

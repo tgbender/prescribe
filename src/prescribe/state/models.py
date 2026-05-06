@@ -23,6 +23,68 @@ class Run(Base):
     tool_version = Column(Text)
     host = Column(Text)
     platform = Column(Text)
+    ended_at = Column(Text)
+    status = Column(Text)
+    command = Column(Text)
+    cwd = Column(Text)
+
+
+class SpecRun(Base):
+    __tablename__ = "spec_runs"
+
+    id = Column(Integer, primary_key=True, default=snowflake_id)
+    run_id = Column(Integer, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    spec_path = Column(Text, nullable=False)
+    spec_hash = Column(LargeBinary)
+    order_index = Column(Integer, nullable=False)
+    valid = Column(Boolean, nullable=False)
+
+    __table_args__ = (Index("idx_spec_runs_run_id_order", "run_id", "order_index"),)
+
+
+class TargetRun(Base):
+    __tablename__ = "target_runs"
+
+    id = Column(Integer, primary_key=True, default=snowflake_id)
+    run_id = Column(Integer, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    spec_run_id = Column(Integer, ForeignKey("spec_runs.id", ondelete="CASCADE"))
+    target_type = Column(Text, nullable=False)
+    target_id = Column(Text)
+    path_or_name = Column(Text, nullable=False)
+    status = Column(Text, nullable=False)
+    skip_reason = Column(Text)
+    changed = Column(Boolean, nullable=False)
+
+    __table_args__ = (Index("idx_target_runs_run_id_type", "run_id", "target_type"),)
+
+
+class RunLock(Base):
+    __tablename__ = "run_locks"
+
+    name = Column(Text, primary_key=True)
+    owner = Column(Text, nullable=False)
+    run_id = Column(Integer, ForeignKey("runs.id", ondelete="SET NULL"))
+    acquired_at = Column(Text, nullable=False)
+    expires_at = Column(Text, nullable=False)
+
+
+class ManagedClaim(Base):
+    __tablename__ = "managed_claims"
+
+    id = Column(Integer, primary_key=True, default=snowflake_id)
+    target_type = Column(Text, nullable=False)
+    subject = Column(Text, nullable=False)
+    address = Column(Text, nullable=False)
+    owner_id = Column(Text, nullable=False)
+    spec_path = Column(Text)
+    target_id = Column(Text)
+    created_at = Column(Text, nullable=False)
+    last_seen_at = Column(Text, nullable=False)
+
+    __table_args__ = (
+        Index("uq_managed_claims_target_subject_address", "target_type", "subject", "address", unique=True),
+        Index("idx_managed_claims_owner", "owner_id"),
+    )
 
 
 class FileSnapshot(Base):

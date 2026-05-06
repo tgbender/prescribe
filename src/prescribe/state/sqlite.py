@@ -4,11 +4,17 @@ import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from prescribe.state.engine import engine_for_connection_factory, initialize_engine, session_scope
 from prescribe.state.migrate import migrate as migrate_schema
+from prescribe.state.models import ManagedClaim, RunLock, SpecRun, TargetRun
 
 
 @dataclass(slots=True)
@@ -19,6 +25,10 @@ class RunRecord:
     tool_version: str | None
     host: str | None
     platform: str | None
+    ended_at: datetime | None = None
+    status: str | None = None
+    command: str | None = None
+    cwd: str | None = None
 
 
 @dataclass(slots=True)
@@ -103,6 +113,51 @@ class AssetBackupRecord:
     restored_at: datetime | None
 
 
+@dataclass(slots=True)
+class RunLockRecord:
+    name: str
+    owner: str
+    run_id: int | None
+    acquired_at: datetime
+    expires_at: datetime
+
+
+@dataclass(slots=True)
+class ManagedClaimRecord:
+    id: int
+    target_type: str
+    subject: str
+    address: str
+    owner_id: str
+    spec_path: str | None
+    target_id: str | None
+    created_at: datetime
+    last_seen_at: datetime
+
+
+@dataclass(slots=True)
+class SpecRunRecord:
+    id: int
+    run_id: int
+    spec_path: Path
+    spec_hash: bytes | None
+    order_index: int
+    valid: bool
+
+
+@dataclass(slots=True)
+class TargetRunRecord:
+    id: int
+    run_id: int
+    spec_run_id: int | None
+    target_type: str
+    target_id: str | None
+    path_or_name: str
+    status: str
+    skip_reason: str | None
+    changed: bool
+
+
 class StateStore:
     def __init__(
         self,
@@ -113,6 +168,16 @@ class StateStore:
         raw_path = Path(path)
         self.path = raw_path if str(raw_path) == ":memory:" else _canonical_path(raw_path)
         self.connection_factory = connection_factory
+        self._engine = engine_for_connection_factory(path=self.path, connection_factory=self._open_for_engine)
+
+    def _open_for_engine(self, path: Path) -> sqlite3.Connection:
+        if str(path) != ":memory:" and "file:" not in str(path):
+            os.makedirs(path.parent, exist_ok=True)
+        connection = self.connection_factory(path)
+        connection.execute("PRAGMA foreign_keys = ON")
+        if str(path) != ":memory:" and "file:" not in str(path):
+            connection.execute("PRAGMA journal_mode = WAL")
+        return connection
 
     def _open(self) -> sqlite3.Connection:
         if str(self.path) != ":memory:":
@@ -158,6 +223,12 @@ class StateStore:
         with self._connection(connection) as conn:
             return migrate_schema(conn, dry_run=dry_run)
 
+    @contextmanager
+    def orm_session(self) -> Iterator[Session]:
+        initialize_engine(self._engine)
+        with session_scope(self._engine) as session:
+            yield session
+
     def start_run(
         self,
         *,
@@ -165,6 +236,8 @@ class StateStore:
         tool_version: str | None = None,
         host: str | None = None,
         platform: str | None = None,
+        command: str | None = None,
+        cwd: Path | str | None = None,
         started_at: datetime | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> RunRecord:
@@ -172,10 +245,19 @@ class StateStore:
         with self._connection(connection) as conn:
             cursor = conn.execute(
                 """
-                INSERT INTO runs (started_at, spec_hash, tool_version, host, platform)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO runs (started_at, spec_hash, tool_version, host, platform, status, command, cwd)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (started.isoformat(), spec_hash, tool_version, host, platform),
+                (
+                    started.isoformat(),
+                    spec_hash,
+                    tool_version,
+                    host,
+                    platform,
+                    "running",
+                    command,
+                    None if cwd is None else str(cwd),
+                ),
             )
             if cursor.lastrowid is None:
                 raise RuntimeError("INSERT into runs did not produce a rowid")
@@ -187,7 +269,183 @@ class StateStore:
             tool_version=tool_version,
             host=host,
             platform=platform,
+            status="running",
+            command=command,
+            cwd=None if cwd is None else str(cwd),
         )
+
+    def finish_run(
+        self,
+        run_id: int,
+        *,
+        status: str,
+        ended_at: datetime | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        ended = _utcnow(ended_at)
+        with self._connection(connection) as conn:
+            conn.execute("UPDATE runs SET ended_at = ?, status = ? WHERE id = ?", (ended.isoformat(), status, run_id))
+
+    def acquire_lock(
+        self,
+        name: str,
+        *,
+        owner: str,
+        run_id: int | None = None,
+        ttl: timedelta = timedelta(minutes=15),
+        now: datetime | None = None,
+    ) -> RunLockRecord:
+        current_time = _utcnow(now)
+        expires_at = current_time + ttl
+        with self.orm_session() as session:
+            existing = session.get(RunLock, name)
+            if existing is not None and _parse_datetime(str(existing.expires_at)) > current_time:
+                return _run_lock_record(existing)
+            if existing is None:
+                existing = RunLock(name=name)
+                session.add(existing)
+            existing_any: Any = existing
+            existing_any.owner = owner
+            existing_any.run_id = run_id
+            existing_any.acquired_at = current_time.isoformat()
+            existing_any.expires_at = expires_at.isoformat()
+            session.flush()
+            return _run_lock_record(existing)
+
+    def active_lock(self, name: str) -> RunLockRecord | None:
+        now = _utcnow()
+        with self.orm_session() as session:
+            existing = session.get(RunLock, name)
+            if existing is None:
+                return None
+            record = _run_lock_record(existing)
+            return record if record.expires_at > now else None
+
+    def release_lock(self, name: str, *, owner: str | None = None) -> None:
+        with self.orm_session() as session:
+            existing = session.get(RunLock, name)
+            if existing is None:
+                return
+            if owner is not None and existing.owner != owner:
+                return
+            session.delete(existing)
+
+    def record_spec_run(
+        self,
+        *,
+        run_id: int,
+        spec_path: Path | str,
+        spec_hash: bytes | None,
+        order_index: int,
+        valid: bool,
+    ) -> SpecRunRecord:
+        with self.orm_session() as session:
+            row = SpecRun(
+                run_id=run_id,
+                spec_path=str(spec_path),
+                spec_hash=spec_hash,
+                order_index=order_index,
+                valid=valid,
+            )
+            session.add(row)
+            session.flush()
+            return _spec_run_record(row)
+
+    def record_target_run(
+        self,
+        *,
+        run_id: int,
+        target_type: str,
+        path_or_name: str,
+        status: str,
+        changed: bool,
+        spec_run_id: int | None = None,
+        target_id: str | None = None,
+        skip_reason: str | None = None,
+    ) -> TargetRunRecord:
+        with self.orm_session() as session:
+            row = TargetRun(
+                run_id=run_id,
+                spec_run_id=spec_run_id,
+                target_type=target_type,
+                target_id=target_id,
+                path_or_name=path_or_name,
+                status=status,
+                skip_reason=skip_reason,
+                changed=changed,
+            )
+            session.add(row)
+            session.flush()
+            return _target_run_record(row)
+
+    def target_runs(self, run_id: int) -> list[TargetRunRecord]:
+        with self.orm_session() as session:
+            rows = session.scalars(select(TargetRun).where(TargetRun.run_id == run_id).order_by(TargetRun.id)).all()
+            return [_target_run_record(row) for row in rows]
+
+    def upsert_claim(
+        self,
+        *,
+        target_type: str,
+        subject: str,
+        address: str,
+        owner_id: str,
+        spec_path: str | None = None,
+        target_id: str | None = None,
+        take: bool = False,
+        now: datetime | None = None,
+    ) -> ManagedClaimRecord:
+        seen = _utcnow(now)
+        with self.orm_session() as session:
+            row = session.scalar(
+                select(ManagedClaim).where(
+                    ManagedClaim.target_type == target_type,
+                    ManagedClaim.subject == subject,
+                    ManagedClaim.address == address,
+                )
+            )
+            if row is not None:
+                if row.owner_id != owner_id and not take:
+                    return _managed_claim_record(row)
+                row_any: Any = row
+                row_any.owner_id = owner_id
+                row_any.spec_path = spec_path
+                row_any.target_id = target_id
+                row_any.last_seen_at = seen.isoformat()
+                session.flush()
+                return _managed_claim_record(row)
+            row = ManagedClaim(
+                target_type=target_type,
+                subject=subject,
+                address=address,
+                owner_id=owner_id,
+                spec_path=spec_path,
+                target_id=target_id,
+                created_at=seen.isoformat(),
+                last_seen_at=seen.isoformat(),
+            )
+            session.add(row)
+            try:
+                session.flush()
+            except IntegrityError:
+                session.rollback()
+                with self.orm_session() as retry_session:
+                    existing = retry_session.scalar(
+                        select(ManagedClaim).where(
+                            ManagedClaim.target_type == target_type,
+                            ManagedClaim.subject == subject,
+                            ManagedClaim.address == address,
+                        )
+                    )
+                    if existing is None:
+                        raise
+                    return _managed_claim_record(existing)
+            return _managed_claim_record(row)
+
+    def claims(self) -> list[ManagedClaimRecord]:
+        with self.orm_session() as session:
+            rows = session.scalars(select(ManagedClaim).order_by(ManagedClaim.subject, ManagedClaim.address)).all()
+            return [_managed_claim_record(row) for row in rows]
 
     def record_snapshot(
         self,
@@ -814,4 +1072,53 @@ def _asset_backup_from_row(row: sqlite3.Row | tuple[Any, ...]) -> AssetBackupRec
         mtime_ns=row[9],
         file_type=row[10],
         restored_at=None if row[11] is None else _parse_datetime(row[11]),
+    )
+
+
+def _run_lock_record(row: RunLock) -> RunLockRecord:
+    return RunLockRecord(
+        name=str(row.name),
+        owner=str(row.owner),
+        run_id=None if row.run_id is None else int(row.run_id),
+        acquired_at=_parse_datetime(str(row.acquired_at)),
+        expires_at=_parse_datetime(str(row.expires_at)),
+    )
+
+
+def _managed_claim_record(row: ManagedClaim) -> ManagedClaimRecord:
+    return ManagedClaimRecord(
+        id=int(row.id),
+        target_type=str(row.target_type),
+        subject=str(row.subject),
+        address=str(row.address),
+        owner_id=str(row.owner_id),
+        spec_path=None if row.spec_path is None else str(row.spec_path),
+        target_id=None if row.target_id is None else str(row.target_id),
+        created_at=_parse_datetime(str(row.created_at)),
+        last_seen_at=_parse_datetime(str(row.last_seen_at)),
+    )
+
+
+def _spec_run_record(row: SpecRun) -> SpecRunRecord:
+    return SpecRunRecord(
+        id=int(row.id),
+        run_id=int(row.run_id),
+        spec_path=Path(str(row.spec_path)),
+        spec_hash=None if row.spec_hash is None else bytes(row.spec_hash),
+        order_index=int(row.order_index),
+        valid=bool(row.valid),
+    )
+
+
+def _target_run_record(row: TargetRun) -> TargetRunRecord:
+    return TargetRunRecord(
+        id=int(row.id),
+        run_id=int(row.run_id),
+        spec_run_id=None if row.spec_run_id is None else int(row.spec_run_id),
+        target_type=str(row.target_type),
+        target_id=None if row.target_id is None else str(row.target_id),
+        path_or_name=str(row.path_or_name),
+        status=str(row.status),
+        skip_reason=None if row.skip_reason is None else str(row.skip_reason),
+        changed=bool(row.changed),
     )

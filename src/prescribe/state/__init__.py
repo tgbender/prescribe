@@ -7,7 +7,11 @@ from prescribe.state.models import (
     FileBaseline,
     FileCheckpoint,
     FileSnapshot,
+    ManagedClaim,
     Run,
+    RunLock,
+    SpecRun,
+    TargetRun,
 )
 from prescribe.state.sqlite import (
     AssetBackupRecord,
@@ -15,10 +19,14 @@ from prescribe.state.sqlite import (
     ChangeBatchRecord,
     CheckpointRecord,
     EventRecord,
+    ManagedClaimRecord,
     ManagedRecord,
+    RunLockRecord,
     RunRecord,
     SnapshotRecord,
+    SpecRunRecord,
     StateStore,
+    TargetRunRecord,
 )
 
 __all__ = [
@@ -34,10 +42,18 @@ __all__ = [
     "FileBaseline",
     "FileCheckpoint",
     "FileSnapshot",
+    "ManagedClaim",
+    "ManagedClaimRecord",
     "ManagedRecord",
     "Run",
     "RunRecord",
+    "RunLock",
+    "RunLockRecord",
     "SnapshotRecord",
+    "SpecRun",
+    "SpecRunRecord",
     "StateStore",
+    "TargetRun",
+    "TargetRunRecord",
     "migrate",
 ]

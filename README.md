@@ -30,6 +30,8 @@ All commands accept `--json` for machine-readable output and `--state` (or `PRES
 
 `prescribe rollback` accepts `--on-conflict` (prompt/revert/ignore) and `--original` (restore pre-prescribe state).
 
+Mutating commands use a short-lived SQLite run lock to prevent concurrent writes. Prescribe also records durable ownership claims for managed keys, blocks, env vars, and assets; overlapping claims fail before writes unless ownership is explicitly taken with `--on-claim-conflict take` or approved interactively with `--on-claim-conflict prompt`.
+
 ---
 
 ## Spec format

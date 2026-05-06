@@ -573,7 +573,7 @@ def test_apply_dir_applies_specs_in_sorted_order(run, workdir: Path) -> None:
     config = workdir / "config.toml"
     config.write_text("count = 0\n")
     (specs / "20-second.toml").write_text(
-        "[[files]]\npath = '../config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n"
+        "[[files]]\npath = '../config.toml'\nformat = 'toml'\n[files.data]\nsecond = 2\n"
     )
     (specs / "10-first.toml").write_text(
         "[[files]]\npath = '../config.toml'\nformat = 'toml'\n[files.data]\ncount = 1\n"
@@ -584,7 +584,27 @@ def test_apply_dir_applies_specs_in_sorted_order(run, workdir: Path) -> None:
     assert result.returncode == 0
     assert "10-first.toml" in result.stdout
     assert "20-second.toml" in result.stdout
-    assert "count = 2" in config.read_text()
+    assert "count = 1" in config.read_text()
+    assert "second = 2" in config.read_text()
+
+
+def test_apply_dir_rejects_overlapping_claims_before_writing(run, workdir: Path) -> None:
+    specs = workdir / "specs"
+    specs.mkdir()
+    config = workdir / "config.toml"
+    config.write_text("count = 0\n")
+    (specs / "10-first.toml").write_text(
+        "[[files]]\npath = '../config.toml'\nformat = 'toml'\n[files.data]\ncount = 1\n"
+    )
+    (specs / "20-second.toml").write_text(
+        "[[files]]\npath = '../config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n"
+    )
+
+    result = run("apply-dir", "specs")
+
+    assert result.returncode != 0
+    assert "claim conflict" in result.stdout
+    assert config.read_text() == "count = 0\n"
 
 
 def test_validate_dir_json_reports_asset_targets_without_state(run, workdir: Path) -> None:
