@@ -9,6 +9,7 @@ import socket
 import sqlite3
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,16 @@ from prescribe.shell import render_shell_block
 from prescribe.spec import AssetTarget, EnvTarget, FileTarget, ShellTarget, Spec
 from prescribe.state import StateStore
 from prescribe.state.sqlite import ChangeBatchRecord
+
+
+@dataclass(slots=True)
+class _AssetDestinationState:
+    exists: bool
+    text: str | None = None
+    is_symlink: bool = False
+    symlink_target: str | None = None
+    hardlink_count: int = 0
+
 
 PLATFORM_MATCHERS: dict[str, Callable[[], bool]] = {
     "linux": lambda: sys.platform.startswith("linux"),
@@ -349,8 +360,8 @@ class Orchestrator:
             diffs: list[str] = []
             for source, dest in entries:
                 source_text = source.read_text(encoding="utf-8")
-                current_text = dest.read_text(encoding="utf-8") if dest.exists() else None
-                if current_text == source_text:
+                current = _asset_destination_state(dest)
+                if current.text == source_text and not current.is_symlink and current.hardlink_count <= 1:
                     if run_id is not None and not dry_run:
                         stat = dest.stat()
                         self.state_store.record_checked(
@@ -380,14 +391,14 @@ class Orchestrator:
 
                 changed = True
                 if diff:
-                    diffs.append(_asset_diff(dest, current_text, source_text))
+                    diffs.append(_asset_diff(dest, current.text, source_text))
                 if not dry_run:
                     self._apply_asset(
                         run_id=run_id,
                         spec_hash=spec_hash,
                         source_text=source_text,
                         dest=dest,
-                        original_text=current_text,
+                        original=current,
                         connection=connection,
                     )
 
@@ -444,13 +455,15 @@ class Orchestrator:
         spec_hash: bytes,
         source_text: str,
         dest: Path,
-        original_text: str | None,
+        original: _AssetDestinationState,
         connection: sqlite3.Connection | None = None,
     ) -> None:
         if run_id is None:
             raise RuntimeError("run_id is None in _apply_asset")
-        original_exists = original_text is not None
+        original_exists = original.exists
         dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists() or dest.is_symlink():
+            dest.unlink()
         dest.write_text(source_text, encoding="utf-8")
         stat = dest.stat()
         content_hash = sha256_bytes(dest.read_bytes())
@@ -459,7 +472,7 @@ class Orchestrator:
             self.state_store.record_baseline(
                 run_id=run_id,
                 path=dest,
-                content_text=original_text or "",
+                content_text=original.text or "",
                 format="asset",
                 original_exists=original_exists,
                 connection=connection,
@@ -490,8 +503,11 @@ class Orchestrator:
                     "kind": "replace_file",
                     "key": "file",
                     "value": source_text,
-                    "before_value": original_text,
+                    "before_value": original.text,
                     "before_exists": original_exists,
+                    "before_is_symlink": original.is_symlink,
+                    "before_symlink_target": original.symlink_target,
+                    "before_hardlink_count": original.hardlink_count,
                     "reason": "asset materialized",
                 }
             ],
@@ -1306,6 +1322,26 @@ def _asset_entries(target: AssetTarget) -> list[tuple[Path, Path]]:
         rel = source.relative_to(base)
         entries.append((source, target.dest / rel))
     return entries
+
+
+def _asset_destination_state(path: Path) -> _AssetDestinationState:
+    is_symlink = path.is_symlink()
+    exists = path.exists() or is_symlink
+    if not exists:
+        return _AssetDestinationState(exists=False)
+    symlink_target = os.readlink(path) if is_symlink else None
+    text = path.read_text(encoding="utf-8") if path.exists() else None
+    hardlink_count = 0
+    if path.exists() and not is_symlink:
+        with contextlib.suppress(OSError):
+            hardlink_count = path.stat().st_nlink
+    return _AssetDestinationState(
+        exists=True,
+        text=text,
+        is_symlink=is_symlink,
+        symlink_target=symlink_target,
+        hardlink_count=hardlink_count,
+    )
 
 
 def _asset_source_base(source_pattern: str) -> Path:

@@ -12,6 +12,7 @@ from prescribe.core.result import OrchestrationResult
 from prescribe.materialize import detect_platform
 from prescribe.orchestrator import Orchestrator, condition_matches, condition_skip_reason
 from prescribe.paths import config_dir, data_dir, default_state_path
+from prescribe.presets import Presets
 from prescribe.rollback import ConflictResolver
 from prescribe.spec import Spec, SpecError, SpecLoader
 from prescribe.state import StateStore
@@ -191,6 +192,134 @@ def validate(
         typer.echo(f"{label}  {status:<7}  {detail}{reason}")
         if plan and target.get("diff"):
             typer.echo(str(target["diff"]), nl=False)
+
+
+@app.command("list-specs")
+def list_specs_cmd(
+    directory: Path = typer.Argument(..., help="Directory containing top-level spec TOML files."),
+    output_json: bool = typer.Option(False, "--json", help="Output discovered specs as JSON."),
+) -> None:
+    """List top-level specs in deterministic apply order."""
+    specs = Presets().list_specs(directory)
+    if output_json:
+        typer.echo(json.dumps([str(spec) for spec in specs], indent=2))
+        return
+    if not specs:
+        typer.echo("no spec files")
+        return
+    for spec in specs:
+        typer.echo(str(spec))
+
+
+@app.command("apply-dir")
+def apply_dir(
+    directory: Path = typer.Argument(..., help="Directory containing top-level spec TOML files."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Plan changes without writing."),
+    output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
+    tags: str | None = typer.Option(None, "--tags", help="Only apply targets with these tags (comma-separated)."),
+    skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
+    explain_skips: bool = typer.Option(False, "--explain-skips", help="Show why targets were skipped."),
+) -> None:
+    """Apply all top-level spec TOML files in a directory."""
+    _run_spec_directory(
+        directory,
+        dry_run=dry_run,
+        output_json=output_json,
+        state=state,
+        tags=tags,
+        skip_tags=skip_tags,
+        explain_skips=explain_skips,
+        diff=False,
+        display_status=dry_run,
+    )
+
+
+@app.command("status-dir")
+def status_dir(
+    directory: Path = typer.Argument(..., help="Directory containing top-level spec TOML files."),
+    output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
+    tags: str | None = typer.Option(None, "--tags", help="Only show targets with these tags (comma-separated)."),
+    skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
+    diff: bool = typer.Option(False, "--diff", help="Show unified diffs for files that would change."),
+    explain_skips: bool = typer.Option(False, "--explain-skips", help="Show why targets were skipped."),
+) -> None:
+    """Show status for all top-level spec TOML files in a directory."""
+    _run_spec_directory(
+        directory,
+        dry_run=True,
+        output_json=output_json,
+        state=state,
+        tags=tags,
+        skip_tags=skip_tags,
+        explain_skips=explain_skips,
+        diff=diff,
+        display_status=True,
+    )
+
+
+@app.command("validate-dir")
+def validate_dir(
+    directory: Path = typer.Argument(..., help="Directory containing top-level spec TOML files."),
+    output_json: bool = typer.Option(False, "--json", help="Output validation summary as JSON."),
+    tags: str | None = typer.Option(None, "--tags", help="Only consider targets with these tags (comma-separated)."),
+    skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
+    explain_skips: bool = typer.Option(False, "--explain-skips", help="Show why targets were skipped."),
+    plan: bool = typer.Option(False, "--plan", help="Show whether active targets would change."),
+    diff: bool = typer.Option(False, "--diff", help="Include diffs when used with --plan."),
+) -> None:
+    """Validate all top-level spec TOML files in a directory."""
+    tag_set = _parse_tags(tags)
+    skip_set = _parse_tags(skip_tags)
+    explain = _option_bool(explain_skips)
+    specs = Presets().list_specs(directory)
+    payload: list[dict[str, object]] = []
+    had_error = False
+    for spec_path in specs:
+        try:
+            spec_obj = SpecLoader().load(spec_path)
+            targets = _validation_targets(
+                spec_obj,
+                tags=tag_set,
+                skip_tags=skip_set,
+                explain_skips=explain,
+                plan=_option_bool(plan),
+                diff=_option_bool(diff),
+            )
+            payload.append({"spec": str(spec_path), "valid": True, "targets": targets})
+        except SpecError as exc:
+            had_error = True
+            payload.append({"spec": str(spec_path), "valid": False, "error": str(exc), "targets": []})
+
+    if output_json:
+        typer.echo(json.dumps({"valid": not had_error, "specs": payload}, indent=2))
+    else:
+        for item in payload:
+            typer.echo(f"{'valid' if item['valid'] else 'error'}: {item['spec']}")
+            if not item["valid"]:
+                typer.echo(f"  {item['error']}")
+                continue
+            targets_obj = item["targets"]
+            if not isinstance(targets_obj, list):
+                raise RuntimeError("validation directory payload has unexpected shape")
+            active = sum(1 for target in targets_obj if isinstance(target, dict) and target["active"])
+            skipped = len(targets_obj) - active
+            typer.echo(f"  targets: {active} active, {skipped} skipped")
+            for target in targets_obj:
+                if not isinstance(target, dict):
+                    raise RuntimeError("validation target has unexpected shape")
+                status = "active" if target["active"] else "skipped"
+                if plan and target.get("status"):
+                    status = str(target["status"])
+                detail = target.get("path") or target.get("dest") or target.get("name") or ""
+                reason = f"  — {target['skip_reason']}" if explain and target.get("skip_reason") else ""
+                typer.echo(f"  {str(target['type']):<6}  {status:<7}  {detail}{reason}")
+                if plan and target.get("diff"):
+                    typer.echo(str(target["diff"]), nl=False)
+
+    if had_error:
+        raise typer.Exit(1)
 
 
 @app.command(name="list")
@@ -496,6 +625,76 @@ def _parse_tags(raw: str | None) -> set[str] | None:
     if not raw:
         return None
     return {t.strip() for t in raw.split(",") if t.strip()}
+
+
+def _run_spec_directory(
+    directory: Path,
+    *,
+    dry_run: bool,
+    output_json: bool,
+    state: Path | None,
+    tags: str | None,
+    skip_tags: str | None,
+    explain_skips: bool,
+    diff: bool,
+    display_status: bool,
+) -> None:
+    tag_set = _parse_tags(tags)
+    skip_set = _parse_tags(skip_tags)
+    explain = _option_bool(explain_skips)
+    store = _make_store(state)
+    loader = SpecLoader()
+    specs = Presets(state_store=store, loader=loader).list_specs(directory)
+    payload: list[dict[str, object]] = []
+    display_items: list[tuple[Path, Spec | None, list[OrchestrationResult], str | None]] = []
+    had_error = False
+    for spec_path in specs:
+        try:
+            spec_obj = loader.load(spec_path)
+        except SpecError as exc:
+            had_error = True
+            payload.append({"spec": str(spec_path), "error": str(exc), "results": []})
+            display_items.append((spec_path, None, [], str(exc)))
+            continue
+        results = Orchestrator(store).run(
+            spec_obj,
+            dry_run=dry_run,
+            tags=tag_set,
+            skip_tags=skip_set,
+            diff=diff,
+            explain_skips=explain,
+        )
+        if any(r.status in {"error", "conflict"} for r in results):
+            had_error = True
+        payload.append(
+            {
+                "spec": str(spec_path),
+                "results": _results_to_json(
+                    spec_obj,
+                    results,
+                    display_status=display_status,
+                    explain_skips=explain,
+                ),
+            }
+        )
+        display_items.append((spec_path, spec_obj, results, None))
+
+    if output_json:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        if not payload:
+            typer.echo("no spec files")
+        for spec_path, display_spec, results, error in display_items:
+            typer.echo(f"spec: {spec_path}")
+            if error is not None:
+                typer.echo(_status_line("error", False, str(spec_path), error))
+                continue
+            if display_spec is None:
+                raise RuntimeError("directory display payload is missing spec object")
+            _print_results(display_spec, results, explain_skips=explain)
+
+    if had_error:
+        raise typer.Exit(1)
 
 
 def _option_bool(value: object) -> bool:

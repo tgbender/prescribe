@@ -18,6 +18,10 @@ prescribe apply spec.toml --dry-run    # Preview without writing
 prescribe apply spec.toml --tags agent # Only targets tagged "agent"
 prescribe status spec.toml             # Show sync status
 prescribe status --diff spec.toml      # Show unified diffs of what would change
+prescribe list-specs specs             # List top-level specs in sorted apply order
+prescribe apply-dir specs              # Apply every top-level *.toml spec in a directory
+prescribe status-dir specs --diff      # Preview a whole spec directory
+prescribe validate-dir specs --plan    # Validate and plan a whole spec directory
 prescribe list                         # List all managed files
 prescribe rollback path/to/file        # Roll back changes to a file
 ```
@@ -70,6 +74,7 @@ tags = ["work"]
 - `delete` — list of dotted keys to remove
 - `format` — `toml`, `yaml`, `jsonc`, or `line`
 - `paths` — fallback list if `path` doesn't exist
+- `text` / `text_from` — for `format = "line"` managed blocks, define block content inline or from a file
 
 ### `[[assets]]` — repo-owned file materialization
 
@@ -94,6 +99,27 @@ tags = ["agent"]
 - `dest` — destination file for `mode = "file"` or destination directory for `mode = "mirror"`
 - `mode` — `file` or `mirror`; glob sources default to `mirror`, otherwise `file`
 - `delete_extra` — reserved for future mirror pruning; currently must stay `false`
+
+Asset destinations are replaced at the path itself. If the destination is a symlink or hardlink, Prescribe avoids mutating the linked target content; rollback restores previous file content and restores symlink destinations when possible.
+
+For shell snippets or other file fragments that should not own the whole file, use `format = "line"` managed blocks instead:
+
+```toml
+[[files]]
+path = "~/.config/powershell/Microsoft.PowerShell_profile.ps1"
+format = "line"
+managed_block_id = "aliases"
+text = """
+Set-Alias ll Get-ChildItem
+function gs { git status @args }
+"""
+
+[[files]]
+path = "~/.ssh/config"
+format = "line"
+managed_block_id = "work-hosts"
+text_from = "blocks/ssh-work-hosts.txt"
+```
 
 ### `[[env]]` — environment variables
 

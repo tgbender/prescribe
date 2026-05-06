@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from prescribe.presets import Presets, apply_all, discover_specs, list_specs
+from prescribe.presets import Presets, apply_all, discover_specs, list_specs, load_specs
 
 
 def test_discover_specs_empty_directory(tmp_path: Path) -> None:
@@ -28,6 +28,16 @@ def test_presets_list_specs(tmp_path: Path) -> None:
     specs = presets.list_specs(tmp_path)
     assert len(specs) == 1
     assert specs[0].name == "base.toml"
+
+
+def test_presets_load_specs(tmp_path: Path) -> None:
+    (tmp_path / "base.toml").write_text("[[env]]\nname = 'EDITOR'\nvalue = 'nvim'\n")
+
+    specs = load_specs(tmp_path)
+
+    assert len(specs) == 1
+    assert specs[0][0].name == "base.toml"
+    assert specs[0][1].env[0].name == "EDITOR"
 
 
 def test_presets_apply_all_dry_run(tmp_path: Path, memory_state_store) -> None:

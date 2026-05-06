@@ -31,7 +31,7 @@ from prescribe.orchestrator import (
     platform_matches,
 )
 from prescribe.paths import config_dir, data_dir, default_state_path
-from prescribe.presets import Presets, apply_all, default_spec_dir, discover_specs, list_specs, status
+from prescribe.presets import Presets, apply_all, default_spec_dir, discover_specs, list_specs, load_specs, status
 from prescribe.shell import render_shell_block
 from prescribe.spec import (
     AssetTarget,
@@ -82,6 +82,7 @@ __all__ = [
     "default_spec_dir",
     "discover_specs",
     "list_specs",
+    "load_specs",
     "status",
     # materialize
     "materialize",

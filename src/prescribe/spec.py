@@ -135,8 +135,27 @@ class SpecLoader:
 
         if fmt == "line" and "managed_block_id" not in raw:
             raise SpecError(f"{ctx}: format 'line' requires 'managed_block_id'")
+        if "lines" in raw and "text" in raw:
+            raise SpecError(f"{ctx}: specify either 'lines' or 'text', not both")
+        if "lines" in raw and "text_from" in raw:
+            raise SpecError(f"{ctx}: specify either 'lines' or 'text_from', not both")
+        if "text" in raw and "text_from" in raw:
+            raise SpecError(f"{ctx}: specify either 'text' or 'text_from', not both")
 
         paths = [expand_spec_vars(p, vars_dict) for p in _coerce_string_list(raw.get("paths", []), ctx, "paths")]
+        lines = _coerce_string_list(raw.get("lines", []), ctx, "lines")
+        text = _coerce_optional_string(raw.get("text"), ctx, "text")
+        text_from = _coerce_optional_string(raw.get("text_from"), ctx, "text_from")
+        if text is not None:
+            lines = _text_to_lines(text)
+        if text_from is not None:
+            text_path = _resolve_source_pattern(spec_path, expand_spec_vars(text_from, vars_dict))
+            if _has_glob(str(text_path)):
+                raise SpecError(f"{ctx}: text_from must not be a glob pattern")
+            try:
+                lines = _text_to_lines(text_path.read_text(encoding="utf-8"))
+            except OSError as exc:
+                raise SpecError(f"{ctx}: failed to read text_from {text_path}: {exc}") from exc
         return FileTarget(
             path=_resolve_target_path(spec_path, expand_spec_vars(path, vars_dict), paths),
             format=fmt,
@@ -144,7 +163,7 @@ class SpecLoader:
             data=_coerce_mapping(raw.get("data", {}), ctx, "data"),
             delete=_coerce_string_list(raw.get("delete", []), ctx, "delete"),
             managed_block_id=_coerce_optional_string(raw.get("managed_block_id"), ctx, "managed_block_id"),
-            lines=_coerce_string_list(raw.get("lines", []), ctx, "lines"),
+            lines=lines,
             platforms=_coerce_platforms(raw.get("platforms", []), ctx),
             machine=_coerce_string_list(raw.get("machine", []), ctx, "machine"),
             tags=_coerce_string_list(raw.get("tags", []), ctx, "tags"),
@@ -241,7 +260,7 @@ class SpecLoader:
 
         return AssetTarget(
             source=str(_resolve_source_pattern(spec_path, expand_spec_vars(source, vars_dict))),
-            dest=_resolve_candidate_path(spec_path, expand_spec_vars(dest, vars_dict)),
+            dest=_resolve_destination_path(spec_path, expand_spec_vars(dest, vars_dict)),
             mode=mode,
             delete_extra=bool(raw.get("delete_extra", False)),
             platforms=_coerce_platforms(raw.get("platforms", []), ctx),
@@ -359,8 +378,20 @@ def _resolve_source_pattern(spec_path: Path, raw_path: str) -> Path:
     return candidate.resolve()
 
 
+def _resolve_destination_path(spec_path: Path, raw_path: str) -> Path:
+    expanded = os.path.expandvars(_expand_user(raw_path))
+    candidate = Path(expanded)
+    if not candidate.is_absolute():
+        candidate = spec_path.parent / candidate
+    return candidate.parent.resolve() / candidate.name
+
+
 def _has_glob(value: str) -> bool:
     return any(char in value for char in "*?[")
+
+
+def _text_to_lines(value: str) -> list[str]:
+    return value.splitlines()
 
 
 def _normalize_toml_value(value: Any) -> Any:

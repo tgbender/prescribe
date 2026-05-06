@@ -534,6 +534,76 @@ def test_validate_plan_json_includes_status(run, workdir: Path) -> None:
     assert data["targets"][0]["status"] == "would change"
 
 
+def test_list_specs_reports_sorted_top_level_specs(run, workdir: Path) -> None:
+    specs = workdir / "specs"
+    nested = specs / "nested"
+    nested.mkdir(parents=True)
+    (specs / "20-work.toml").write_text("")
+    (specs / "00-base.toml").write_text("")
+    (nested / "10-nested.toml").write_text("")
+
+    result = run("list-specs", "specs")
+
+    assert result.returncode == 0
+    lines = [Path(line).name for line in result.stdout.splitlines()]
+    assert lines == ["00-base.toml", "20-work.toml"]
+
+
+def test_status_dir_reports_each_spec_without_writing(run, workdir: Path) -> None:
+    specs = workdir / "specs"
+    specs.mkdir()
+    (specs / "00-base.toml").write_text(
+        "[[files]]\npath = '../config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n"
+    )
+    config = workdir / "config.toml"
+    config.write_text("count = 1\n")
+
+    result = run("status-dir", "specs", "--diff")
+
+    assert result.returncode == 0
+    assert "spec:" in result.stdout
+    assert "would change" in result.stdout
+    assert "+count = 2" in result.stdout
+    assert config.read_text() == "count = 1\n"
+
+
+def test_apply_dir_applies_specs_in_sorted_order(run, workdir: Path) -> None:
+    specs = workdir / "specs"
+    specs.mkdir()
+    config = workdir / "config.toml"
+    config.write_text("count = 0\n")
+    (specs / "20-second.toml").write_text(
+        "[[files]]\npath = '../config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n"
+    )
+    (specs / "10-first.toml").write_text(
+        "[[files]]\npath = '../config.toml'\nformat = 'toml'\n[files.data]\ncount = 1\n"
+    )
+
+    result = run("apply-dir", "specs")
+
+    assert result.returncode == 0
+    assert "10-first.toml" in result.stdout
+    assert "20-second.toml" in result.stdout
+    assert "count = 2" in config.read_text()
+
+
+def test_validate_dir_json_reports_asset_targets_without_state(run, workdir: Path) -> None:
+    specs = workdir / "specs"
+    specs.mkdir()
+    source = specs / "mcp.json"
+    source.write_text("{}\n")
+    (specs / "agent.toml").write_text("[[assets]]\nsource = 'mcp.json'\ndest = '../out/mcp.json'\n")
+
+    result = run("validate-dir", "--json", "--plan", "specs")
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["valid"] is True
+    assert data["specs"][0]["targets"][0]["type"] == "asset"
+    assert data["specs"][0]["targets"][0]["status"] == "would change"
+    assert not (workdir / ".prescribe" / "state.db").exists()
+
+
 # ---------------------------------------------------------------------------
 # doctor
 # ---------------------------------------------------------------------------

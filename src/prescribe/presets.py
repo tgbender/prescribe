@@ -14,7 +14,7 @@ from pathlib import Path
 from prescribe.core.result import OrchestrationResult
 from prescribe.orchestrator import Orchestrator
 from prescribe.paths import config_dir, default_state_path
-from prescribe.spec import SpecLoader
+from prescribe.spec import Spec, SpecLoader
 from prescribe.state import ManagedRecord, StateStore
 
 _DEFAULT_SPEC_DIR_ENV = "PRESCRIBE_SPEC_DIR"
@@ -56,6 +56,10 @@ class Presets:
         """List discovered specs without applying."""
         path = _resolve_dir(directory)
         return discover_specs(path)
+
+    def load_specs(self, directory: Path | str | None = None) -> list[tuple[Path, Spec]]:
+        """Parse discovered specs without applying them."""
+        return [(path, self._loader.load(path)) for path in self.list_specs(directory)]
 
     def apply_all(
         self,
@@ -162,6 +166,11 @@ def status(
 def list_specs(directory: Path | str | None = None) -> list[Path]:
     """List discovered spec files without applying."""
     return Presets().list_specs(directory)
+
+
+def load_specs(directory: Path | str | None = None) -> list[tuple[Path, Spec]]:
+    """Parse discovered spec files without applying."""
+    return Presets().load_specs(directory)
 
 
 def _resolve_dir(directory: Path | str | None) -> Path:

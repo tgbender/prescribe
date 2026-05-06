@@ -258,13 +258,18 @@ def _rollback_asset(
                 continue
             before_exists = bool(operation.get("before_exists"))
             before_value = operation.get("before_value")
+            before_is_symlink = bool(operation.get("before_is_symlink"))
+            before_symlink_target = operation.get("before_symlink_target")
             if dry_run:
                 return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
+            if path.exists() or path.is_symlink():
+                path.unlink()
             if before_exists:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("" if before_value is None else str(before_value), encoding="utf-8")
-            elif path.exists():
-                path.unlink()
+                if before_is_symlink and before_symlink_target is not None:
+                    path.symlink_to(str(before_symlink_target))
+                else:
+                    path.write_text("" if before_value is None else str(before_value), encoding="utf-8")
             changed = True
 
     if not changed:
