@@ -1,5 +1,7 @@
 """Tests for shell block rendering."""
 
+import os
+
 from prescribe.shell import render_shell_block
 
 
@@ -15,11 +17,27 @@ def test_render_fish_does_not_mutate_input_dict() -> None:
     assert "PATH" in env
 
 
+def test_render_fish_path_uses_single_list_assignment() -> None:
+    env = {"PATH": os.pathsep.join(["/usr/local/bin", "/usr/bin"]), "EDITOR": "nvim"}
+    lines = render_shell_block(shell_type="fish", env_vars=env, managed_block_id="test")
+
+    path_lines = [line for line in lines if "PATH" in line or line.startswith("fish_add_path")]
+    assert path_lines == ["set -gx PATH '/usr/local/bin' '/usr/bin'"]
+
+
 def test_render_xonsh_idempotent_on_same_dict() -> None:
     env = {"PATH": "/usr/local/bin:/usr/bin", "EDITOR": "nvim"}
     lines1 = render_shell_block(shell_type="xonsh", env_vars=env, managed_block_id="test")
     lines2 = render_shell_block(shell_type="xonsh", env_vars=env, managed_block_id="test")
     assert lines1 == lines2
+
+
+def test_render_xonsh_path_uses_single_list_assignment() -> None:
+    env = {"PATH": os.pathsep.join(["/usr/local/bin", "/usr/bin"]), "EDITOR": "nvim"}
+    lines = render_shell_block(shell_type="xonsh", env_vars=env, managed_block_id="test")
+
+    path_lines = [line for line in lines if line.startswith("$PATH")]
+    assert path_lines == ["$PATH = ['/usr/local/bin', '/usr/bin']"]
 
 
 def test_render_posix_does_not_mutate_input_dict() -> None:
