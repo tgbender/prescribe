@@ -654,6 +654,31 @@ def test_status_json_includes_skip_reason_when_explained(run, workdir: Path) -> 
     assert data[0]["skip_reason"] == "tags did not match"
 
 
+def test_status_explain_skips_names_priority_winner(run, workdir: Path) -> None:
+    spec = workdir / "spec.toml"
+    spec.write_text(
+        "[[files]]\n"
+        "path = 'config.toml'\n"
+        "format = 'toml'\n"
+        "priority = 10\n"
+        "[files.data]\n"
+        "count = 10\n"
+        "\n"
+        "[[files]]\n"
+        "path = 'config.toml'\n"
+        "format = 'toml'\n"
+        "priority = 0\n"
+        "[files.data]\n"
+        "count = 0\n"
+    )
+
+    result = run("status", "--explain-skips", "spec.toml")
+
+    assert result.returncode == 0
+    assert "lower priority target selected" in result.stdout
+    assert "winner priority 0" in result.stdout
+
+
 # ── status --diff ──────────────────────────────────────────
 
 
