@@ -7,7 +7,7 @@ import typer
 
 from prescribe import __version__
 from prescribe.core.result import OrchestrationResult
-from prescribe.orchestrator import Orchestrator
+from prescribe.orchestrator import Orchestrator, condition_matches
 from prescribe.paths import default_state_path
 from prescribe.rollback import ConflictResolver
 from prescribe.spec import Spec, SpecError, SpecLoader
@@ -125,6 +125,39 @@ def status(
         typer.echo(json.dumps(data, indent=2))
     else:
         _print_results(spec_obj, results)
+
+
+@app.command()
+def validate(
+    spec: Path = typer.Argument(..., help="Path to the spec TOML file."),
+    output_json: bool = typer.Option(False, "--json", help="Output validation summary as JSON."),
+    tags: str | None = typer.Option(None, "--tags", help="Only consider targets with these tags (comma-separated)."),
+    skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
+) -> None:
+    """Validate a spec and show which targets would be considered."""
+    try:
+        spec_obj = SpecLoader().load(spec)
+    except SpecError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+    tag_set = _parse_tags(tags)
+    skip_set = _parse_tags(skip_tags)
+    targets = _validation_targets(spec_obj, tags=tag_set, skip_tags=skip_set)
+
+    if output_json:
+        typer.echo(json.dumps({"valid": True, "targets": targets}, indent=2))
+        return
+
+    active = sum(1 for target in targets if target["active"])
+    skipped = len(targets) - active
+    typer.echo(f"valid: {spec}")
+    typer.echo(f"targets: {active} active, {skipped} skipped")
+    for target in targets:
+        status = "active" if target["active"] else "skipped"
+        label = typer.style(f"{target['type']:<6}", fg=typer.colors.BRIGHT_BLACK)
+        detail = target.get("path") or target.get("name") or ""
+        typer.echo(f"{label}  {status:<7}  {detail}")
 
 
 @app.command(name="list")
@@ -356,3 +389,39 @@ def _parse_tags(raw: str | None) -> set[str] | None:
     if not raw:
         return None
     return {t.strip() for t in raw.split(",") if t.strip()}
+
+
+def _validation_targets(
+    spec_obj: Spec,
+    *,
+    tags: set[str] | None = None,
+    skip_tags: set[str] | None = None,
+) -> list[dict[str, object]]:
+    targets: list[dict[str, object]] = []
+    for file_target in spec_obj.files:
+        targets.append(
+            {
+                "type": "file",
+                "path": str(file_target.path),
+                "format": file_target.format,
+                "active": condition_matches(target=file_target, tags=tags, skip_tags=skip_tags),
+            }
+        )
+    for env_target in spec_obj.env:
+        targets.append(
+            {
+                "type": "env",
+                "name": env_target.name,
+                "active": condition_matches(target=env_target, tags=tags, skip_tags=skip_tags),
+            }
+        )
+    for shell_target in spec_obj.shell:
+        targets.append(
+            {
+                "type": "shell",
+                "path": str(shell_target.path),
+                "shells": shell_target.shells,
+                "active": condition_matches(target=shell_target, tags=tags, skip_tags=skip_tags),
+            }
+        )
+    return targets
