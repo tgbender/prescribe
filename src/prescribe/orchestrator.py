@@ -62,28 +62,37 @@ def condition_matches(
     skip_tags: set[str] | None = None,
 ) -> bool:
     """Check all gating conditions for a target. True = should process."""
+    return condition_skip_reason(target=target, tags=tags, skip_tags=skip_tags) is None
+
+
+def condition_skip_reason(
+    *,
+    target: FileTarget | EnvTarget | ShellTarget,
+    tags: set[str] | None = None,
+    skip_tags: set[str] | None = None,
+) -> str | None:
     if not platform_matches(target.platforms):
-        return False
+        return "platform did not match"
     if not machine_matches(target.machine):
-        return False
+        return "machine did not match"
 
     target_tags = getattr(target, "tags", None) or []
     if tags is not None and not (tags & set(target_tags)):
-        return False
+        return "tags did not match"
     if skip_tags is not None and (skip_tags & set(target_tags)):
-        return False
+        return "skip-tags matched"
 
     if hasattr(target, "if_command_exists"):
         for cmd in getattr(target, "if_command_exists", []):
             if shutil.which(cmd) is None:
-                return False
+                return f"command not found: {cmd}"
 
     if hasattr(target, "if_env_missing") and getattr(target, "if_env_missing", False):
         name = getattr(target, "name", None)
         if name and name in os.environ:
-            return False
+            return f"env var already set: {name}"
 
-    return True
+    return None
 
 
 def _spec_hash(spec: Spec) -> bytes:
@@ -127,6 +136,7 @@ class Orchestrator:
         tags: set[str] | None = None,
         skip_tags: set[str] | None = None,
         diff: bool = False,
+        explain_skips: bool = False,
     ) -> list[OrchestrationResult]:
         from prescribe.spec import SpecLoader
 
@@ -148,6 +158,7 @@ class Orchestrator:
                 tags=tags,
                 skip_tags=skip_tags,
                 diff=diff,
+                explain_skips=explain_skips,
             )
 
         self.state_store.initialize()
@@ -167,6 +178,7 @@ class Orchestrator:
                 tags=tags,
                 skip_tags=skip_tags,
                 diff=diff,
+                explain_skips=explain_skips,
                 connection=connection,
             )
 
@@ -180,6 +192,7 @@ class Orchestrator:
         tags: set[str] | None = None,
         skip_tags: set[str] | None = None,
         diff: bool = False,
+        explain_skips: bool = False,
         connection: sqlite3.Connection | None = None,
     ) -> list[OrchestrationResult]:
         results: list[OrchestrationResult] = []
@@ -190,7 +203,18 @@ class Orchestrator:
         active_files, skipped_files = _resolve_active_files(spec.files, tags=tags, skip_tags=skip_tags)
         for file_target in spec.files:
             if file_target in skipped_files or file_target not in active_files:
-                results.append(OrchestrationResult(status="skipped", applied=False, changed=False, skipped=True))
+                reason = condition_skip_reason(target=file_target, tags=tags, skip_tags=skip_tags)
+                if reason is None:
+                    reason = "lower priority target selected"
+                results.append(
+                    OrchestrationResult(
+                        status="skipped",
+                        applied=False,
+                        changed=False,
+                        skipped=True,
+                        skip_reason=reason if explain_skips else None,
+                    )
+                )
                 continue
             results.append(
                 self._handle_file(
@@ -201,6 +225,7 @@ class Orchestrator:
                     tags=tags,
                     skip_tags=skip_tags,
                     diff=diff,
+                    explain_skips=explain_skips,
                     connection=connection,
                 )
             )
@@ -240,6 +265,7 @@ class Orchestrator:
                 tags=tags,
                 skip_tags=skip_tags,
                 diff=diff,
+                explain_skips=explain_skips,
                 connection=connection,
             )
             result.env_vars = shell_env
@@ -266,10 +292,19 @@ class Orchestrator:
         tags: set[str] | None = None,
         skip_tags: set[str] | None = None,
         diff: bool = False,
+        explain_skips: bool = False,
         connection: sqlite3.Connection | None = None,
     ) -> OrchestrationResult:
         if not condition_matches(target=target, tags=tags, skip_tags=skip_tags):
-            return OrchestrationResult(status="skipped", applied=False, changed=False, skipped=True)
+            return OrchestrationResult(
+                status="skipped",
+                applied=False,
+                changed=False,
+                skipped=True,
+                skip_reason=condition_skip_reason(target=target, tags=tags, skip_tags=skip_tags)
+                if explain_skips
+                else None,
+            )
 
         adapter = adapter_for_path(target.path, fmt=target.format)
 
@@ -550,10 +585,19 @@ class Orchestrator:
         tags: set[str] | None = None,
         skip_tags: set[str] | None = None,
         diff: bool = False,
+        explain_skips: bool = False,
         connection: sqlite3.Connection | None = None,
     ) -> OrchestrationResult:
         if not condition_matches(target=target, tags=tags, skip_tags=skip_tags):
-            return OrchestrationResult(status="skipped", applied=False, changed=False, skipped=True)
+            return OrchestrationResult(
+                status="skipped",
+                applied=False,
+                changed=False,
+                skipped=True,
+                skip_reason=condition_skip_reason(target=target, tags=tags, skip_tags=skip_tags)
+                if explain_skips
+                else None,
+            )
 
         rendered = render_shell_block(
             shell_type=_shell_type_for_target(target),
