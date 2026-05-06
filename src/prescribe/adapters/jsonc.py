@@ -1,7 +1,7 @@
 from copy import deepcopy
 from pathlib import Path
 
-from prescribe.atomic import atomic_write_text
+from prescribe.atomic import atomic_write_text, normalize_newlines, preferred_text_newline
 from prescribe.document import Document
 from prescribe.jsonc import (
     diff_paths,
@@ -33,14 +33,19 @@ class JsoncAdapter:
             # JSON structure (e.g., comment-only source). Fall back to standard JSON.
             import json
 
-            atomic_write_text(path, json.dumps(document.root, indent=2, ensure_ascii=False) + "\n")
+            newline = preferred_text_newline(path)
+            atomic_write_text(
+                path,
+                normalize_newlines(json.dumps(document.root, indent=2, ensure_ascii=False) + "\n", newline),
+                newline="",
+            )
             return
 
         text = document.source_text
         diffs = diff_paths(document.baseline_root, document.root)
         for path_segments, value in diffs:
             text = modify_text(text, path_segments, value)
-        atomic_write_text(path, text)
+        atomic_write_text(path, text, newline="")
 
 
 jsonc_adapter = JsoncAdapter()

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
-from prescribe.atomic import atomic_write_text
+from prescribe.atomic import atomic_write_text, normalize_newlines, preferred_text_newline
 from prescribe.document import Document
 
 
@@ -23,7 +23,8 @@ class YamlAdapter:
 
         buffer = StringIO()
         self._yaml.dump(document.root, buffer)
-        atomic_write_text(path, buffer.getvalue())
+        newline = preferred_text_newline(path)
+        atomic_write_text(path, normalize_newlines(buffer.getvalue(), newline), newline="")
 
 
 yaml_adapter = YamlAdapter()

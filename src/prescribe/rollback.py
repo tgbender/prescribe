@@ -12,6 +12,7 @@ from prescribe._util import (
     sha256_bytes,
 )
 from prescribe.adapters import adapter_for_path
+from prescribe.atomic import atomic_write_text
 from prescribe.backups import restore_backup
 from prescribe.core.result import OrchestrationResult
 from prescribe.document import Document
@@ -262,7 +263,7 @@ def _rollback_asset(
                     changed=False,
                     error=f"unsupported rollback asset operation: {operation.get('kind')}",
                 )
-            current_text = path.read_text(encoding="utf-8") if path.exists() else None
+            current_text = path.read_bytes().decode("utf-8") if path.exists() else None
             expected = operation.get("value")
             if current_text != expected and not (resolver is not None and resolver("file")):
                 skipped = True
@@ -280,7 +281,7 @@ def _rollback_asset(
                 if before_is_symlink and before_symlink_target is not None:
                     path.symlink_to(str(before_symlink_target))
                 else:
-                    path.write_text("" if before_value is None else str(before_value), encoding="utf-8")
+                    atomic_write_text(path, "" if before_value is None else str(before_value), newline="")
             changed = True
 
     if not changed:

@@ -38,3 +38,22 @@ def atomic_write_text(path: Path, content: str, *, newline: str | None = None) -
             handle.flush()
             temp_path = Path(handle.name)
     temp_path.replace(path)
+
+
+def preferred_text_newline(path: Path, *, default: str = "\n") -> str:
+    """Return the first newline convention found in a text file, or default."""
+    if not path.exists():
+        return default
+    sample = path.read_bytes()
+    crlf = sample.find(b"\r\n")
+    lf = sample.find(b"\n")
+    cr = sample.find(b"\r")
+    positions = [(index, newline) for index, newline in [(crlf, "\r\n"), (lf, "\n"), (cr, "\r")] if index >= 0]
+    if not positions:
+        return default
+    return min(positions, key=lambda item: item[0])[1]
+
+
+def normalize_newlines(text: str, newline: str) -> str:
+    """Normalize all newline spellings in text to newline."""
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", newline)

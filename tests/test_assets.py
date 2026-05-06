@@ -155,6 +155,40 @@ def test_orchestrator_asset_rollback_restores_existing_file(tmp_path: Path, stat
     assert dest.read_text() == "original\n"
 
 
+def test_orchestrator_asset_preserves_source_lf_bytes_on_windows(tmp_path: Path, state_store) -> None:
+    source = tmp_path / "repo" / "profile.ps1"
+    source.parent.mkdir()
+    source.write_bytes(b"$env:EDITOR = 'nvim'\n")
+    dest = tmp_path / "system" / "profile.ps1"
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[assets]]\nsource = 'repo/profile.ps1'\ndest = 'system/profile.ps1'\n")
+
+    applied = Orchestrator(state_store).run(spec_path)[0]
+
+    assert applied.status == "applied"
+    assert dest.read_bytes() == b"$env:EDITOR = 'nvim'\n"
+
+
+def test_orchestrator_asset_rollback_restores_crlf_bytes(tmp_path: Path, state_store) -> None:
+    source = tmp_path / "repo" / "config.txt"
+    source.parent.mkdir()
+    source.write_bytes(b"managed\n")
+    dest = tmp_path / "system" / "config.txt"
+    dest.parent.mkdir()
+    dest.write_bytes(b"original\r\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[assets]]\nsource = 'repo/config.txt'\ndest = 'system/config.txt'\n")
+
+    orchestrator = Orchestrator(state_store)
+    assert orchestrator.run(spec_path)[0].status == "applied"
+    assert dest.read_bytes() == b"managed\n"
+
+    rolled_back = orchestrator.rollback(dest)
+
+    assert rolled_back.status == "rolled-back"
+    assert dest.read_bytes() == b"original\r\n"
+
+
 def test_orchestrator_mirrors_glob_asset_tree(tmp_path: Path, state_store) -> None:
     (tmp_path / "repo" / "skills" / "alpha").mkdir(parents=True)
     (tmp_path / "repo" / "skills" / "beta").mkdir(parents=True)

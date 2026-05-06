@@ -440,7 +440,8 @@ class Orchestrator:
             changed = False
             diffs: list[str] = []
             for source, dest in entries:
-                source_text = source.read_text(encoding="utf-8")
+                source_bytes = source.read_bytes()
+                source_text = source_bytes.decode("utf-8")
                 current = _asset_destination_state(dest)
                 if current.text == source_text and not current.is_symlink and current.hardlink_count <= 1:
                     if run_id is not None and not dry_run:
@@ -477,7 +478,7 @@ class Orchestrator:
                     self._apply_asset(
                         run_id=run_id,
                         spec_hash=spec_hash,
-                        source_text=source_text,
+                        source_bytes=source_bytes,
                         dest=dest,
                         original=current,
                         connection=connection,
@@ -547,7 +548,7 @@ class Orchestrator:
         *,
         run_id: int | None,
         spec_hash: bytes,
-        source_text: str,
+        source_bytes: bytes,
         dest: Path,
         original: _AssetDestinationState,
         connection: sqlite3.Connection | None = None,
@@ -558,7 +559,8 @@ class Orchestrator:
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists() or dest.is_symlink():
             dest.unlink()
-        dest.write_text(source_text, encoding="utf-8")
+        dest.write_bytes(source_bytes)
+        source_text = source_bytes.decode("utf-8")
         stat = dest.stat()
         content_hash = sha256_bytes(dest.read_bytes())
         existing_baseline = self.state_store.original_baseline(dest, connection=connection)
@@ -1541,7 +1543,7 @@ def _asset_destination_state(path: Path) -> _AssetDestinationState:
     if not exists:
         return _AssetDestinationState(exists=False)
     symlink_target = os.readlink(path) if is_symlink else None
-    text = path.read_text(encoding="utf-8") if path.exists() else None
+    text = path.read_bytes().decode("utf-8") if path.exists() else None
     hardlink_count = 0
     if path.exists() and not is_symlink:
         with contextlib.suppress(OSError):

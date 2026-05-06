@@ -1,6 +1,8 @@
 from pathlib import Path
 
 from prescribe.adapters.line import LineAdapter, LineDocument, preferred_newline
+from prescribe.adapters.toml import TomlAdapter
+from prescribe.adapters.yaml import YamlAdapter
 from prescribe.document import Document
 
 
@@ -172,3 +174,53 @@ class TestLineEndingPreservation:
 
         raw = target.read_bytes()
         assert raw == (b"@echo off\r\n# prescribe:begin env\r\nset HOME=%USERPROFILE%\r\n# prescribe:end env\r\n")
+
+
+class TestStructuredLineEndingPreservation:
+    def test_toml_lf_file_stays_lf_after_update(self, tmp_path):
+        source = _write_raw(tmp_path / "config.toml", "title = 'hello'\ncount = 1\n")
+
+        adapter = TomlAdapter()
+        document = adapter.load(source)
+        document.root["count"] = 2
+        adapter.dump(document, source)
+
+        raw = source.read_bytes()
+        assert b"\r\n" not in raw
+        assert b"count = 2\n" in raw
+
+    def test_toml_crlf_file_stays_crlf_after_update(self, tmp_path):
+        source = _write_raw(tmp_path / "config.toml", "title = 'hello'\r\ncount = 1\r\n")
+
+        adapter = TomlAdapter()
+        document = adapter.load(source)
+        document.root["count"] = 2
+        adapter.dump(document, source)
+
+        raw = source.read_bytes()
+        assert b"count = 2\r\n" in raw
+        assert b"\n" not in raw.replace(b"\r\n", b"")
+
+    def test_yaml_lf_file_stays_lf_after_update(self, tmp_path):
+        source = _write_raw(tmp_path / "config.yaml", "title: hello\ncount: 1\n")
+
+        adapter = YamlAdapter()
+        document = adapter.load(source)
+        document.root["count"] = 2
+        adapter.dump(document, source)
+
+        raw = source.read_bytes()
+        assert b"\r\n" not in raw
+        assert b"count: 2\n" in raw
+
+    def test_yaml_crlf_file_stays_crlf_after_update(self, tmp_path):
+        source = _write_raw(tmp_path / "config.yaml", "title: hello\r\ncount: 1\r\n")
+
+        adapter = YamlAdapter()
+        document = adapter.load(source)
+        document.root["count"] = 2
+        adapter.dump(document, source)
+
+        raw = source.read_bytes()
+        assert b"count: 2\r\n" in raw
+        assert b"\n" not in raw.replace(b"\r\n", b"")

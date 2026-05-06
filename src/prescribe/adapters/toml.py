@@ -2,7 +2,7 @@ from pathlib import Path
 
 import tomlkit
 
-from prescribe.atomic import atomic_write_text
+from prescribe.atomic import atomic_write_text, normalize_newlines, preferred_text_newline
 from prescribe.document import Document
 
 
@@ -14,7 +14,8 @@ class TomlAdapter:
         return Document(path=path, format=self.format_name, root=root)
 
     def dump(self, document: Document, path: Path) -> None:
-        atomic_write_text(path, tomlkit.dumps(document.root))
+        newline = preferred_text_newline(path)
+        atomic_write_text(path, normalize_newlines(tomlkit.dumps(document.root), newline), newline="")
 
 
 toml_adapter = TomlAdapter()
