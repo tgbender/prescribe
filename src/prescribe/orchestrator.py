@@ -239,6 +239,7 @@ class Orchestrator:
                 dry_run=dry_run,
                 tags=tags,
                 skip_tags=skip_tags,
+                diff=diff,
                 connection=connection,
             )
             result.env_vars = shell_env
@@ -548,6 +549,7 @@ class Orchestrator:
         dry_run: bool = False,
         tags: set[str] | None = None,
         skip_tags: set[str] | None = None,
+        diff: bool = False,
         connection: sqlite3.Connection | None = None,
     ) -> OrchestrationResult:
         if not condition_matches(target=target, tags=tags, skip_tags=skip_tags):
@@ -565,6 +567,7 @@ class Orchestrator:
             target=target,
             rendered_lines=rendered,
             dry_run=dry_run,
+            diff=diff,
             connection=connection,
         )
 
@@ -576,6 +579,7 @@ class Orchestrator:
         rendered_lines: list[str],
         *,
         dry_run: bool = False,
+        diff: bool = False,
         connection: sqlite3.Connection | None = None,
     ) -> OrchestrationResult:
         """Apply a shell block using the LINE adapter + managed block pattern."""
@@ -613,8 +617,12 @@ class Orchestrator:
                     dry_run=dry_run,
                 )
 
+            diff_text = _maybe_diff(document, plan, adapter, target.path) if diff else None
+
             if dry_run:
-                return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
+                return OrchestrationResult(
+                    status="dry-run", applied=False, changed=True, dry_run=True, diff=diff_text
+                )
 
             if run_id is None:
                 raise RuntimeError("run_id is None in _apply_shell_block")
