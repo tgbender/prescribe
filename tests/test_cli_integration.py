@@ -415,6 +415,73 @@ def test_apply_spec_targets_key_raises_error(run, workdir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# validate
+# ---------------------------------------------------------------------------
+
+
+def test_validate_reports_targets_without_creating_state(run, workdir: Path) -> None:
+    spec = workdir / "spec.toml"
+    spec.write_text(
+        "[[files]]\n"
+        "path = 'config.toml'\n"
+        "format = 'toml'\n"
+        "tags = ['base']\n"
+        "\n"
+        "[[env]]\n"
+        "name = 'EDITOR'\n"
+        "value = 'nvim'\n"
+        "\n"
+        "[[shell]]\n"
+        "path = 'profile.ps1'\n"
+        "managed_block_id = 'prescribe-env'\n"
+        "shells = ['pwsh']\n"
+    )
+
+    result = run("validate", "spec.toml")
+
+    assert result.returncode == 0
+    assert "valid" in result.stdout
+    assert "file" in result.stdout
+    assert "env" in result.stdout
+    assert "shell" in result.stdout
+    assert not (workdir / ".prescribe" / "state.db").exists()
+
+
+def test_validate_json_reports_active_and_skipped_targets(run, workdir: Path) -> None:
+    spec = workdir / "spec.toml"
+    spec.write_text(
+        "[[files]]\n"
+        "path = 'agent.toml'\n"
+        "format = 'toml'\n"
+        "tags = ['agent']\n"
+        "\n"
+        "[[files]]\n"
+        "path = 'secret.toml'\n"
+        "format = 'toml'\n"
+        "tags = ['secrets']\n"
+    )
+
+    result = run("validate", "--json", "--tags", "agent", "spec.toml")
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["valid"] is True
+    assert [target["active"] for target in data["targets"]] == [True, False]
+    assert data["targets"][0]["type"] == "file"
+    assert data["targets"][0]["path"].endswith("agent.toml")
+
+
+def test_validate_invalid_spec_exits_nonzero(run, workdir: Path) -> None:
+    spec = workdir / "spec.toml"
+    spec.write_text("[[targets]]\npath = 'old.toml'\nformat = 'toml'\n")
+
+    result = run("validate", "spec.toml")
+
+    assert result.returncode != 0
+    assert "[[targets]]" in result.stderr
+
+
+# ---------------------------------------------------------------------------
 # formats
 # ---------------------------------------------------------------------------
 
