@@ -83,6 +83,10 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
                 "architecture, machine, command checks, and env checks.",
             ),
             "Tags are comma-separated on the CLI: `--tags base,work`. Repeating `--tags` is not the intended syntax.",
+            "File targets manage structured config keys or whole managed text blocks.",
+            "Env targets describe environment variables for shell rendering or supported OS-level materialization.",
+            "Shell targets write managed startup blocks, such as a fenced block in a shell rc file.",
+            "Asset targets materialize repo-owned files. Mirror assets copy a source tree into a destination root.",
         ],
         "examples": [
             "prescribe validate ./prescribe.toml --explain-skips",
@@ -124,6 +128,7 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
                 "`--on-claim-conflict take` changes the durable ownership record for overlapping",
                 "managed keys, blocks, or paths. It does not by itself mean overwrite external file drift.",
             ),
+            "Accepted `--on-claim-conflict` values are `prompt`, `fail`, and `take`.",
         ],
         "examples": [
             "prescribe apply dotfiles.toml --dry-run",
@@ -161,6 +166,10 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
                 "`validate --plan` uses a temporary state database, so it is useful for spec correctness",
                 "and previews. Use `status` when you want the current managed-state view.",
             ),
+            _text(
+                "Spec-level selectors and CLI filters both apply. A target must pass platform, architecture,",
+                "machine, command, env, tag, and skip-tag checks to be processed.",
+            ),
         ],
         "examples": [
             "prescribe validate dotfiles.toml",
@@ -196,6 +205,9 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
                 "For asset mirrors, pass the mirror root to restore all displaced extra files,",
                 "or pass one displaced extra file path to restore just that file.",
             ),
+            "Accepted `--on-conflict` values are `prompt`, `revert`, and `ignore`.",
+            "An asset mirror root is the destination directory for a mirror asset.",
+            "A displaced extra file is a destination file moved aside because it was not in the mirror source.",
         ],
         "examples": [
             "prescribe rollback ~/.gitconfig --dry-run",
@@ -236,6 +248,7 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
                 "`--on-claim-conflict fail` refuses to continue. `prompt` asks in a TTY.",
                 "`take` updates the durable ownership record to the current spec.",
             ),
+            "`take` does not merge specs and does not force overwrites of externally changed file content.",
             _text(
                 "Claim conflicts are different from rollback content conflicts.",
                 "Claim conflicts are about ownership records; rollback content conflicts are about outside edits",
@@ -257,13 +270,59 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
             "Before overwriting or deleting existing files, Prescribe records recovery backups when possible.",
             _text(
                 "SQLite state is rejected on network filesystems unless `--allow-network-state`",
-                "or the matching environment override is used.",
+                "or `PRESCRIBE_ALLOW_NETWORK_STATE=1` is used.",
+            ),
+            _text(
+                "The state database is created and migrated automatically. It stores runs, claims, snapshots,",
+                "rollback history, recovery backups, and asset-displacement records.",
             ),
         ],
         "examples": [
             "prescribe doctor",
             "prescribe apply dotfiles.toml --dry-run",
             "prescribe backups --json",
+        ],
+    },
+    "state": {
+        "title": "State Database",
+        "summary": _text(
+            "The SQLite state database stores Prescribe's run history, ownership,",
+            "rollback, and backup metadata.",
+        ),
+        "body": [
+            "`--state PATH` selects the SQLite database path. `PRESCRIBE_STATE` provides the same setting by env var.",
+            "Prescribe creates and migrates the database automatically when a command needs state.",
+            _text(
+                "State includes runs, target results, durable ownership claims, file snapshots,",
+                "undo history, and backup records.",
+            ),
+            _text(
+                "Network filesystem state paths are refused by default. Use `--allow-network-state`",
+                "or `PRESCRIBE_ALLOW_NETWORK_STATE=1` only when you accept that risk.",
+            ),
+        ],
+        "examples": [
+            "prescribe list --state .prescribe/state.db",
+            "PRESCRIBE_STATE=.prescribe/state.db prescribe status dotfiles.toml",
+            "prescribe doctor --json",
+        ],
+    },
+    "materialization": {
+        "title": "Materialization",
+        "summary": "Materialization means persisting environment values outside the current Prescribe process.",
+        "body": [
+            "Shell rendering writes managed startup blocks that set environment variables when a shell starts.",
+            _text(
+                "OS-level materialization writes supported environment variables",
+                "into a platform-specific persistent store.",
+            ),
+            "`doctor` reports the detected materialization backend and related platform diagnostics.",
+            "When materialization is unsupported, specs can still render shell blocks and manage files/assets.",
+        ],
+        "examples": [
+            "prescribe doctor",
+            "prescribe docs safety",
+            "prescribe docs apply",
         ],
     },
 }
@@ -280,7 +339,16 @@ _DOC_ALIASES = {
     "backup": "backups",
     "target": "specs",
     "targets": "specs",
+    "env": "specs",
+    "environment": "materialization",
+    "materialize": "materialization",
+    "materialization": "materialization",
+    "database": "state",
+    "db": "state",
+    "sqlite": "state",
 }
+
+STATE_HELP = "Path to SQLite state database. Created and migrated automatically."
 
 
 def _display_status(status: str, changed: bool) -> str:
@@ -336,7 +404,7 @@ def apply(
     spec: Path = typer.Argument(..., help="Path to the spec TOML file."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Plan changes without writing."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
-    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help=STATE_HELP),
     tags: str | None = typer.Option(None, "--tags", help="Only apply targets with these tags (comma-separated)."),
     skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
     explain_skips: bool = typer.Option(False, "--explain-skips", help="Show why targets were skipped."),
@@ -349,8 +417,8 @@ def apply(
         None,
         "--on-claim-conflict",
         help=(
-            "What to do when another spec already owns the same file/key/block: "
-            "prompt (TTY default), fail (non-TTY default), or take ownership."
+            "Ownership policy when another spec owns the same file/key/block: "
+            "prompt, fail, or take. Defaults: prompt in TTY, fail otherwise."
         ),
     ),
 ) -> None:
@@ -403,7 +471,7 @@ def apply(
 def status(
     spec: Path = typer.Argument(..., help="Path to the spec TOML file."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
-    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help=STATE_HELP),
     tags: str | None = typer.Option(None, "--tags", help="Only show targets with these tags (comma-separated)."),
     skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
     diff: bool = typer.Option(False, "--diff", help="Show unified diffs for files that would change."),
@@ -530,7 +598,7 @@ def apply_dir(
     directory: Path = typer.Argument(..., help=DIRECT_CHILD_SPEC_HELP),
     dry_run: bool = typer.Option(False, "--dry-run", help="Plan changes without writing."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
-    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help=STATE_HELP),
     tags: str | None = typer.Option(None, "--tags", help="Only apply targets with these tags (comma-separated)."),
     skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
     explain_skips: bool = typer.Option(False, "--explain-skips", help="Show why targets were skipped."),
@@ -543,8 +611,8 @@ def apply_dir(
         None,
         "--on-claim-conflict",
         help=(
-            "What to do when another spec already owns the same file/key/block: "
-            "prompt (TTY default), fail (non-TTY default), or take ownership."
+            "Ownership policy when another spec owns the same file/key/block: "
+            "prompt, fail, or take. Defaults: prompt in TTY, fail otherwise."
         ),
     ),
 ) -> None:
@@ -568,7 +636,7 @@ def apply_dir(
 def status_dir(
     directory: Path = typer.Argument(..., help=DIRECT_CHILD_SPEC_HELP),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
-    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help=STATE_HELP),
     tags: str | None = typer.Option(None, "--tags", help="Only show targets with these tags (comma-separated)."),
     skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
     diff: bool = typer.Option(False, "--diff", help="Show unified diffs for files that would change."),
@@ -698,7 +766,7 @@ def validate_dir(
 @app.command(name="list")
 def list_managed(
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
-    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help=STATE_HELP),
 ) -> None:
     """List paths with recorded Prescribe change history."""
     store = _make_store(state)
@@ -745,10 +813,10 @@ def list_backups(
     target: Path | None = typer.Argument(
         None,
         metavar="TARGET",
-        help="Optional exact target path to filter recovery backups.",
+        help="Optional filesystem target path to filter recovery backups; normalized before matching.",
     ),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
-    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help=STATE_HELP),
 ) -> None:
     """List recovery backups captured before Prescribe overwrites or deletes existing files."""
     store = _make_store(state)
@@ -830,9 +898,9 @@ def docs(
 @app.command()
 def doctor(
     output_json: bool = typer.Option(False, "--json", help="Output diagnostics as JSON."),
-    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help=STATE_HELP),
 ) -> None:
-    """Report platform, path, shell, and materialization diagnostics."""
+    """Report platform, path, shell, and persistent environment diagnostics."""
     data = _doctor_data(state)
     if output_json:
         typer.echo(json.dumps(data, indent=2))
@@ -884,13 +952,13 @@ def rollback(
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what managed changes would be undone."),
     output_json: bool = typer.Option(False, "--json", help="Output result as JSON."),
-    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help=STATE_HELP),
     on_conflict: str | None = typer.Option(
         None,
         "--on-conflict",
         help=(
-            "When rollback finds outside edits inside managed content: prompt per entry "
-            "(TTY default), apply the recorded undo anyway, or leave the edited entry alone."
+            "Rollback policy for outside edits inside managed content: prompt, revert, or ignore. "
+            "Defaults: prompt in TTY, ignore otherwise."
         ),
     ),
     original: bool = typer.Option(

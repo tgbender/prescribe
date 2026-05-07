@@ -18,7 +18,7 @@ prescribe apply spec.toml --dry-run    # Preview without writing
 prescribe apply spec.toml --tags agent # Only targets tagged "agent"
 prescribe status spec.toml             # Show sync status
 prescribe status --diff spec.toml      # Show unified diffs of what would change
-prescribe list-specs specs             # List top-level specs in sorted apply order
+prescribe list-specs specs             # List direct child *.toml specs in sorted apply order
 prescribe apply-dir specs              # Apply every top-level *.toml spec in a directory
 prescribe status-dir specs --diff      # Preview a whole spec directory
 prescribe validate-dir specs --plan    # Validate and plan a whole spec directory
@@ -28,7 +28,7 @@ prescribe docs rollback                # Explain a command or concept with examp
 prescribe rollback TARGET              # Undo Prescribe-managed changes for a file or asset target
 ```
 
-All commands accept `--json` for machine-readable output and `--state` (or `PRESCRIBE_STATE` env var) to set the database path.
+All commands accept `--json` for machine-readable output where useful. Commands that read or write managed state accept `--state` (or `PRESCRIBE_STATE`) to set the SQLite database path; Prescribe creates and migrates that database automatically.
 
 Use `prescribe docs` for CLI-oriented explanations and examples:
 
