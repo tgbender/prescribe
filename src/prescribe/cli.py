@@ -82,8 +82,16 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
                 "A matching target is a target that passes filters such as tags, platform,",
                 "architecture, machine, command checks, and env checks.",
             ),
+            _text(
+                "Selectors are conjunctive: platform/machine/command/env checks must pass,",
+                "`--tags` must match when provided, and `--skip-tags` removes matching targets.",
+            ),
             "Tags are comma-separated on the CLI: `--tags base,work`. Repeating `--tags` is not the intended syntax.",
             "File targets manage structured config keys or whole managed text blocks.",
+            _text(
+                "Structured file targets update only the managed keys they name. Managed text blocks replace only",
+                "the fenced block with the same block id.",
+            ),
             "Env targets describe environment variables for shell rendering or supported OS-level materialization.",
             "Shell targets write managed startup blocks, such as a fenced block in a shell rc file.",
             "Asset targets materialize repo-owned files. Mirror assets copy a source tree into a destination root.",
@@ -96,14 +104,15 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
     },
     "dirs": {
         "title": "Directory Commands",
-        "summary": "Directory commands process direct child *.toml specs in sorted path order.",
+        "summary": "Directory commands process direct child *.toml specs in lexicographic path order.",
         "body": [
             "`DIRECTORY` is scanned only for direct child `*.toml` files. Nested directories are ignored.",
             _text(
                 "`list-specs DIRECTORY` shows the exact specs and order.",
-                "The order is the sorted filesystem path order returned by Prescribe's spec discovery.",
+                "The order is Python's default lexicographic path sort for the discovered direct child specs.",
             ),
             "`apply-dir` first preflights the directory so conflicts can stop the run before writes begin.",
+            "Directory specs are processed as one coordinated run for claim checks and preflight conflict detection.",
         ],
         "examples": [
             "prescribe list-specs specs",
@@ -127,6 +136,10 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
             _text(
                 "`--on-claim-conflict take` changes the durable ownership record for overlapping",
                 "managed keys, blocks, or paths. It does not by itself mean overwrite external file drift.",
+            ),
+            _text(
+                "Apply records ownership, file snapshots, change batches for rollback, target run results,",
+                "and recovery backups before overwriting existing files.",
             ),
             "Accepted `--on-claim-conflict` values are `prompt`, `fail`, and `take`.",
         ],
@@ -170,6 +183,10 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
                 "Spec-level selectors and CLI filters both apply. A target must pass platform, architecture,",
                 "machine, command, env, tag, and skip-tag checks to be processed.",
             ),
+            _text(
+                "`status` is the live-state read-only check. `validate --plan` is a spec-oriented preview",
+                "that intentionally avoids mutating or depending on the managed state database.",
+            ),
         ],
         "examples": [
             "prescribe validate dotfiles.toml",
@@ -193,6 +210,10 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
                 "It is not a repair-to-current-spec command.",
             ),
             _text(
+                "For structured files, unrelated edits are keys outside Prescribe's recorded managed keys.",
+                "For shell/text blocks, unrelated edits are content outside the managed block.",
+            ),
+            _text(
                 "`--original` restores managed content to the state from before Prescribe first managed it.",
                 "If Prescribe created the file, it removes that file.",
             ),
@@ -208,6 +229,10 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
             "Accepted `--on-conflict` values are `prompt`, `revert`, and `ignore`.",
             "An asset mirror root is the destination directory for a mirror asset.",
             "A displaced extra file is a destination file moved aside because it was not in the mirror source.",
+            _text(
+                "If rollback cannot safely distinguish managed content from outside edits,",
+                "it skips or errors rather than guessing.",
+            ),
         ],
         "examples": [
             "prescribe rollback ~/.gitconfig --dry-run",
@@ -232,6 +257,10 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
                 "Recovery backups are broader than rollback history. They capture the bytes that existed",
                 "immediately before apply, asset writes, rollback writes, and rollback-original deletes.",
             ),
+            _text(
+                "If Prescribe cannot safely back up existing content before a destructive write,",
+                "the operation should fail instead of silently discarding that content.",
+            ),
         ],
         "examples": [
             "prescribe backups",
@@ -249,6 +278,10 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
                 "`take` updates the durable ownership record to the current spec.",
             ),
             "`take` does not merge specs and does not force overwrites of externally changed file content.",
+            _text(
+                "`take` means future runs consider the current spec the owner of the same address.",
+                "Use status or apply conflict output to handle file drift separately.",
+            ),
             _text(
                 "Claim conflicts are different from rollback content conflicts.",
                 "Claim conflicts are about ownership records; rollback content conflicts are about outside edits",
@@ -276,6 +309,10 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
                 "The state database is created and migrated automatically. It stores runs, claims, snapshots,",
                 "rollback history, recovery backups, and asset-displacement records.",
             ),
+            _text(
+                "When Prescribe says it records backups when possible, unsafe paths, unsupported encodings,",
+                "or failed backup writes should stop the operation instead of becoming unrecoverable deletes.",
+            ),
         ],
         "examples": [
             "prescribe doctor",
@@ -297,6 +334,10 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
                 "undo history, and backup records.",
             ),
             _text(
+                "Commands that only parse specs, such as `validate` without live state, do not need to",
+                "create durable managed records.",
+            ),
+            _text(
                 "Network filesystem state paths are refused by default. Use `--allow-network-state`",
                 "or `PRESCRIBE_ALLOW_NETWORK_STATE=1` only when you accept that risk.",
             ),
@@ -315,6 +356,11 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
             _text(
                 "OS-level materialization writes supported environment variables",
                 "into a platform-specific persistent store.",
+            ),
+            _text(
+                "Supported OS-level materialization is platform dependent. Windows uses the user environment;",
+                "systemd-based Linux can use user environment.d files;",
+                "unsupported platforms should rely on shell blocks.",
             ),
             "`doctor` reports the detected materialization backend and related platform diagnostics.",
             "When materialization is unsupported, specs can still render shell blocks and manage files/assets.",
@@ -343,6 +389,10 @@ _DOC_ALIASES = {
     "environment": "materialization",
     "materialize": "materialization",
     "materialization": "materialization",
+    "behavior": "apply",
+    "merge": "specs",
+    "ordering": "dirs",
+    "order": "dirs",
     "database": "state",
     "db": "state",
     "sqlite": "state",
