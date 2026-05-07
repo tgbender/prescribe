@@ -331,6 +331,11 @@ def test_docs_lists_topics(run) -> None:
     assert "Prescribe docs" in result.stdout
     assert "rollback" in result.stdout
     assert "safety" in result.stdout
+    assert "target" in result.stdout
+    assert "selectors" in result.stdout
+    assert "statuses" in result.stdout
+    assert "Aliases:" in result.stdout
+    assert "behavior" in result.stdout
 
 
 def test_docs_topic_explains_rollback(run) -> None:
@@ -349,6 +354,35 @@ def test_docs_alias_and_json_output(run) -> None:
     data = json.loads(result.stdout)
     assert data["topic"] == "backups"
     assert data["title"] == "Recovery Backups"
+
+
+def test_docs_reference_topics_explain_public_terms(run) -> None:
+    target = run("docs", "target")
+    selectors = run("docs", "selectors")
+    status = run("docs", "status")
+    statuses = run("docs", "results", "--json")
+    index = run("docs", "--json")
+
+    assert target.returncode == 0
+    assert "`TARGET`" in target.stdout
+    assert "not the name of a target inside a TOML spec" in target.stdout
+
+    assert selectors.returncode == 0
+    assert "PRESCRIBE_MACHINE" in selectors.stdout
+    assert "--tags base,work" in selectors.stdout
+
+    assert status.returncode == 0
+    assert "Status compares the current system" in status.stdout
+
+    assert statuses.returncode == 0
+    status_data = json.loads(statuses.stdout)
+    assert status_data["topic"] == "statuses"
+    assert "`conflict`" in "\n".join(status_data["body"])
+
+    assert index.returncode == 0
+    index_data = json.loads(index.stdout)
+    assert {"alias": "behavior", "topic": "apply"} in index_data["aliases"]
+    assert {"alias": "results", "topic": "statuses"} in index_data["aliases"]
 
 
 def test_docs_unknown_topic_exits_nonzero(run) -> None:

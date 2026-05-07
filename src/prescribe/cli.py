@@ -102,6 +102,60 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
             "prescribe status ./prescribe.toml --skip-tags experimental",
         ],
     },
+    "target": {
+        "title": "Target Paths",
+        "summary": "`TARGET` means a filesystem path recorded in Prescribe state, not a spec id or system PATH.",
+        "body": [
+            _text(
+                "`TARGET` appears on commands such as `rollback TARGET` and `backups TARGET`.",
+                "It can be absolute or relative; Prescribe normalizes it before matching recorded state.",
+            ),
+            _text(
+                "For rollback, a target can be a managed config file, a managed asset file,",
+                "a displaced extra file, or an asset mirror destination root.",
+            ),
+            _text(
+                "For backups, a target filters recovery backup records by the file path that was",
+                "about to be overwritten or deleted.",
+            ),
+            "`TARGET` is unrelated to the shell `PATH` variable and is not the name of a target inside a TOML spec.",
+            "Use `list` to see paths Prescribe has recorded in the selected state database.",
+        ],
+        "examples": [
+            "prescribe list",
+            "prescribe rollback ~/.gitconfig --dry-run",
+            "prescribe backups ~/.gitconfig",
+            "prescribe rollback ~/.codex/skills --original",
+        ],
+    },
+    "selectors": {
+        "title": "Selectors",
+        "summary": "Selectors decide whether a target participates in apply, status, validate, and directory runs.",
+        "body": [
+            _text(
+                "Selectors are conjunctive. A target must pass its platform, architecture, machine,",
+                "command, env, tag, and skip-tag checks to be active.",
+            ),
+            "Common platform names are `windows`, `linux`, `macos`, and `wsl`.",
+            "Common architecture names are `x86_64`, `arm64`, `x86`, `armv7`, and `all`.",
+            _text(
+                "Machine selectors compare against the hostname, or against `PRESCRIBE_MACHINE`",
+                "when that environment variable is set.",
+            ),
+            "`if_command_exists` checks whether a command is discoverable for the current process.",
+            "`if_env_missing` selects a target only when the named environment variable is absent.",
+            _text(
+                "`--tags` is comma-separated, such as `--tags base,work`.",
+                "`--skip-tags` removes matching targets even when other selectors pass.",
+            ),
+            "`--explain-skips` reports which selector or priority rule skipped a target.",
+        ],
+        "examples": [
+            "prescribe validate dotfiles.toml --tags base,work --explain-skips",
+            "prescribe status-dir specs --skip-tags experimental",
+            "PRESCRIBE_MACHINE=laptop prescribe apply dotfiles.toml",
+        ],
+    },
     "dirs": {
         "title": "Directory Commands",
         "summary": "Directory commands process direct child *.toml specs in lexicographic path order.",
@@ -119,6 +173,24 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
             "prescribe validate-dir specs --plan --explain-skips",
             "prescribe apply-dir specs --dry-run",
             "prescribe apply-dir specs",
+        ],
+    },
+    "list": {
+        "title": "List",
+        "summary": "List reports paths that have recorded Prescribe change history in the state database.",
+        "body": [
+            "`list` reads managed state. It does not parse a spec and it does not discover unmanaged files.",
+            _text(
+                "The output can include paths that no longer exist, because Prescribe still has history",
+                "for rollback, backups, claims, or auditing.",
+            ),
+            "`--json` returns machine-readable records with path metadata from the selected state database.",
+            "`--state PATH` lists records from a specific SQLite state database.",
+        ],
+        "examples": [
+            "prescribe list",
+            "prescribe list --json",
+            "prescribe list --state .prescribe/state.db",
         ],
     },
     "apply": {
@@ -164,6 +236,35 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
             "prescribe status dotfiles.toml",
             "prescribe status dotfiles.toml --diff",
             "prescribe status-dir specs --tags windows --explain-skips",
+        ],
+    },
+    "statuses": {
+        "title": "Result Statuses",
+        "summary": "Result statuses describe whether a target changed, would change, skipped, conflicted, or failed.",
+        "body": [
+            "`applied` means Prescribe wrote the requested change.",
+            "`in sync` means the target already matches the requested state.",
+            "`would change` means a read-only command or dry run found a change that would be written.",
+            _text(
+                "`skipped` means selectors, tags, priority, or duplicate target selection",
+                "prevented the target from running.",
+            ),
+            _text(
+                "`conflict` means Prescribe refused to proceed because ownership or file content",
+                "did not match recorded state.",
+            ),
+            "`error` means the target or command failed.",
+            "`rolled-back` means rollback applied recorded undo history.",
+            "`restored` means a displaced asset-mirror extra file was restored from its recorded backup.",
+            _text(
+                "JSON output may use internal statuses such as `noop` or `dry-run`; human output",
+                "renders those as `in sync` or `would change` where appropriate.",
+            ),
+        ],
+        "examples": [
+            "prescribe status dotfiles.toml --diff",
+            "prescribe validate-dir specs --plan --explain-skips",
+            "prescribe rollback ~/.gitconfig --json",
         ],
     },
     "validate": {
@@ -261,6 +362,11 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
                 "If Prescribe cannot safely back up existing content before a destructive write,",
                 "the operation should fail instead of silently discarding that content.",
             ),
+            _text(
+                "Common backup blockers are unsafe path redirection, file size or binary guards for displacement,",
+                "unsupported text encodings for text-aware operations, or inability to write backup storage.",
+            ),
+            "Current backup commands are for audit and recovery inspection; rollback handles recorded undo operations.",
         ],
         "examples": [
             "prescribe backups",
@@ -320,6 +426,24 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
             "prescribe backups --json",
         ],
     },
+    "doctor": {
+        "title": "Doctor",
+        "summary": "Doctor reports platform, path, shell, tool, and persistent environment diagnostics.",
+        "body": [
+            "`doctor` is read-only and does not apply specs.",
+            _text(
+                "It reports the Prescribe version, detected platform, materialization backend,",
+                "state path, data dir, config dir, path separator, available shells, and common tools.",
+            ),
+            "`--json` returns the same diagnostics in a machine-readable shape.",
+            "Use doctor when platform behavior, persistent env support, or state paths look surprising.",
+        ],
+        "examples": [
+            "prescribe doctor",
+            "prescribe doctor --json",
+            "prescribe doctor --state .prescribe/state.db",
+        ],
+    },
     "state": {
         "title": "State Database",
         "summary": _text(
@@ -358,6 +482,10 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
                 "into a platform-specific persistent store.",
             ),
             _text(
+                "OS-level materialization happens only for env targets that request it and only",
+                "when the current platform has a supported backend.",
+            ),
+            _text(
                 "Supported OS-level materialization is platform dependent. Windows uses the user environment;",
                 "systemd-based Linux can use user environment.d files;",
                 "unsupported platforms should rely on shell blocks.",
@@ -383,14 +511,26 @@ _DOC_ALIASES = {
     "conflicts": "claims",
     "recovery": "backups",
     "backup": "backups",
-    "target": "specs",
-    "targets": "specs",
+    "target": "target",
+    "targets": "target",
     "env": "specs",
     "environment": "materialization",
     "materialize": "materialization",
     "materialization": "materialization",
     "behavior": "apply",
     "merge": "specs",
+    "selector": "selectors",
+    "selectors": "selectors",
+    "filter": "selectors",
+    "filters": "selectors",
+    "result": "statuses",
+    "results": "statuses",
+    "statuses": "statuses",
+    "listing": "list",
+    "managed": "list",
+    "diagnostic": "doctor",
+    "diagnostics": "doctor",
+    "doctor": "doctor",
     "ordering": "dirs",
     "order": "dirs",
     "database": "state",
@@ -925,7 +1065,7 @@ def docs(
     topic_key = _resolve_doc_topic(topic)
     if topic_key is None:
         if output_json:
-            typer.echo(json.dumps({"topics": _doc_topic_index()}, indent=2))
+            typer.echo(json.dumps({"topics": _doc_topic_index(), "aliases": _doc_alias_index()}, indent=2))
             return
         typer.echo(_render_doc_index())
         return
@@ -1230,6 +1370,8 @@ def _resolve_doc_topic(topic: str | None) -> str | None:
     if topic is None:
         return None
     normalized = topic.strip().lower()
+    if normalized in _DOC_TOPICS:
+        return normalized
     return _DOC_ALIASES.get(normalized, normalized)
 
 
@@ -1244,6 +1386,10 @@ def _doc_topic_index() -> list[dict[str, str]]:
     ]
 
 
+def _doc_alias_index() -> list[dict[str, str]]:
+    return [{"alias": alias, "topic": topic} for alias, topic in sorted(_DOC_ALIASES.items()) if alias != topic]
+
+
 def _render_doc_index() -> str:
     lines = [
         "Prescribe docs",
@@ -1252,8 +1398,13 @@ def _render_doc_index() -> str:
         "",
         "Topics:",
     ]
+    topic_width = max(len(item["topic"]) for item in _doc_topic_index())
     for item in _doc_topic_index():
-        lines.append(f"  {item['topic']:<10} {item['summary']}")
+        lines.append(f"  {item['topic']:<{topic_width}} {item['summary']}")
+    aliases = _doc_alias_index()
+    if aliases:
+        lines.extend(["", "Aliases:"])
+        lines.extend(f"  {item['alias']:<12} -> {item['topic']}" for item in aliases)
     lines.extend(
         [
             "",
