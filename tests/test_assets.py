@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from stat import S_IMODE
 
 import pytest
 
@@ -187,6 +188,64 @@ def test_orchestrator_asset_rollback_restores_crlf_bytes(tmp_path: Path, state_s
 
     assert rolled_back.status == "rolled-back"
     assert dest.read_bytes() == b"original\r\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows chmod does not preserve POSIX mode bits")
+def test_orchestrator_asset_replacing_existing_file_preserves_destination_mode(tmp_path: Path, state_store) -> None:
+    source = tmp_path / "repo" / "script.sh"
+    source.parent.mkdir()
+    source.write_bytes(b"#!/bin/sh\necho managed\n")
+    source.chmod(0o755)
+    dest = tmp_path / "system" / "script.sh"
+    dest.parent.mkdir()
+    dest.write_bytes(b"#!/bin/sh\necho original\n")
+    dest.chmod(0o600)
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[assets]]\nsource = 'repo/script.sh'\ndest = 'system/script.sh'\n")
+
+    applied = Orchestrator(state_store).run(spec_path)[0]
+
+    assert applied.status == "applied"
+    assert S_IMODE(dest.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows chmod does not preserve POSIX mode bits")
+def test_orchestrator_asset_creating_file_uses_source_mode(tmp_path: Path, state_store) -> None:
+    source = tmp_path / "repo" / "script.sh"
+    source.parent.mkdir()
+    source.write_bytes(b"#!/bin/sh\necho managed\n")
+    source.chmod(0o755)
+    dest = tmp_path / "system" / "script.sh"
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[assets]]\nsource = 'repo/script.sh'\ndest = 'system/script.sh'\n")
+
+    applied = Orchestrator(state_store).run(spec_path)[0]
+
+    assert applied.status == "applied"
+    assert S_IMODE(dest.stat().st_mode) == 0o755
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows chmod does not preserve POSIX mode bits")
+def test_orchestrator_asset_rollback_restores_destination_mode(tmp_path: Path, state_store) -> None:
+    source = tmp_path / "repo" / "config.txt"
+    source.parent.mkdir()
+    source.write_bytes(b"managed\n")
+    source.chmod(0o644)
+    dest = tmp_path / "system" / "config.txt"
+    dest.parent.mkdir()
+    dest.write_bytes(b"original\n")
+    dest.chmod(0o600)
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[assets]]\nsource = 'repo/config.txt'\ndest = 'system/config.txt'\n")
+
+    orchestrator = Orchestrator(state_store)
+    assert orchestrator.run(spec_path)[0].status == "applied"
+    dest.chmod(0o644)
+
+    rolled_back = orchestrator.rollback(dest)
+
+    assert rolled_back.status == "rolled-back"
+    assert S_IMODE(dest.stat().st_mode) == 0o600
 
 
 def test_orchestrator_mirrors_glob_asset_tree(tmp_path: Path, state_store) -> None:

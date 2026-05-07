@@ -15,6 +15,7 @@ from typing import Any
 
 from prescribe._util import _MISSING, mapping_value, sha256_bytes
 from prescribe.adapters import adapter_for_path
+from prescribe.atomic import permission_bits
 from prescribe.backups import move_to_backup
 from prescribe.claims import (
     Claim,
@@ -48,6 +49,7 @@ class _AssetDestinationState:
     is_symlink: bool = False
     symlink_target: str | None = None
     hardlink_count: int = 0
+    permissions: int | None = None
 
 
 PLATFORM_MATCHERS: dict[str, Callable[[], bool]] = {
@@ -479,6 +481,7 @@ class Orchestrator:
                         run_id=run_id,
                         spec_hash=spec_hash,
                         source_bytes=source_bytes,
+                        source_permissions=permission_bits(source),
                         dest=dest,
                         original=current,
                         connection=connection,
@@ -549,6 +552,7 @@ class Orchestrator:
         run_id: int | None,
         spec_hash: bytes,
         source_bytes: bytes,
+        source_permissions: int,
         dest: Path,
         original: _AssetDestinationState,
         connection: sqlite3.Connection | None = None,
@@ -557,9 +561,12 @@ class Orchestrator:
             raise RuntimeError("run_id is None in _apply_asset")
         original_exists = original.exists
         dest.parent.mkdir(parents=True, exist_ok=True)
+        permissions = original.permissions if original.permissions is not None else source_permissions
         if dest.exists() or dest.is_symlink():
             dest.unlink()
         dest.write_bytes(source_bytes)
+        with contextlib.suppress(OSError):
+            dest.chmod(permissions)
         source_text = source_bytes.decode("utf-8")
         stat = dest.stat()
         content_hash = sha256_bytes(dest.read_bytes())
@@ -604,6 +611,8 @@ class Orchestrator:
                     "before_is_symlink": original.is_symlink,
                     "before_symlink_target": original.symlink_target,
                     "before_hardlink_count": original.hardlink_count,
+                    "before_permissions": _format_permissions(original.permissions),
+                    "after_permissions": _format_permissions(permission_bits(dest)),
                     "reason": "asset materialized",
                 }
             ],
@@ -1545,15 +1554,18 @@ def _asset_destination_state(path: Path) -> _AssetDestinationState:
     symlink_target = os.readlink(path) if is_symlink else None
     text = path.read_bytes().decode("utf-8") if path.exists() else None
     hardlink_count = 0
+    permissions: int | None = None
     if path.exists() and not is_symlink:
         with contextlib.suppress(OSError):
             hardlink_count = path.stat().st_nlink
+            permissions = permission_bits(path)
     return _AssetDestinationState(
         exists=True,
         text=text,
         is_symlink=is_symlink,
         symlink_target=symlink_target,
         hardlink_count=hardlink_count,
+        permissions=permissions,
     )
 
 
@@ -1640,6 +1652,10 @@ def _asset_replace_diff(extras: list[Path]) -> str:
     lines = ["# asset replace would move extra files to backup:\n"]
     lines.extend(f"# - {path}\n" for path in extras)
     return "".join(lines)
+
+
+def _format_permissions(permissions: int | None) -> str | None:
+    return None if permissions is None else f"{permissions:04o}"
 
 
 def _maybe_diff(

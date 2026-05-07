@@ -1,4 +1,8 @@
+import os
 from pathlib import Path
+from stat import S_IMODE
+
+import pytest
 
 from prescribe.adapters.line import LineAdapter, LineDocument, preferred_newline
 from prescribe.adapters.toml import TomlAdapter
@@ -224,3 +228,29 @@ class TestStructuredLineEndingPreservation:
         raw = source.read_bytes()
         assert b"count: 2\r\n" in raw
         assert b"\n" not in raw.replace(b"\r\n", b"")
+
+
+class TestPermissionPreservation:
+    @pytest.mark.skipif(os.name == "nt", reason="Windows chmod does not preserve POSIX mode bits")
+    def test_toml_edit_preserves_existing_mode(self, tmp_path):
+        source = _write_raw(tmp_path / "config.toml", "count = 1\n")
+        source.chmod(0o600)
+
+        adapter = TomlAdapter()
+        document = adapter.load(source)
+        document.root["count"] = 2
+        adapter.dump(document, source)
+
+        assert S_IMODE(source.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows chmod does not preserve POSIX executable bits")
+    def test_line_edit_preserves_existing_executable_mode(self, tmp_path):
+        source = _write_raw(tmp_path / "script.sh", "#!/bin/sh\n# prescribe:begin env\nold=1\n# prescribe:end env\n")
+        source.chmod(0o755)
+
+        adapter = LineAdapter()
+        document = adapter.load(source)
+        document.root.ensure_block("env", ["new=1"])
+        adapter.dump(document, source)
+
+        assert S_IMODE(source.stat().st_mode) == 0o755

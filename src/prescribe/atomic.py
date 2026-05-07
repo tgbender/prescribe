@@ -1,5 +1,6 @@
 import tempfile
 from pathlib import Path
+from stat import S_IMODE
 
 
 def atomic_write_text(path: Path, content: str, *, newline: str | None = None) -> None:
@@ -12,6 +13,7 @@ def atomic_write_text(path: Path, content: str, *, newline: str | None = None) -
             "\\n" or "\\r\\n": Python's ``open(newline=...)`` behavior.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    existing_mode = _existing_permissions(path)
     if newline == "":
         data = content.encode("utf-8")
         with tempfile.NamedTemporaryFile(
@@ -37,6 +39,8 @@ def atomic_write_text(path: Path, content: str, *, newline: str | None = None) -
             handle.write(content)
             handle.flush()
             temp_path = Path(handle.name)
+    if existing_mode is not None:
+        temp_path.chmod(existing_mode)
     temp_path.replace(path)
 
 
@@ -57,3 +61,13 @@ def preferred_text_newline(path: Path, *, default: str = "\n") -> str:
 def normalize_newlines(text: str, newline: str) -> str:
     """Normalize all newline spellings in text to newline."""
     return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", newline)
+
+
+def permission_bits(path: Path) -> int:
+    return S_IMODE(path.stat().st_mode)
+
+
+def _existing_permissions(path: Path) -> int | None:
+    if not path.exists() or path.is_symlink():
+        return None
+    return permission_bits(path)

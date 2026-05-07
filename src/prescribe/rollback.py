@@ -1,3 +1,4 @@
+import contextlib
 import json
 import sqlite3
 from collections.abc import Callable
@@ -272,6 +273,7 @@ def _rollback_asset(
             before_value = operation.get("before_value")
             before_is_symlink = bool(operation.get("before_is_symlink"))
             before_symlink_target = operation.get("before_symlink_target")
+            before_permissions = _parse_permissions(operation.get("before_permissions"))
             if dry_run:
                 return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
             if path.exists() or path.is_symlink():
@@ -282,6 +284,9 @@ def _rollback_asset(
                     path.symlink_to(str(before_symlink_target))
                 else:
                     atomic_write_text(path, "" if before_value is None else str(before_value), newline="")
+                    if before_permissions is not None:
+                        with contextlib.suppress(OSError):
+                            path.chmod(before_permissions)
             changed = True
 
     if not changed:
@@ -423,3 +428,13 @@ def _document_has_content(document: Document) -> bool:
     if getattr(document, "format", None) == "line":
         return bool(document.root.render())
     return bool(document.root)
+
+
+def _parse_permissions(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return int(value, 8)
+    if isinstance(value, int):
+        return value
+    return None
