@@ -5,6 +5,20 @@ description = "Declarative dotfile, shell, and environment configuration managem
 authors = [{ name = "Travis Bender" }]
 readme = "README.md"
 requires-python = ">=3.12"
+keywords = ["dotfiles", "configuration", "shell", "environment", "cli"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: System :: Installation/Setup",
+  "Topic :: System :: Systems Administration",
+  "Topic :: Utilities",
+]
 dependencies = [
   "platformdirs>=4.0,<5.0",
   "ruamel-yaml>=0.19.1,<0.20.0",
@@ -23,6 +37,11 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = ["mypy>=1.0,<2.0", "pytest>=9.0.3,<10.0.0", "pyfakefs>=6.2,<7.0.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+markers = ["cli: tests that invoke the installed prescribe CLI"]
 
 [tool.ruff]
 target-version = "py312"

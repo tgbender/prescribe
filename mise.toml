@@ -13,6 +13,7 @@ PREK_QUIET = "1"
 
 [settings]
 npm.package_manager = "bun"
+windows_default_inline_shell_args = "powershell -NoProfile -Command"
 python.uv_venv_auto = true
 install_before = "3d"
 
@@ -49,8 +50,8 @@ run = "trufflehog git file://. --since-commit=HEAD~1 --no-verification --no-upda
 
 ### LINTERS AND FORMATTERS
 [tasks.check]
-description = "Run all checks (linters, type checks, formatting checks)"
-depends = ["lint", "format"]
+description = "Run non-mutating checks"
+depends = ["lint", "test"]
 
 [tasks.format]
 description = "Run all auto-fixes and formatting"
@@ -79,10 +80,12 @@ run = "uv run mypy ."
 [tasks.prettier-format]
 description = "Format non-Python files"
 run = "git ls-files '*.md' '*.json' '*.yaml' '*.yml' | bunx prettier --write '**/*.{md,json,yaml,yml}'"
+run_windows = "bunx prettier --write @(git ls-files '*.md' '*.json' '*.yaml' '*.yml')"
 
 [tasks.prettier-check]
 description = "Check non-Python file formatting"
 run = "git ls-files -z '*.md' '*.json' '*.yaml' '*.yml' | xargs -0 bunx prettier --check"
+run_windows = "bunx prettier --check @(git ls-files '*.md' '*.json' '*.yaml' '*.yml')"
 
 [tasks.taplo-format]
 description = "Format TOML files"
@@ -98,6 +101,12 @@ description = "Run tests"
 run = "uv run pytest -q"
 
 ### OTHER
+[tasks.check-venv]
+description = "Verify python resolves inside the project virtualenv"
+dir = "{{ config_root }}"
+run = "case \"$(python -c 'import sys; print(sys.executable)')\" in \"{{ config_root }}\"*) ;; *) echo 'Python not in project venv'; exit 1 ;; esac"
+run_windows = "if (-not ((Get-Command python).Source -like \"*$PWD*\")) { Write-Error 'Python not in project venv'; exit 1 }"
+
 [tasks.oracle-jsonc]
 description = "Render the JSONC oracle for the VS Code settings fixture"
 run = "bun scripts/jsonc_oracle.ts"
