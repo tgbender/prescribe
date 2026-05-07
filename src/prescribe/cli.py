@@ -23,7 +23,13 @@ from prescribe.rollback import ConflictResolver
 from prescribe.spec import AssetTarget, EnvTarget, FileTarget, ShellTarget, Spec, SpecError, SpecLoader
 from prescribe.state import NetworkStatePathError, StateStore
 
-app = typer.Typer(help="Manage declarative config file changes.", add_completion=False)
+app = typer.Typer(
+    help=(
+        "Manage files, environment variables, shell startup blocks, and assets from TOML specs. "
+        "Start with validate, status, then apply; use docs for terminology."
+    ),
+    add_completion=False,
+)
 
 DIRECT_CHILD_SPEC_HELP = "Directory containing direct child *.toml specs; nested directories are ignored."
 DOCS_TOPIC_HELP = "Topic to explain. Run without a topic to list available docs."
@@ -58,6 +64,7 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
                 "The normal workflow is: validate a spec, inspect status or a plan, apply it,",
                 "then use status, list, backups, or rollback when you need to inspect or recover state.",
             ),
+            "`SPEC` means a TOML spec file path. `TARGET` means a managed filesystem path recorded in state.",
             "Command help is intentionally short. Use `prescribe docs TOPIC` for examples and terminology.",
         ],
         "examples": [
@@ -180,6 +187,7 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
         "summary": "List reports paths that have recorded Prescribe change history in the state database.",
         "body": [
             "`list` reads managed state. It does not parse a spec and it does not discover unmanaged files.",
+            "`list` is a managed-path index: it reports paths with surviving Prescribe records in state.",
             _text(
                 "The output can include paths that no longer exist, because Prescribe still has history",
                 "for rollback, backups, claims, or auditing.",
@@ -362,6 +370,7 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
                 "If Prescribe cannot safely back up existing content before a destructive write,",
                 "the operation should fail instead of silently discarding that content.",
             ),
+            "Recovery backups are byte copies for recovery/audit; rollback uses recorded undo history.",
             _text(
                 "Common backup blockers are unsafe path redirection, file size or binary guards for displacement,",
                 "unsupported text encodings for text-aware operations, or inability to write backup storage.",
@@ -504,9 +513,13 @@ _DOC_TOPICS: dict[str, dict[str, object]] = {
 _DOC_ALIASES = {
     "command": "overview",
     "commands": "overview",
+    "spec": "specs",
+    "spec-file": "specs",
+    "spec-path": "specs",
     "directory": "dirs",
     "directories": "dirs",
     "dir": "dirs",
+    "ownership": "claims",
     "conflict": "claims",
     "conflicts": "claims",
     "recovery": "backups",
@@ -514,6 +527,8 @@ _DOC_ALIASES = {
     "target": "target",
     "targets": "target",
     "env": "specs",
+    "environment-persistence": "materialization",
+    "environment persistence": "materialization",
     "environment": "materialization",
     "materialize": "materialization",
     "materialization": "materialization",
@@ -525,6 +540,8 @@ _DOC_ALIASES = {
     "filters": "selectors",
     "result": "statuses",
     "results": "statuses",
+    "result-states": "statuses",
+    "result states": "statuses",
     "statuses": "statuses",
     "listing": "list",
     "managed": "list",
@@ -591,7 +608,7 @@ def _status_line(status: str, changed: bool, path: str, detail: str | None = Non
 
 @app.command()
 def apply(
-    spec: Path = typer.Argument(..., help="Path to the spec TOML file."),
+    spec: Path = typer.Argument(..., metavar="SPEC_PATH", help="Path to the spec TOML file."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Plan changes without writing."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help=STATE_HELP),
@@ -612,7 +629,7 @@ def apply(
         ),
     ),
 ) -> None:
-    """Apply one spec file to its files, environment variables, shell startup blocks, and assets."""
+    """Write desired state from one TOML spec and record ownership/history."""
     try:
         spec_obj = SpecLoader().load(spec)
     except SpecError as exc:
@@ -659,7 +676,7 @@ def apply(
 
 @app.command()
 def status(
-    spec: Path = typer.Argument(..., help="Path to the spec TOML file."),
+    spec: Path = typer.Argument(..., metavar="SPEC_PATH", help="Path to the spec TOML file."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help=STATE_HELP),
     tags: str | None = typer.Option(None, "--tags", help="Only show targets with these tags (comma-separated)."),
@@ -667,7 +684,7 @@ def status(
     diff: bool = typer.Option(False, "--diff", help="Show unified diffs for files that would change."),
     explain_skips: bool = typer.Option(False, "--explain-skips", help="Show why targets were skipped."),
 ) -> None:
-    """Show sync status of all targets without making changes."""
+    """Compare the current system to one spec using the current state database."""
     try:
         spec_obj = SpecLoader().load(spec)
     except SpecError as exc:
@@ -694,7 +711,7 @@ def status(
 
 @app.command()
 def validate(
-    spec: Path = typer.Argument(..., help="Path to the spec TOML file."),
+    spec: Path = typer.Argument(..., metavar="SPEC_PATH", help="Path to the spec TOML file."),
     output_json: bool = typer.Option(False, "--json", help="Output validation summary as JSON."),
     tags: str | None = typer.Option(None, "--tags", help="Only consider targets with these tags (comma-separated)."),
     skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
@@ -706,7 +723,7 @@ def validate(
     ),
     diff: bool = typer.Option(False, "--diff", help="With --plan, include unified diffs for changed file targets."),
 ) -> None:
-    """Validate one spec and show which matching targets it would process."""
+    """Check one spec without live managed state; use status for the current system view."""
     try:
         spec_obj = SpecLoader().load(spec)
     except SpecError as exc:
@@ -771,7 +788,7 @@ def list_specs_cmd(
     directory: Path = typer.Argument(..., help=DIRECT_CHILD_SPEC_HELP),
     output_json: bool = typer.Option(False, "--json", help="Output discovered specs as JSON."),
 ) -> None:
-    """List direct child *.toml specs in deterministic apply order."""
+    """List direct child *.toml spec files only; nested directories are ignored."""
     specs = Presets().list_specs(directory)
     if output_json:
         typer.echo(json.dumps([str(spec) for spec in specs], indent=2))
@@ -832,7 +849,7 @@ def status_dir(
     diff: bool = typer.Option(False, "--diff", help="Show unified diffs for files that would change."),
     explain_skips: bool = typer.Option(False, "--explain-skips", help="Show why targets were skipped."),
 ) -> None:
-    """Show status for every direct child *.toml spec in a directory."""
+    """Show status for every direct child *.toml spec; nested directories are ignored."""
     _run_spec_directory(
         directory,
         dry_run=True,
@@ -958,7 +975,7 @@ def list_managed(
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help=STATE_HELP),
 ) -> None:
-    """List paths with recorded Prescribe change history."""
+    """List managed paths with surviving Prescribe records in state."""
     store = _make_store(state)
     if not store.path.exists():
         if output_json:
@@ -1008,7 +1025,7 @@ def list_backups(
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help=STATE_HELP),
 ) -> None:
-    """List recovery backups captured before Prescribe overwrites or deletes existing files."""
+    """List recovery backups only, not rollback undo history."""
     store = _make_store(state)
     if not store.path.exists():
         if output_json:
@@ -1061,7 +1078,7 @@ def docs(
     topic: str | None = typer.Argument(None, metavar="TOPIC", help=DOCS_TOPIC_HELP),
     output_json: bool = typer.Option(False, "--json", help="Output docs topic as JSON."),
 ) -> None:
-    """Show explanations and examples for Prescribe commands and terminology."""
+    """Show explanations and examples. Try overview, specs, apply, rollback, or safety."""
     topic_key = _resolve_doc_topic(topic)
     if topic_key is None:
         if output_json:
@@ -1136,8 +1153,8 @@ def rollback(
         ...,
         metavar="TARGET",
         help=(
-            "File or mirror directory to undo: a managed config file, managed asset file, "
-            "displaced extra file, or asset mirror root."
+            "Managed file, mirror root, or displaced file path. A displaced file was moved aside "
+            "because it was not part of the mirror source."
         ),
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what managed changes would be undone."),
@@ -1165,7 +1182,7 @@ def rollback(
         help="Allow the SQLite state database on a network filesystem.",
     ),
 ) -> None:
-    """Undo Prescribe-managed changes for a target while preserving unrelated edits where possible."""
+    """Undo managed changes for TARGET while preserving unrelated edits where possible."""
     result = Orchestrator(_make_store(state, allow_network_state=allow_network_state)).rollback(
         target, dry_run=dry_run, original=original, conflict_resolver=_make_conflict_resolver(on_conflict)
     )

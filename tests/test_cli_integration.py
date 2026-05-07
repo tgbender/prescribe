@@ -349,11 +349,17 @@ def test_docs_topic_explains_rollback(run) -> None:
 
 def test_docs_alias_and_json_output(run) -> None:
     result = run("docs", "recovery", "--json")
+    spec_result = run("docs", "spec", "--json")
+    ownership_result = run("docs", "ownership", "--json")
+    result_states = run("docs", "result-states", "--json")
 
     assert result.returncode == 0
     data = json.loads(result.stdout)
     assert data["topic"] == "backups"
     assert data["title"] == "Recovery Backups"
+    assert json.loads(spec_result.stdout)["topic"] == "specs"
+    assert json.loads(ownership_result.stdout)["topic"] == "claims"
+    assert json.loads(result_states.stdout)["topic"] == "statuses"
 
 
 def test_docs_reference_topics_explain_public_terms(run) -> None:
