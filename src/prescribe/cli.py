@@ -526,19 +526,32 @@ def _make_claim_resolver(on_claim_conflict: str | None) -> ClaimResolver | None:
 
 @app.command()
 def rollback(
-    path: Path = typer.Argument(..., help="Path whose Prescribe-managed changes should be undone."),
+    target: Path = typer.Argument(
+        ...,
+        metavar="TARGET",
+        help=(
+            "Managed config file, managed asset file, displaced extra-file path, "
+            "or asset mirror directory whose Prescribe-managed changes should be undone."
+        ),
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what managed changes would be undone."),
     output_json: bool = typer.Option(False, "--json", help="Output result as JSON."),
     state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
     on_conflict: str | None = typer.Option(
         None,
         "--on-conflict",
-        help="Behavior when a managed key was externally modified: prompt (default when TTY), revert, or ignore.",
+        help=(
+            "Behavior per externally modified managed key or block: "
+            "prompt (default when TTY), revert by applying the recorded undo, or ignore."
+        ),
     ),
     original: bool = typer.Option(
         False,
         "--original",
-        help="Undo all managed changes back to their pre-Prescribe values, or remove files Prescribe created.",
+        help=(
+            "Restore managed content to its pre-Prescribe baseline while preserving unrelated edits, "
+            "or remove files Prescribe created."
+        ),
     ),
     allow_network_state: bool = typer.Option(
         False,
@@ -546,14 +559,14 @@ def rollback(
         help="Allow the SQLite state database on a network filesystem.",
     ),
 ) -> None:
-    """Undo Prescribe-managed changes while preserving unrelated edits where possible."""
+    """Undo Prescribe-managed changes for a target while preserving unrelated edits where possible."""
     result = Orchestrator(_make_store(state, allow_network_state=allow_network_state)).rollback(
-        path, dry_run=dry_run, original=original, conflict_resolver=_make_conflict_resolver(on_conflict)
+        target, dry_run=dry_run, original=original, conflict_resolver=_make_conflict_resolver(on_conflict)
     )
 
     if output_json:
         data: dict[str, object] = {
-            "path": str(path),
+            "path": str(target),
             "status": result.status,
             "applied": result.applied,
             "changed": result.changed,
@@ -562,7 +575,7 @@ def rollback(
             data["error"] = result.error
         typer.echo(json.dumps(data, indent=2))
     else:
-        typer.echo(_status_line(result.status, result.changed, str(path), result.error))
+        typer.echo(_status_line(result.status, result.changed, str(target), result.error))
 
     if result.status == "error":
         raise typer.Exit(1)

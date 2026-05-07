@@ -23,12 +23,12 @@ prescribe apply-dir specs              # Apply every top-level *.toml spec in a 
 prescribe status-dir specs --diff      # Preview a whole spec directory
 prescribe validate-dir specs --plan    # Validate and plan a whole spec directory
 prescribe list                         # List all managed files
-prescribe rollback path/to/file        # Undo Prescribe-managed changes to a file
+prescribe rollback TARGET              # Undo Prescribe-managed changes for a file or asset target
 ```
 
 All commands accept `--json` for machine-readable output and `--state` (or `PRESCRIBE_STATE` env var) to set the database path.
 
-`prescribe rollback` accepts `--on-conflict` (prompt/revert/ignore) and `--original` (undo all managed changes back to their pre-Prescribe values, or remove files Prescribe created).
+`prescribe rollback TARGET` accepts `--on-conflict` (prompt/revert/ignore) and `--original`. `TARGET` is a managed config file, a managed asset file, the original path of a displaced extra asset file, or an asset mirror destination directory. Default rollback applies Prescribe's recorded undo operations while preserving unrelated edits where possible. `--original` restores the target's managed content to its pre-Prescribe baseline; if Prescribe created the file, it removes it.
 For mirrored assets with `replace = true`, rolling back the mirror destination directory restores displaced extra files from managed backup storage.
 
 Mutating commands use a short-lived SQLite run lock to prevent concurrent writes. Prescribe also records durable ownership claims for managed keys, blocks, env vars, and assets; overlapping claims fail before writes unless ownership is explicitly taken with `--on-claim-conflict take` or approved interactively with `--on-claim-conflict prompt`.
@@ -245,11 +245,17 @@ Targets and location candidates support gating:
 
 Prescribe tracks every change in a SQLite state database. Managed keys are fingerprinted before and after every apply. If someone edits a managed key outside of prescribe, the next `apply` detects the conflict and refuses to overwrite.
 
-`rollback` means "undo Prescribe-managed changes" for a path. It removes or reverts the operations Prescribe recorded while preserving unrelated/manual edits where possible. It is not a force-repair command that reapplies the spec over external drift. Use `apply` to converge to the spec; a future force/repair mode may explicitly overwrite managed drift.
+`rollback` means "undo Prescribe-managed changes" for a target. It removes or reverts the operations Prescribe recorded while preserving unrelated/manual edits where possible. It is not a force-repair command that reapplies the spec over external drift. Use `apply` to converge to the spec; a future force/repair mode may explicitly overwrite managed drift.
+
+`TARGET` can be a managed config file, a managed asset file, the original path of a displaced extra asset file, or an asset mirror destination directory. For mirror assets, roll back the mirror directory to restore displaced extra files, or roll back an individual managed asset path to undo that one file.
+
+Default rollback applies the recorded undo operations for the target while preserving unrelated edits. If a file was created by Prescribe but now contains unrelated manual edits, default rollback keeps the remaining file content. `--original` goes further for Prescribe-created files and removes the file, because no pre-Prescribe file existed.
+
+If rollback encounters an externally modified managed key or block, the default is to prompt in a TTY and skip in non-interactive use. `--on-conflict revert` applies per managed key or block and tells rollback to apply the recorded undo operation anyway, returning that entry to its value before that Prescribe operation changed it rather than to the current spec value.
 
 ```sh
 prescribe rollback ~/.gitconfig                    # Undo Prescribe-managed changes
-prescribe rollback ~/.gitconfig --original         # Undo all managed changes back to pre-Prescribe values
+prescribe rollback ~/.gitconfig --original         # Undo managed changes back to pre-Prescribe values
 prescribe rollback ~/.gitconfig --on-conflict revert  # Undo even externally edited managed keys
 ```
 
