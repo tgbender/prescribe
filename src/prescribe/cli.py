@@ -25,6 +25,8 @@ from prescribe.state import NetworkStatePathError, StateStore
 
 app = typer.Typer(help="Manage declarative config file changes.", add_completion=False)
 
+DIRECT_CHILD_SPEC_HELP = "Directory containing direct child *.toml specs; nested directories are ignored."
+
 _STATUS_COLORS = {
     "applied": typer.colors.GREEN,
     "rolled-back": typer.colors.GREEN,
@@ -101,10 +103,13 @@ def apply(
     on_claim_conflict: str | None = typer.Option(
         None,
         "--on-claim-conflict",
-        help="Behavior when another spec owns a claim: prompt (TTY default), fail (non-TTY default), or take.",
+        help=(
+            "What to do when another spec already owns the same file/key/block: "
+            "prompt (TTY default), fail (non-TTY default), or take ownership."
+        ),
     ),
 ) -> None:
-    """Apply a spec file to its target config files, env vars, and shell blocks."""
+    """Apply one spec file to its files, environment variables, shell startup blocks, and assets."""
     try:
         spec_obj = SpecLoader().load(spec)
     except SpecError as exc:
@@ -191,10 +196,14 @@ def validate(
     tags: str | None = typer.Option(None, "--tags", help="Only consider targets with these tags (comma-separated)."),
     skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
     explain_skips: bool = typer.Option(False, "--explain-skips", help="Show why targets were skipped."),
-    plan: bool = typer.Option(False, "--plan", help="Show whether active targets would change."),
-    diff: bool = typer.Option(False, "--diff", help="Include diffs when used with --plan."),
+    plan: bool = typer.Option(
+        False,
+        "--plan",
+        help="Show each matching target and whether it would create, update, or leave unchanged.",
+    ),
+    diff: bool = typer.Option(False, "--diff", help="With --plan, include unified diffs for changed file targets."),
 ) -> None:
-    """Validate a spec and show which targets would be considered."""
+    """Validate one spec and show which matching targets it would process."""
     try:
         spec_obj = SpecLoader().load(spec)
     except SpecError as exc:
@@ -256,10 +265,10 @@ def validate(
 
 @app.command("list-specs")
 def list_specs_cmd(
-    directory: Path = typer.Argument(..., help="Directory containing top-level spec TOML files."),
+    directory: Path = typer.Argument(..., help=DIRECT_CHILD_SPEC_HELP),
     output_json: bool = typer.Option(False, "--json", help="Output discovered specs as JSON."),
 ) -> None:
-    """List top-level specs in deterministic apply order."""
+    """List direct child *.toml specs in deterministic apply order."""
     specs = Presets().list_specs(directory)
     if output_json:
         typer.echo(json.dumps([str(spec) for spec in specs], indent=2))
@@ -273,7 +282,7 @@ def list_specs_cmd(
 
 @app.command("apply-dir")
 def apply_dir(
-    directory: Path = typer.Argument(..., help="Directory containing top-level spec TOML files."),
+    directory: Path = typer.Argument(..., help=DIRECT_CHILD_SPEC_HELP),
     dry_run: bool = typer.Option(False, "--dry-run", help="Plan changes without writing."),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
@@ -288,10 +297,13 @@ def apply_dir(
     on_claim_conflict: str | None = typer.Option(
         None,
         "--on-claim-conflict",
-        help="Behavior when another spec owns a claim: prompt (TTY default), fail (non-TTY default), or take.",
+        help=(
+            "What to do when another spec already owns the same file/key/block: "
+            "prompt (TTY default), fail (non-TTY default), or take ownership."
+        ),
     ),
 ) -> None:
-    """Apply all top-level spec TOML files in a directory."""
+    """Apply every direct child *.toml spec in a directory; nested directories are ignored."""
     _run_spec_directory(
         directory,
         dry_run=dry_run,
@@ -309,7 +321,7 @@ def apply_dir(
 
 @app.command("status-dir")
 def status_dir(
-    directory: Path = typer.Argument(..., help="Directory containing top-level spec TOML files."),
+    directory: Path = typer.Argument(..., help=DIRECT_CHILD_SPEC_HELP),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
     tags: str | None = typer.Option(None, "--tags", help="Only show targets with these tags (comma-separated)."),
@@ -317,7 +329,7 @@ def status_dir(
     diff: bool = typer.Option(False, "--diff", help="Show unified diffs for files that would change."),
     explain_skips: bool = typer.Option(False, "--explain-skips", help="Show why targets were skipped."),
 ) -> None:
-    """Show status for all top-level spec TOML files in a directory."""
+    """Show status for every direct child *.toml spec in a directory."""
     _run_spec_directory(
         directory,
         dry_run=True,
@@ -333,15 +345,19 @@ def status_dir(
 
 @app.command("validate-dir")
 def validate_dir(
-    directory: Path = typer.Argument(..., help="Directory containing top-level spec TOML files."),
+    directory: Path = typer.Argument(..., help=DIRECT_CHILD_SPEC_HELP),
     output_json: bool = typer.Option(False, "--json", help="Output validation summary as JSON."),
     tags: str | None = typer.Option(None, "--tags", help="Only consider targets with these tags (comma-separated)."),
     skip_tags: str | None = typer.Option(None, "--skip-tags", help="Skip targets with these tags (comma-separated)."),
     explain_skips: bool = typer.Option(False, "--explain-skips", help="Show why targets were skipped."),
-    plan: bool = typer.Option(False, "--plan", help="Show whether active targets would change."),
-    diff: bool = typer.Option(False, "--diff", help="Include diffs when used with --plan."),
+    plan: bool = typer.Option(
+        False,
+        "--plan",
+        help="Show each matching target and whether it would create, update, or leave unchanged.",
+    ),
+    diff: bool = typer.Option(False, "--diff", help="With --plan, include unified diffs for changed file targets."),
 ) -> None:
-    """Validate all top-level spec TOML files in a directory."""
+    """Validate every direct child *.toml spec in a directory; nested directories are ignored."""
     tag_set = _parse_tags(tags)
     skip_set = _parse_tags(skip_tags)
     explain = _option_bool(explain_skips)
@@ -439,7 +455,7 @@ def list_managed(
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
 ) -> None:
-    """List all config files managed by prescribe."""
+    """List paths with recorded Prescribe change history."""
     store = _make_store(state)
     if not store.path.exists():
         if output_json:
@@ -481,11 +497,15 @@ def list_managed(
 
 @app.command("backups")
 def list_backups(
-    path: Path | None = typer.Argument(None, metavar="TARGET", help="Optional target path to filter recovery backups."),
+    target: Path | None = typer.Argument(
+        None,
+        metavar="TARGET",
+        help="Optional exact target path to filter recovery backups.",
+    ),
     output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
     state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
 ) -> None:
-    """List recovery backups captured before Prescribe mutates or deletes existing data."""
+    """List recovery backups captured before Prescribe overwrites or deletes existing files."""
     store = _make_store(state)
     if not store.path.exists():
         if output_json:
@@ -495,7 +515,7 @@ def list_backups(
         return
 
     store.initialize()
-    records = store.recovery_backups(path)
+    records = store.recovery_backups(target)
 
     if output_json:
         typer.echo(
@@ -584,8 +604,8 @@ def rollback(
         ...,
         metavar="TARGET",
         help=(
-            "Managed config file, managed asset file, displaced extra-file path, "
-            "or asset mirror directory whose Prescribe-managed changes should be undone."
+            "File or mirror directory to undo: a managed config file, managed asset file, "
+            "displaced extra file, or asset mirror root."
         ),
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what managed changes would be undone."),
@@ -595,16 +615,16 @@ def rollback(
         None,
         "--on-conflict",
         help=(
-            "Behavior per externally modified managed key or block: "
-            "prompt (default when TTY), revert by applying the recorded undo, or ignore."
+            "When rollback finds outside edits inside managed content: prompt per entry "
+            "(TTY default), apply the recorded undo anyway, or leave the edited entry alone."
         ),
     ),
     original: bool = typer.Option(
         False,
         "--original",
         help=(
-            "Restore managed content to its pre-Prescribe baseline while preserving unrelated edits, "
-            "or remove files Prescribe created."
+            "Restore managed content to the state from before Prescribe first managed it. "
+            "If Prescribe created the file, remove it."
         ),
     ),
     allow_network_state: bool = typer.Option(
