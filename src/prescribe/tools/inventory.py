@@ -38,12 +38,19 @@ def inspect_tool_paths(
     platform: str | None = None,
     include_path: bool = True,
     include_transitive: bool = False,
+    attribute_installed_executables: bool = False,
 ) -> ToolInventory:
     """Inspect tool-manager paths and executable candidates without subprocesses.
 
     ``names`` enables targeted lookup: only those executable names are checked in
     candidate bin directories. When omitted, existing bin directories are scanned
     once and known manager install metadata is included.
+
+    ``attribute_installed_executables`` performs bounded recursive searches under
+    installed manager roots to attribute shim candidates like ``rg`` back to an
+    installed package like ``ripgrep``. It is useful for explanations, but it is
+    deliberately opt-in because some manager installs contain large virtualenvs
+    or package trees.
     """
 
     ctx = context(env=env, home=home, platform=platform)
@@ -69,6 +76,7 @@ def inspect_tool_paths(
         path_entries=entries,
         names=target_names,
         ctx=ctx,
+        attribute_installed_executables=attribute_installed_executables,
     )
     duplicates = {name: values for name, values in candidates.items() if len(values) > 1}
     return ToolInventory(
@@ -88,11 +96,12 @@ def _candidate_map(
     path_entries: list[Path],
     names: frozenset[str] | None,
     ctx: InspectionContext,
+    attribute_installed_executables: bool,
 ) -> dict[str, tuple[ToolCandidate, ...]]:
     by_path = {case_key(entry): index for index, entry in enumerate(path_entries)}
     active_by_name = _active_by_name(path_entries, names, ctx)
     installed_by_path = {case_key(tool.path): tool for tool in installed}
-    installed_by_executable = _installed_executable_index(installed, names, ctx)
+    executable_cache: dict[tuple[str, str], InstalledTool | None] = {}
     candidates: dict[str, list[ToolCandidate]] = {}
     for source in sources:
         if not source.exists:
@@ -101,8 +110,14 @@ def _candidate_map(
             name = tool_name(candidate, ctx)
             active = case_key(candidate) == case_key(active_by_name.get(name, Path()))
             installed_tool = _nearest_installed(candidate, installed_by_path)
-            if installed_tool is None and source.manager != "path":
-                installed_tool = installed_by_executable.get((source.manager, name))
+            if installed_tool is None and attribute_installed_executables and source.manager != "path":
+                installed_tool = _find_installed_by_executable(
+                    installed=installed,
+                    manager=source.manager,
+                    name=name,
+                    ctx=ctx,
+                    cache=executable_cache,
+                )
             source_label = (
                 source.manager if source.manager != "path" else f"path[{by_path.get(case_key(source.path), -1)}]"
             )
@@ -119,20 +134,25 @@ def _candidate_map(
     return {name: tuple(_dedupe_candidates(values)) for name, values in sorted(candidates.items())}
 
 
-def _installed_executable_index(
-    installed: tuple[InstalledTool, ...], names: frozenset[str] | None, ctx: InspectionContext
-) -> dict[tuple[str, str], InstalledTool]:
-    if names is None:
-        return {}
-    indexed: dict[tuple[str, str], InstalledTool] = {}
+def _find_installed_by_executable(
+    *,
+    installed: tuple[InstalledTool, ...],
+    manager: str,
+    name: str,
+    ctx: InspectionContext,
+    cache: dict[tuple[str, str], InstalledTool | None],
+) -> InstalledTool | None:
+    key = (manager, name)
+    if key in cache:
+        return cache[key]
     for tool in installed:
-        for name in names:
-            key = (tool.manager, name)
-            if key in indexed:
-                continue
-            if _installed_contains_executable(tool.path, name, ctx):
-                indexed[key] = tool
-    return indexed
+        if tool.manager != manager:
+            continue
+        if _installed_contains_executable(tool.path, name, ctx):
+            cache[key] = tool
+            return tool
+    cache[key] = None
+    return None
 
 
 def _installed_contains_executable(root: Path, name: str, ctx: InspectionContext) -> bool:

@@ -66,10 +66,34 @@ def test_targeted_lookup_attributes_shims_to_installed_executables(tmp_path: Pat
     _exe(shims / "rg.exe")
     env = {"USERPROFILE": str(home), "PATH": str(shims), "XDG_DATA_HOME": str(data), "PATHEXT": ".EXE;.CMD"}
 
-    report = inspect_tool_paths(["rg"], managers=["mise"], env=env, home=home, platform="win32")
+    report = inspect_tool_paths(
+        ["rg"],
+        managers=["mise"],
+        env=env,
+        home=home,
+        platform="win32",
+        attribute_installed_executables=True,
+    )
 
     assert report.tools["rg"][0].installed_name == "ripgrep"
     assert report.tools["rg"][0].scope == "intentional"
+
+
+def test_targeted_lookup_does_not_recursively_attribute_shims_by_default(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    data = tmp_path / "data"
+    installs = data / "mise" / "installs"
+    ripgrep_bin = installs / "ripgrep" / "15.1.0" / "pkg"
+    _exe(ripgrep_bin / "rg.exe")
+    (installs / ".mise-installs.toml").write_text('[ripgrep]\nshort = "ripgrep"\n', encoding="utf-8")
+    shims = data / "mise" / "shims"
+    _exe(shims / "rg.exe")
+    env = {"USERPROFILE": str(home), "PATH": str(shims), "XDG_DATA_HOME": str(data), "PATHEXT": ".EXE;.CMD"}
+
+    report = inspect_tool_paths(["rg"], managers=["mise"], env=env, home=home, platform="win32")
+
+    assert report.tools["rg"][0].installed_name is None
+    assert report.tools["rg"][0].scope == "active"
 
 
 def test_targeted_lookup_does_not_attribute_path_entries_by_executable_name(tmp_path: Path) -> None:
