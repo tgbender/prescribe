@@ -28,7 +28,7 @@ prescribe rollback path/to/file        # Undo Prescribe-managed changes to a fil
 
 All commands accept `--json` for machine-readable output and `--state` (or `PRESCRIBE_STATE` env var) to set the database path.
 
-`prescribe rollback` accepts `--on-conflict` (prompt/revert/ignore) and `--original` (restore the pre-Prescribe baseline).
+`prescribe rollback` accepts `--on-conflict` (prompt/revert/ignore) and `--original` (undo all managed changes back to their pre-Prescribe values, or remove files Prescribe created).
 For mirrored assets with `replace = true`, rolling back the mirror destination directory restores displaced extra files from managed backup storage.
 
 Mutating commands use a short-lived SQLite run lock to prevent concurrent writes. Prescribe also records durable ownership claims for managed keys, blocks, env vars, and assets; overlapping claims fail before writes unless ownership is explicitly taken with `--on-claim-conflict take` or approved interactively with `--on-claim-conflict prompt`.
@@ -249,7 +249,7 @@ Prescribe tracks every change in a SQLite state database. Managed keys are finge
 
 ```sh
 prescribe rollback ~/.gitconfig                    # Undo Prescribe-managed changes
-prescribe rollback ~/.gitconfig --original         # Restore pre-Prescribe baseline
+prescribe rollback ~/.gitconfig --original         # Undo all managed changes back to pre-Prescribe values
 prescribe rollback ~/.gitconfig --on-conflict revert  # Undo even externally edited managed keys
 ```
 

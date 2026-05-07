@@ -535,7 +535,11 @@ def rollback(
         "--on-conflict",
         help="Behavior when a managed key was externally modified: prompt (default when TTY), revert, or ignore.",
     ),
-    original: bool = typer.Option(False, "--original", help="Restore the pre-Prescribe baseline before first apply."),
+    original: bool = typer.Option(
+        False,
+        "--original",
+        help="Undo all managed changes back to their pre-Prescribe values, or remove files Prescribe created.",
+    ),
     allow_network_state: bool = typer.Option(
         False,
         "--allow-network-state",
