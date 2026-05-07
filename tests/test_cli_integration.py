@@ -779,6 +779,30 @@ def test_validate_dir_plan_reports_filesystem_safety_error(run, workdir: Path) -
     assert (extra_dir / "keep.txt").read_text() == "keep\n"
 
 
+def test_rollback_asset_directory_restores_displaced_children(run, workdir: Path) -> None:
+    repo = workdir / "repo"
+    repo.mkdir()
+    repo.joinpath("alpha.txt").write_text("alpha\n")
+    system = workdir / "system"
+    system.mkdir()
+    system.joinpath("stale.txt").write_text("stale\n")
+    spec = workdir / "assets.toml"
+    spec.write_text("[[assets]]\nsource = 'repo/*.txt'\ndest = 'system'\nreplace = true\n")
+
+    applied = run("apply", "assets.toml")
+    assert applied.returncode == 0
+    assert not (system / "stale.txt").exists()
+
+    dry_run = run("rollback", "--dry-run", "system")
+    assert dry_run.returncode == 0
+    assert "would change" in dry_run.stdout
+
+    restored = run("rollback", "system")
+    assert restored.returncode == 0
+    assert "restored" in restored.stdout
+    assert (system / "stale.txt").read_text() == "stale\n"
+
+
 # ---------------------------------------------------------------------------
 # doctor
 # ---------------------------------------------------------------------------

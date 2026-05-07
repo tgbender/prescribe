@@ -50,6 +50,8 @@ def perform_rollback(
         backups = [
             backup for backup in state_store.asset_backups(path, connection=connection) if backup.restored_at is None
         ]
+        if not backups:
+            backups = state_store.unrestored_asset_backups_for_target(path, connection=connection)
         if backups:
             return _restore_asset_backups(path, state_store, backups, dry_run=dry_run, connection=connection)
         return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
@@ -334,14 +336,15 @@ def _restore_asset_backups(
 ) -> OrchestrationResult:
     if not backups:
         return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
-    if path.exists() or path.is_symlink():
-        return OrchestrationResult(
-            status="conflict",
-            applied=False,
-            changed=True,
-            error=f"cannot restore displaced asset because path exists: {path}",
-            dry_run=dry_run,
-        )
+    for backup in backups:
+        if backup.original_path.exists() or backup.original_path.is_symlink():
+            return OrchestrationResult(
+                status="conflict",
+                applied=False,
+                changed=True,
+                error=f"cannot restore displaced asset because path exists: {backup.original_path}",
+                dry_run=dry_run,
+            )
     if dry_run:
         return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
     try:
