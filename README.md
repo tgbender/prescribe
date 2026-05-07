@@ -217,19 +217,19 @@ managed_block_id = "prescribe-env"
 shells = ["xonsh"]
 ```
 
-Prescribe writes a managed block with env var exports. Supported shells: `xonsh`, `bash`, `zsh`, `fish`, `nu`. The block is idempotent — re-applying replaces the entire block atomically. Existing content outside the block is never touched.
+Prescribe writes a managed block with env var exports. Supported shells: `xonsh`, `bash`, `zsh`, `fish`, `nu`, `pwsh`, and `cmd`. The block is idempotent — re-applying replaces the entire block atomically. Existing content outside the block is never touched.
 
 ### Conditions
 
 All three section types support gating:
 
-| Field               | Type        | Behaviour                                                                   |
-| ------------------- | ----------- | --------------------------------------------------------------------------- |
-| `platforms`         | `list[str]` | One of `linux`, `macos`, `windows`. Empty = all.                            |
-| `machine`           | `list[str]` | Hostname match or `PRESCRIBE_MACHINE` override.                             |
-| `tags`              | `list[str]` | Runtime filter via `--tags` / `--skip-tags`. Empty = always.                |
-| `if_command_exists` | `list[str]` | Skip if the binary isn't installed.                                         |
-| `shells`            | `list[str]` | For `[[env]]` and `[[shell]]`: one of `xonsh`, `bash`, `zsh`, `fish`, `nu`. |
+| Field               | Type        | Behaviour                                                                                  |
+| ------------------- | ----------- | ------------------------------------------------------------------------------------------ |
+| `platforms`         | `list[str]` | One of `linux`, `macos`, `windows`. Empty = all.                                           |
+| `machine`           | `list[str]` | Hostname match or `PRESCRIBE_MACHINE` override.                                            |
+| `tags`              | `list[str]` | Runtime filter via `--tags` / `--skip-tags`. Empty = always.                               |
+| `if_command_exists` | `list[str]` | Skip if the binary isn't installed.                                                        |
+| `shells`            | `list[str]` | For `[[env]]` and `[[shell]]`: one of `xonsh`, `bash`, `zsh`, `fish`, `nu`, `pwsh`, `cmd`. |
 
 ---
 
@@ -292,6 +292,12 @@ from prescribe import platform_matches, machine_matches, condition_matches
 # Shell block rendering
 from prescribe import render_shell_block
 render_shell_block(shell_type="xonsh", env_vars={"EDITOR": "nvim"}, managed_block_id="prescribe-env")
+
+# Read existing shell files without applying or mutating anything
+from prescribe import extract_shell_env_file
+extraction = extract_shell_env_file(Path("~/.zshrc").expanduser())
+print(extraction.updates)
+print(extraction.issues)
 
 # Materialize env vars to OS
 from prescribe import materialize

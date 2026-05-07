@@ -33,6 +33,14 @@ from prescribe.orchestrator import (
 from prescribe.paths import config_dir, data_dir, default_state_path
 from prescribe.presets import Presets, apply_all, default_spec_dir, discover_specs, list_specs, load_specs, status
 from prescribe.shell import render_shell_block
+from prescribe.shell_extract import (
+    ShellEnvUpdate,
+    ShellExtraction,
+    ShellExtractionIssue,
+    extract_shell_env,
+    extract_shell_env_file,
+    infer_shell_type,
+)
 from prescribe.spec import (
     AssetTarget,
     EnvTarget,
@@ -90,6 +98,12 @@ __all__ = [
     "materialize",
     # shell
     "render_shell_block",
+    "ShellEnvUpdate",
+    "ShellExtraction",
+    "ShellExtractionIssue",
+    "extract_shell_env",
+    "extract_shell_env_file",
+    "infer_shell_type",
     # spec
     "AssetTarget",
     "EnvTarget",
