@@ -11,6 +11,7 @@ from typing import Any, cast
 import tomlkit
 
 from prescribe.encoding import read_utf8_text
+from prescribe.path_policy import PathPolicyError, validate_portable_path
 
 KNOWN_FORMATS = frozenset({"toml", "yaml", "jsonc", "line"})
 KNOWN_PLATFORMS = frozenset({"linux", "macos", "windows", "wsl"})
@@ -216,13 +217,17 @@ class SpecLoader:
             raise SpecError(f"{ctx}: specify either 'text' or 'text_from', not both")
 
         paths = [expand_spec_vars(p, vars_dict) for p in _coerce_string_list(raw.get("paths", []), ctx, "paths")]
+        for path_index, path in enumerate(paths):
+            _validate_spec_path(path, ctx, f"paths[{path_index}]")
         lines = _coerce_string_list(raw.get("lines", []), ctx, "lines")
         text = _coerce_optional_string(raw.get("text"), ctx, "text")
         text_from = _coerce_optional_string(raw.get("text_from"), ctx, "text_from")
         if text is not None:
             lines = _text_to_lines(text)
         if text_from is not None:
-            text_path = _resolve_source_pattern(spec_path, expand_spec_vars(text_from, vars_dict))
+            expanded_text_from = expand_spec_vars(text_from, vars_dict)
+            _validate_spec_path(expanded_text_from, ctx, "text_from")
+            text_path = _resolve_source_pattern(spec_path, expanded_text_from)
             if _has_glob(str(text_path)):
                 raise SpecError(f"{ctx}: text_from must not be a glob pattern")
             try:
@@ -371,6 +376,8 @@ class SpecLoader:
             raise SpecError(f"{ctx}: expected a table/object")
 
         source = _coerce_required_string(raw.get("source"), ctx, "source")
+        expanded_source = expand_spec_vars(source, vars_dict)
+        _validate_spec_path(expanded_source, ctx, "source", allow_glob=True)
         mode = _coerce_optional_string(raw.get("mode"), ctx, "mode") or ("mirror" if _has_glob(source) else "file")
         if mode not in KNOWN_ASSET_MODES:
             raise SpecError(f"{ctx}: unknown mode {mode!r}, expected one of {sorted(KNOWN_ASSET_MODES)}")
@@ -385,8 +392,8 @@ class SpecLoader:
         if max_displace_bytes < 0:
             raise SpecError(f"{ctx}: key 'max_displace_bytes' must be non-negative")
         paths = [
-            _resolve_destination_path(spec_path, expand_spec_vars(p, vars_dict))
-            for p in _coerce_string_list(raw.get("paths", []), ctx, "paths")
+            _resolve_destination_path(spec_path, _validated_expanded_path(p, vars_dict, ctx, f"paths[{path_index}]"))
+            for path_index, p in enumerate(_coerce_string_list(raw.get("paths", []), ctx, "paths"))
         ]
         dest_path = _resolve_target_from_spec(
             spec_path,
@@ -402,7 +409,7 @@ class SpecLoader:
         )
 
         return AssetTarget(
-            source=str(_resolve_source_pattern(spec_path, expand_spec_vars(source, vars_dict))),
+            source=str(_resolve_source_pattern(spec_path, expanded_source)),
             dest=dest_path,
             mode=mode,
             delete_extra=bool(raw.get("delete_extra", False)),
@@ -441,7 +448,7 @@ def _parse_location_candidate(
     else:
         raise SpecError(f"{ctx}: candidate must be a string or table/object")
     return LocationCandidate(
-        path=_resolve_destination_path(spec_path, expand_spec_vars(path, vars_dict)),
+        path=_resolve_destination_path(spec_path, _validated_expanded_path(path, vars_dict, ctx, "path")),
         platforms=platforms,
         machine=machine,
         if_command_exists=if_command_exists,
@@ -476,15 +483,28 @@ def _resolve_target_from_spec(
             raise SpecError(f"{ctx}: unknown location {location_name!r}")
         resolved = _resolve_location(spec_path, location, ctx)
         if append:
-            resolved = _append_relative_path(spec_path, resolved, expand_spec_vars(append, vars_dict), ctx, append_key)
+            resolved = _append_relative_path(
+                spec_path, resolved, _validated_expanded_path(append, vars_dict, ctx, append_key), ctx, append_key
+            )
         return resolved
     if not path:
         raise SpecError(f"{ctx}: missing required key '{path_key}' or '{location_key}'")
     if append:
         raise SpecError(f"{ctx}: '{append_key}' requires '{location_key}'")
     expanded = expand_spec_vars(path, vars_dict)
+    _validate_spec_path(expanded, ctx, path_key)
     return (
-        _resolve_asset_dest_path(spec_path, expanded, [_resolve_destination_path(spec_path, p) for p in fallback_paths])
+        _resolve_asset_dest_path(
+            spec_path,
+            expanded,
+            [
+                _resolve_destination_path(
+                    spec_path,
+                    _validated_path(fallback_path, ctx, f"paths[{index}]"),
+                )
+                for index, fallback_path in enumerate(fallback_paths)
+            ],
+        )
         if destination
         else _resolve_target_path(spec_path, expanded, fallback_paths)
     )
@@ -533,6 +553,29 @@ def _append_relative_path(spec_path: Path, base: Path, raw_append: str, ctx: str
     if append.is_absolute():
         raise SpecError(f"{ctx}: key '{field_name}' must be a relative path")
     return (base / append).resolve()
+
+
+def _validated_expanded_path(
+    value: str,
+    vars_dict: dict[str, str],
+    ctx: str,
+    field_name: str,
+    *,
+    allow_glob: bool = False,
+) -> str:
+    return _validated_path(expand_spec_vars(value, vars_dict), ctx, field_name, allow_glob=allow_glob)
+
+
+def _validated_path(value: str, ctx: str, field_name: str, *, allow_glob: bool = False) -> str:
+    _validate_spec_path(value, ctx, field_name, allow_glob=allow_glob)
+    return value
+
+
+def _validate_spec_path(value: str, ctx: str, field_name: str, *, allow_glob: bool = False) -> None:
+    try:
+        validate_portable_path(value, allow_glob=allow_glob)
+    except PathPolicyError as exc:
+        raise SpecError(f"{ctx}: key '{field_name}' has unsafe path {value!r}: {exc}") from exc
 
 
 def _require_path(spec_path: Path, raw: Mapping[str, Any], ctx: str) -> str:

@@ -78,6 +78,38 @@ def test_spec_file_target_unknown_platform_rejected(tmp_path: Path) -> None:
         SpecLoader().load(spec_path)
 
 
+@pytest.mark.parametrize(
+    ("section", "body"),
+    [
+        ("files", "[[files]]\npath = 'NUL.txt'\nformat = 'toml'\n"),
+        ("files paths", "[[files]]\npath = 'config.toml'\npaths = ['C:relative.toml']\nformat = 'toml'\n"),
+        (
+            "files text_from",
+            "[[files]]\npath = 'config.toml'\nformat = 'line'\nmanaged_block_id = 'x'\ntext_from = 'AUX'\n",
+        ),
+        ("shell", "[[shell]]\npath = 'profile.ps1:stream'\nmanaged_block_id = 'x'\n"),
+        ("assets source", "[[assets]]\nsource = 'COM1.txt'\ndest = 'out.txt'\n"),
+        ("assets dest", "[[assets]]\nsource = 'repo/*.txt'\ndest = 'out. '\n"),
+        ("assets paths", "[[assets]]\nsource = 'repo/*.txt'\ndest = 'out'\npaths = ['LPT1.txt']\n"),
+        (
+            "locations",
+            "[locations.profile]\ncandidates = ['profile.']\n[[shell]]\nlocation = 'profile'\nmanaged_block_id = 'x'\n",
+        ),
+        (
+            "location append",
+            "[locations.profile]\ncandidates = ['profiles']\n[[shell]]\nlocation = 'profile'\n"
+            "path_append = 'profile.ps1:stream'\nmanaged_block_id = 'x'\n",
+        ),
+    ],
+)
+def test_spec_rejects_unsafe_path_inputs(tmp_path: Path, section: str, body: str) -> None:
+    spec_path = tmp_path / f"{section.replace(' ', '_')}.toml"
+    spec_path.write_text(body)
+
+    with pytest.raises(SpecError, match="unsafe path"):
+        SpecLoader().load(spec_path)
+
+
 def test_spec_duplicate_file_path_allowed_when_conditions_do_not_overlap(
     tmp_path: Path,
 ) -> None:
