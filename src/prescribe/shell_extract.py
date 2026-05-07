@@ -34,6 +34,7 @@ class ShellEnvUpdate:
     value: str | None = None
     entries: tuple[str, ...] = ()
     exported: bool = False
+    conditional: bool = False
 
 
 @dataclass(frozen=True)
@@ -53,8 +54,77 @@ _FISH_ASSIGNMENT_RE = re.compile(
 _XONSH_ASSIGNMENT_RE = re.compile(r"^\$(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>.*)$")
 
 _POSIX_SHELLS = {"bash", "zsh"}
+_PATH_LIST_NAMES = frozenset(
+    {
+        "CDPATH",
+        "DYLD_FALLBACK_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "FPATH",
+        "INFOPATH",
+        "LD_LIBRARY_PATH",
+        "MANPATH",
+        "PATH",
+        "PATHEXT",
+        "PERL5LIB",
+        "PKG_CONFIG_PATH",
+        "PSMODULEPATH",
+        "PYTHONPATH",
+    }
+)
 _DYNAMIC_MARKERS = ("$(", "`", "<(")
 _LineParser = Callable[[str, str, int], ShellEnvUpdate | ShellExtractionIssue | None]
+
+
+@dataclass(frozen=True)
+class _LineContext:
+    parseable_line: str
+    in_function: bool
+    conditional: bool
+
+
+class _ExtractionContext:
+    def __init__(self, *, shell_type: str) -> None:
+        self.shell_type = shell_type
+        self._function_depth = 0
+        self._conditional_depth = 0
+
+    def classify(self, raw_line: str) -> _LineContext:
+        if self.shell_type in _POSIX_SHELLS:
+            return self._classify_posix(raw_line)
+        if self.shell_type == "pwsh":
+            return self._classify_pwsh(raw_line)
+        return _LineContext(parseable_line=raw_line, in_function=False, conditional=False)
+
+    def _classify_posix(self, raw_line: str) -> _LineContext:
+        stripped = raw_line.strip()
+        was_in_function = self._function_depth > 0
+        conditional = self._conditional_depth > 0
+
+        if was_in_function:
+            self._function_depth = max(0, self._function_depth + _count_shell_blocks(stripped))
+            return _LineContext(parseable_line=raw_line, in_function=True, conditional=conditional)
+
+        if _starts_posix_function(stripped):
+            self._function_depth = max(0, self._function_depth + _count_shell_blocks(stripped))
+            return _LineContext(parseable_line=raw_line, in_function=True, conditional=conditional)
+
+        parseable_line = _strip_posix_case_prefix(raw_line)
+        if stripped.startswith(("if ", "if\t", "case ", "case\t", "for ", "for\t", "while ", "while\t")):
+            self._conditional_depth += 1
+        if stripped in {"fi", "esac", "done"} or stripped.startswith(("fi ", "esac ", "done ")):
+            self._conditional_depth = max(0, self._conditional_depth - 1)
+        return _LineContext(parseable_line=parseable_line, in_function=False, conditional=conditional)
+
+    def _classify_pwsh(self, raw_line: str) -> _LineContext:
+        stripped = raw_line.strip()
+        was_in_function = self._function_depth > 0
+        if stripped.lower().startswith("function "):
+            self._function_depth = max(0, self._function_depth + _count_braces(stripped))
+            return _LineContext(parseable_line=raw_line, in_function=True, conditional=False)
+        if was_in_function:
+            self._function_depth = max(0, self._function_depth + _count_braces(stripped))
+            return _LineContext(parseable_line=raw_line, in_function=True, conditional=False)
+        return _LineContext(parseable_line=raw_line, in_function=False, conditional=False)
 
 
 def extract_shell_env(text: str, *, shell_type: str = "bash") -> ShellExtraction:
@@ -66,16 +136,20 @@ def extract_shell_env(text: str, *, shell_type: str = "bash") -> ShellExtraction
     """
 
     parser = _parser_for_shell(shell_type)
+    context = _ExtractionContext(shell_type=shell_type)
     updates: list[ShellEnvUpdate] = []
     issues: list[ShellExtractionIssue] = []
     for line_number, raw_line in enumerate(text.splitlines(), start=1):
-        parsed = parser(raw_line, shell_type, line_number)
+        line_context = context.classify(raw_line)
+        if line_context.in_function:
+            continue
+        parsed = parser(line_context.parseable_line, shell_type, line_number)
         if parsed is None:
             continue
         if isinstance(parsed, ShellExtractionIssue):
             issues.append(parsed)
         else:
-            updates.append(parsed)
+            updates.append(_with_context(parsed, conditional=line_context.conditional, raw=raw_line))
     return ShellExtraction(updates=tuple(updates), issues=tuple(issues))
 
 
@@ -133,6 +207,8 @@ def _parse_posix_line(raw_line: str, shell_type: str, line_number: int) -> Shell
         return None
     name = match.group("name")
     raw_value = _strip_inline_comment(match.group("value").strip())
+    if raw_value.startswith("("):
+        return _issue(shell_type, line_number, raw_line, "array assignment is unsupported")
     value = _parse_scalar(raw_value)
     if value is None or _is_dynamic(value):
         return _issue(shell_type, line_number, raw_line, "dynamic or unsupported assignment")
@@ -403,7 +479,45 @@ def _is_dynamic(value: str) -> bool:
 
 
 def _is_path_name(name: str) -> bool:
-    return name.upper().endswith("PATH")
+    return name.upper() in _PATH_LIST_NAMES
+
+
+def _with_context(update: ShellEnvUpdate, *, conditional: bool, raw: str) -> ShellEnvUpdate:
+    if not conditional and update.raw == raw:
+        return update
+    return ShellEnvUpdate(
+        name=update.name,
+        operation=update.operation,
+        shell_type=update.shell_type,
+        line_number=update.line_number,
+        raw=raw,
+        value=update.value,
+        entries=update.entries,
+        exported=update.exported,
+        conditional=conditional,
+    )
+
+
+def _starts_posix_function(stripped: str) -> bool:
+    if not stripped or stripped.startswith("#"):
+        return False
+    return bool(re.match(r"^(function\s+)?[A-Za-z_][A-Za-z0-9_-]*(\s*\(\))?\s*\{", stripped))
+
+
+def _count_shell_blocks(stripped: str) -> int:
+    return stripped.count("{") - stripped.count("}")
+
+
+def _count_braces(stripped: str) -> int:
+    return stripped.count("{") - stripped.count("}")
+
+
+def _strip_posix_case_prefix(raw_line: str) -> str:
+    stripped = raw_line.strip()
+    match = re.match(r"^(?:\*|[A-Za-z0-9_./:@%+-]+)\)\s*(?P<body>.+?)\s*(?:;;)?$", stripped)
+    if match is None:
+        return raw_line
+    return match.group("body")
 
 
 def _issue(shell_type: str, line_number: int, raw: str, reason: str) -> ShellExtractionIssue:

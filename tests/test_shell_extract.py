@@ -64,6 +64,54 @@ PYTHONPATH="$HOME/src:$HOME/lib"
     ]
 
 
+def test_extract_posix_does_not_treat_arbitrary_path_suffix_as_path_list() -> None:
+    result = extract_shell_env('export KEYRING_WIN_PATH="/mnt/e/keyring.exe"\n', shell_type="zsh")
+
+    assert len(result.updates) == 1
+    assert result.updates[0].operation == "set"
+    assert result.updates[0].value == "/mnt/e/keyring.exe"
+
+
+def test_extract_posix_ignores_function_bodies() -> None:
+    result = extract_shell_env(
+        """
+export TOP_LEVEL=1
+gitbackup() {
+  local root
+  root=$(git rev-parse --show-toplevel)
+  export FUNCTION_ONLY=1
+}
+export AFTER=2
+""",
+        shell_type="zsh",
+    )
+
+    assert [(update.name, update.value) for update in result.updates] == [
+        ("TOP_LEVEL", "1"),
+        ("AFTER", "2"),
+    ]
+    assert result.issues == ()
+
+
+def test_extract_posix_marks_guarded_case_path_updates_conditional() -> None:
+    result = extract_shell_env(
+        """
+case ":$PATH:" in
+  *":/opt/homebrew/bin:"*) ;;
+  *) PATH="/opt/homebrew/bin:$PATH" ;;
+esac
+""",
+        shell_type="zsh",
+    )
+
+    assert len(result.updates) == 1
+    update = result.updates[0]
+    assert update.name == "PATH"
+    assert update.operation == "path_prepend"
+    assert update.entries == ("/opt/homebrew/bin",)
+    assert update.conditional is True
+
+
 def test_extract_posix_reports_dynamic_assignments_without_guessing() -> None:
     result = extract_shell_env(
         """
@@ -77,6 +125,14 @@ export TOKEN="$(op read token)"
     assert len(result.issues) == 1
     assert result.issues[0].line_number == 3
     assert result.issues[0].reason == "dynamic or unsupported assignment"
+
+
+def test_extract_posix_reports_array_assignments_without_guessing() -> None:
+    result = extract_shell_env('ZSHRC_ALIAS_MANIFEST=("${(@k)aliases}")\n', shell_type="zsh")
+
+    assert result.updates == ()
+    assert len(result.issues) == 1
+    assert result.issues[0].reason == "array assignment is unsupported"
 
 
 def test_extract_posix_strips_comments_outside_quotes_only() -> None:
@@ -135,6 +191,26 @@ def test_extract_pwsh_and_cmd_path_mutations() -> None:
     assert pwsh.updates[0].entries == ("C:\\Tools\\bin",)
     assert cmd.updates[0].operation == "path_append"
     assert cmd.updates[0].entries == ("C:\\Tools\\bin",)
+
+
+def test_extract_pwsh_ignores_function_bodies() -> None:
+    result = extract_shell_env(
+        """
+$env:TOP_LEVEL = '1'
+function Update-SessionEnvironment {
+  $env:PATH = $paths -join ';'
+  $env:USERNAME = $userName
+}
+$env:AFTER = '2'
+""",
+        shell_type="pwsh",
+    )
+
+    assert [(update.name, update.value) for update in result.updates] == [
+        ("TOP_LEVEL", "1"),
+        ("AFTER", "2"),
+    ]
+    assert result.issues == ()
 
 
 def test_extract_shell_env_file_infers_shell_type(tmp_path: Path) -> None:
