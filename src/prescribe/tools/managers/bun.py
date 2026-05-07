@@ -8,7 +8,7 @@ from prescribe.tools.common import InspectionContext, env_path, node_modules_ins
 from prescribe.tools.models import ManagerResult
 
 
-def inspect(ctx: InspectionContext, path_entries: list[Path]) -> ManagerResult:
+def inspect(ctx: InspectionContext, path_entries: list[Path], names: frozenset[str] | None = None) -> ManagerResult:
     install = env_path(ctx, "BUN_INSTALL") or ctx.home / ".bun"
     cache_base = env_path(ctx, "XDG_CACHE_HOME") or ctx.home
     global_dir = env_path(ctx, "BUN_INSTALL_GLOBAL_DIR") or install / "install" / "global"

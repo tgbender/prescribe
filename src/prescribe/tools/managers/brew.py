@@ -8,7 +8,7 @@ from prescribe.tools.common import InspectionContext, iter_dirs, normalize_path,
 from prescribe.tools.models import InstalledTool, ManagerResult, ToolScope
 
 
-def inspect(ctx: InspectionContext, path_entries: list[Path]) -> ManagerResult:
+def inspect(ctx: InspectionContext, path_entries: list[Path], names: frozenset[str] | None = None) -> ManagerResult:
     prefix = _prefix(ctx)
     cellar = prefix / "Cellar"
     return ManagerResult(

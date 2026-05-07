@@ -9,17 +9,23 @@ from prescribe.tools.common import (
     candidate_paths,
     case_key,
     context,
-    is_executable,
     iter_executables,
     path_entries,
     path_sources,
     tool_name,
 )
 from prescribe.tools.managers import brew, bun, mise, pnpm, scoop, uv
-from prescribe.tools.models import InstalledTool, ToolCandidate, ToolInventory, ToolManager, ToolPathSource
+from prescribe.tools.models import (
+    InstalledTool,
+    ManagerInspector,
+    ToolCandidate,
+    ToolInventory,
+    ToolManager,
+    ToolPathSource,
+)
 
 _DEFAULT_MANAGERS: tuple[ToolManager, ...] = ("uv", "bun", "pnpm", "mise", "scoop", "brew")
-_MANAGER_RESOLVERS = {
+_MANAGER_RESOLVERS: dict[str, ManagerInspector] = {
     "uv": uv.inspect,
     "bun": bun.inspect,
     "pnpm": pnpm.inspect,
@@ -39,6 +45,7 @@ def inspect_tool_paths(
     include_path: bool = True,
     include_transitive: bool = False,
     attribute_installed_executables: bool = False,
+    backends: dict[str, ManagerInspector] | None = None,
 ) -> ToolInventory:
     """Inspect tool-manager paths and executable candidates without subprocesses.
 
@@ -46,23 +53,28 @@ def inspect_tool_paths(
     candidate bin directories. When omitted, existing bin directories are scanned
     once and known manager install metadata is included.
 
-    ``attribute_installed_executables`` performs bounded recursive searches under
-    installed manager roots to attribute shim candidates like ``rg`` back to an
-    installed package like ``ripgrep``. It is useful for explanations, but it is
-    deliberately opt-in because some manager installs contain large virtualenvs
-    or package trees.
+    ``backends`` can override or add manager inspectors. Each backend owns its
+    manager-specific metadata lookup and receives targeted ``names`` so it can
+    avoid subprocesses and broad directory walks.
+
+    ``attribute_installed_executables`` is retained for compatibility. Tool
+    attribution now comes from manager metadata and backend-owned targeted
+    search, not inventory-level recursive install scans.
     """
 
     ctx = context(env=env, home=home, platform=platform)
     selected = tuple(managers or _DEFAULT_MANAGERS)
     target_names = frozenset(names) if names is not None else None
     entries = path_entries(ctx)
+    resolvers = dict(_MANAGER_RESOLVERS)
+    if backends:
+        resolvers.update(backends)
 
     sources: list[ToolPathSource] = []
     installed: list[InstalledTool] = []
     issues: list[str] = []
     for manager in selected:
-        result = _MANAGER_RESOLVERS[manager](ctx, entries)
+        result = resolvers[manager](ctx, entries, target_names)
         sources.extend(result.sources)
         installed.extend(result.installed)
         issues.extend(result.issues)
@@ -76,7 +88,6 @@ def inspect_tool_paths(
         path_entries=entries,
         names=target_names,
         ctx=ctx,
-        attribute_installed_executables=attribute_installed_executables,
     )
     duplicates = {name: values for name, values in candidates.items() if len(values) > 1}
     return ToolInventory(
@@ -96,12 +107,11 @@ def _candidate_map(
     path_entries: list[Path],
     names: frozenset[str] | None,
     ctx: InspectionContext,
-    attribute_installed_executables: bool,
 ) -> dict[str, tuple[ToolCandidate, ...]]:
     by_path = {case_key(entry): index for index, entry in enumerate(path_entries)}
     active_by_name = _active_by_name(path_entries, names, ctx)
     installed_by_path = {case_key(tool.path): tool for tool in installed}
-    executable_cache: dict[tuple[str, str], InstalledTool | None] = {}
+    installed_by_entrypoint = _installed_by_entrypoint(installed)
     candidates: dict[str, list[ToolCandidate]] = {}
     for source in sources:
         if not source.exists:
@@ -110,14 +120,8 @@ def _candidate_map(
             name = tool_name(candidate, ctx)
             active = case_key(candidate) == case_key(active_by_name.get(name, Path()))
             installed_tool = _nearest_installed(candidate, installed_by_path)
-            if installed_tool is None and attribute_installed_executables and source.manager != "path":
-                installed_tool = _find_installed_by_executable(
-                    installed=installed,
-                    manager=source.manager,
-                    name=name,
-                    ctx=ctx,
-                    cache=executable_cache,
-                )
+            if installed_tool is None and source.manager != "path":
+                installed_tool = installed_by_entrypoint.get((source.manager, name.casefold()))
             source_label = (
                 source.manager if source.manager != "path" else f"path[{by_path.get(case_key(source.path), -1)}]"
             )
@@ -134,44 +138,12 @@ def _candidate_map(
     return {name: tuple(_dedupe_candidates(values)) for name, values in sorted(candidates.items())}
 
 
-def _find_installed_by_executable(
-    *,
-    installed: tuple[InstalledTool, ...],
-    manager: str,
-    name: str,
-    ctx: InspectionContext,
-    cache: dict[tuple[str, str], InstalledTool | None],
-) -> InstalledTool | None:
-    key = (manager, name)
-    if key in cache:
-        return cache[key]
+def _installed_by_entrypoint(installed: tuple[InstalledTool, ...]) -> dict[tuple[str, str], InstalledTool]:
+    result: dict[tuple[str, str], InstalledTool] = {}
     for tool in installed:
-        if tool.manager != manager:
-            continue
-        if _installed_contains_executable(tool.path, name, ctx):
-            cache[key] = tool
-            return tool
-    cache[key] = None
-    return None
-
-
-def _installed_contains_executable(root: Path, name: str, ctx: InspectionContext) -> bool:
-    stack = [(root, 0)]
-    while stack:
-        directory, depth = stack.pop()
-        for candidate in candidate_paths(directory, name, ctx):
-            if candidate.is_file() and is_executable(candidate, ctx):
-                return True
-        if depth >= 4:
-            continue
-        try:
-            children = list(directory.iterdir())
-        except OSError:
-            continue
-        for child in children:
-            if child.is_dir() and not child.name.startswith("."):
-                stack.append((child, depth + 1))
-    return False
+        for entrypoint in tool.entrypoints:
+            result.setdefault((tool.manager, entrypoint.name.casefold()), tool)
+    return result
 
 
 def _active_by_name(path_entries: list[Path], names: frozenset[str] | None, ctx: InspectionContext) -> dict[str, Path]:

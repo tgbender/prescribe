@@ -8,7 +8,7 @@ from prescribe.tools.common import InspectionContext, env_path, expand_home, nod
 from prescribe.tools.models import ManagerResult
 
 
-def inspect(ctx: InspectionContext, path_entries: list[Path]) -> ManagerResult:
+def inspect(ctx: InspectionContext, path_entries: list[Path], names: frozenset[str] | None = None) -> ManagerResult:
     home = env_path(ctx, "PNPM_HOME") or _data_dir(ctx)
     global_bin = _config_path(ctx, "global-bin-dir") or home / "bin"
     global_dir = _config_path(ctx, "global-dir") or home / "global"

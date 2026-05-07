@@ -55,7 +55,10 @@ from prescribe.spec import (
 from prescribe.state import EventRecord, RunRecord, SnapshotRecord, StateStore
 from prescribe.tools import (
     InstalledTool,
+    ManagerInspector,
+    ManagerResult,
     ToolCandidate,
+    ToolEntrypoint,
     ToolInventory,
     ToolPathSource,
     inspect_tool_paths,
@@ -128,7 +131,10 @@ __all__ = [
     "StateStore",
     # tools
     "InstalledTool",
+    "ManagerInspector",
+    "ManagerResult",
     "ToolCandidate",
+    "ToolEntrypoint",
     "ToolInventory",
     "ToolPathSource",
     "inspect_tool_paths",

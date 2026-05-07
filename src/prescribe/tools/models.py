@@ -4,10 +4,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, Protocol
 
 ToolManager = Literal["uv", "bun", "pnpm", "mise", "scoop", "brew"]
 ToolScope = Literal["active", "candidate", "intentional", "dependency", "unknown"]
+
+
+class ManagerInspector(Protocol):
+    """Read-only manager backend hook used by inventory inspection."""
+
+    def __call__(
+        self,
+        ctx: Any,
+        path_entries: list[Path],
+        names: frozenset[str] | None = None,
+    ) -> ManagerResult: ...
 
 
 @dataclass(frozen=True)
@@ -22,6 +33,15 @@ class ToolPathSource:
 
 
 @dataclass(frozen=True)
+class ToolEntrypoint:
+    """A manager-known executable exposed by an installed tool."""
+
+    name: str
+    path: Path | None = None
+    source: str = "metadata"
+
+
+@dataclass(frozen=True)
 class InstalledTool:
     """A manager-level installed tool or package."""
 
@@ -30,6 +50,7 @@ class InstalledTool:
     path: Path
     scope: ToolScope = "unknown"
     version: str | None = None
+    entrypoints: tuple[ToolEntrypoint, ...] = ()
 
 
 @dataclass(frozen=True)

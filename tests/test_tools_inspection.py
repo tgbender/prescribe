@@ -6,7 +6,8 @@ import os
 import stat
 from pathlib import Path
 
-from prescribe import inspect_tool_paths
+from prescribe import InstalledTool, ManagerResult, ToolEntrypoint, ToolPathSource, inspect_tool_paths
+from prescribe.tools.managers.mise import MiseToolInstall, register_tool_search
 
 
 def _exe(path: Path) -> Path:
@@ -22,6 +23,12 @@ def test_uv_targeted_lookup_uses_tool_bin_override(tmp_path: Path) -> None:
     tool_dir = tmp_path / "uv-tools"
     _exe(bin_dir / "ruff.exe")
     (tool_dir / "ruff").mkdir(parents=True)
+    (tool_dir / "ruff" / "uv-receipt.toml").write_text(
+        '[tool]\nentrypoints = [{ name = "ruff", install-path = "'
+        + str(bin_dir / "ruff.exe").replace("\\", "/")
+        + '" }]\n',
+        encoding="utf-8",
+    )
     env = {
         "USERPROFILE": str(home),
         "PATH": str(bin_dir),
@@ -35,6 +42,7 @@ def test_uv_targeted_lookup_uses_tool_bin_override(tmp_path: Path) -> None:
     assert [tool.name for tool in report.installed] == ["ruff"]
     assert report.tools["ruff"][0].path == bin_dir / "ruff.exe"
     assert report.tools["ruff"][0].active is True
+    assert report.tools["ruff"][0].installed_name == "ruff"
     assert report.sources[0].kind == "tool-bin"
 
 
@@ -55,12 +63,11 @@ def test_mise_reads_manifest_for_intentional_installs(tmp_path: Path) -> None:
     assert report.tools["rg"][0].active is True
 
 
-def test_targeted_lookup_attributes_shims_to_installed_executables(tmp_path: Path) -> None:
+def test_compat_attribution_flag_uses_metadata_not_recursive_search(tmp_path: Path) -> None:
     home = tmp_path / "home"
     data = tmp_path / "data"
     installs = data / "mise" / "installs"
-    ripgrep_bin = installs / "ripgrep" / "15.1.0" / "pkg"
-    _exe(ripgrep_bin / "rg.exe")
+    (installs / "ripgrep" / "15.1.0" / "pkg").mkdir(parents=True)
     (installs / ".mise-installs.toml").write_text('[ripgrep]\nshort = "ripgrep"\n', encoding="utf-8")
     shims = data / "mise" / "shims"
     _exe(shims / "rg.exe")
@@ -75,11 +82,11 @@ def test_targeted_lookup_attributes_shims_to_installed_executables(tmp_path: Pat
         attribute_installed_executables=True,
     )
 
-    assert report.tools["rg"][0].installed_name == "ripgrep"
-    assert report.tools["rg"][0].scope == "intentional"
+    assert report.tools["rg"][0].installed_name is None
+    assert report.tools["rg"][0].scope == "active"
 
 
-def test_targeted_lookup_does_not_recursively_attribute_shims_by_default(tmp_path: Path) -> None:
+def test_targeted_lookup_attributes_mise_shims_from_tool_specific_metadata(tmp_path: Path) -> None:
     home = tmp_path / "home"
     data = tmp_path / "data"
     installs = data / "mise" / "installs"
@@ -92,8 +99,8 @@ def test_targeted_lookup_does_not_recursively_attribute_shims_by_default(tmp_pat
 
     report = inspect_tool_paths(["rg"], managers=["mise"], env=env, home=home, platform="win32")
 
-    assert report.tools["rg"][0].installed_name is None
-    assert report.tools["rg"][0].scope == "active"
+    assert report.tools["rg"][0].installed_name == "ripgrep"
+    assert report.tools["rg"][0].scope == "intentional"
 
 
 def test_targeted_lookup_does_not_attribute_path_entries_by_executable_name(tmp_path: Path) -> None:
@@ -145,6 +152,11 @@ def test_scoop_resolves_local_roots_and_shims(tmp_path: Path) -> None:
     root = tmp_path / "scoop"
     shims = root / "shims"
     (root / "apps" / "ripgrep" / "current").mkdir(parents=True)
+    shims.mkdir(parents=True)
+    (shims / "rg.shim").write_text(
+        'path = "' + str(root / "apps" / "ripgrep" / "current" / "rg.exe") + '"\n',
+        encoding="utf-8",
+    )
     _exe(shims / "rg.exe")
     env = {
         "USERPROFILE": str(home),
@@ -159,6 +171,68 @@ def test_scoop_resolves_local_roots_and_shims(tmp_path: Path) -> None:
     assert [(tool.name, tool.manager, tool.scope) for tool in report.installed] == [("ripgrep", "scoop", "intentional")]
     assert report.tools["rg"][0].path == shims / "rg.exe"
     assert report.tools["rg"][0].active is True
+    assert report.tools["rg"][0].installed_name == "ripgrep"
+
+
+def test_custom_manager_backends_are_injectable(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    bin_dir = tmp_path / "custom-bin"
+    tool_dir = tmp_path / "custom-tool"
+    _exe(bin_dir / "custom")
+    env = {"HOME": str(home), "PATH": str(bin_dir)}
+
+    def inspect_custom(ctx: object, entries: list[Path], names: frozenset[str] | None = None) -> ManagerResult:
+        assert names == frozenset({"custom"})
+        return ManagerResult(
+            sources=(ToolPathSource("custom", "bin", bin_dir, True, True),),
+            installed=(
+                InstalledTool(
+                    name="custom-package",
+                    manager="custom",
+                    path=tool_dir,
+                    scope="intentional",
+                    entrypoints=(ToolEntrypoint(name="custom", path=bin_dir / "custom"),),
+                ),
+            ),
+        )
+
+    report = inspect_tool_paths(
+        ["custom"],
+        managers=["custom"],  # type: ignore[list-item]
+        backends={"custom": inspect_custom},
+        env=env,
+        home=home,
+        platform="linux",
+    )
+
+    assert report.tools["custom"][0].installed_name == "custom-package"
+
+
+def test_mise_tool_search_backends_are_injectable(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    data = tmp_path / "data"
+    installs = data / "mise" / "installs"
+    tool_root = installs / "custom-tool" / "1.0.0"
+    shims = data / "mise" / "shims"
+    _exe(shims / "customcmd.exe")
+    installs.mkdir(parents=True)
+    (installs / ".mise-installs.toml").write_text('[custom-tool]\nshort = "custom-tool"\n', encoding="utf-8")
+    env = {"USERPROFILE": str(home), "PATH": str(shims), "XDG_DATA_HOME": str(data), "PATHEXT": ".EXE;.CMD"}
+
+    def search_custom(
+        install: MiseToolInstall,
+        names: frozenset[str] | None,
+        ctx: object,
+    ) -> tuple[ToolEntrypoint, ...]:
+        assert install.name == "custom-tool"
+        assert names == frozenset({"customcmd"})
+        return (ToolEntrypoint(name="customcmd", path=tool_root / "customcmd.exe", source="test"),)
+
+    register_tool_search("custom-tool", search_custom)
+
+    report = inspect_tool_paths(["customcmd"], managers=["mise"], env=env, home=home, platform="win32")
+
+    assert report.tools["customcmd"][0].installed_name == "custom-tool"
 
 
 def test_pnpm_uses_home_bin_and_lists_global_packages(tmp_path: Path) -> None:

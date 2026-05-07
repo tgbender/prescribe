@@ -3,8 +3,10 @@
 from prescribe.tools.inventory import inspect_tool_paths
 from prescribe.tools.models import (
     InstalledTool,
+    ManagerInspector,
     ManagerResult,
     ToolCandidate,
+    ToolEntrypoint,
     ToolInventory,
     ToolManager,
     ToolPathSource,
@@ -13,8 +15,10 @@ from prescribe.tools.models import (
 
 __all__ = [
     "InstalledTool",
+    "ManagerInspector",
     "ManagerResult",
     "ToolCandidate",
+    "ToolEntrypoint",
     "ToolInventory",
     "ToolManager",
     "ToolPathSource",
