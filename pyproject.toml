@@ -1,6 +1,6 @@
 [project]
 name = "prescribe"
-version = "0.3.0"
+version = "0.3.1"
 description = "Declarative dotfile, shell, and environment configuration management."
 authors = [{ name = "Travis Bender" }]
 readme = "README.md"
