@@ -178,6 +178,19 @@ def test_brew_filters_transitive_dependencies_by_default(tmp_path: Path) -> None
     assert "fd" in report.tools
 
 
+def test_brew_does_not_guess_unix_prefix_on_windows(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    env = {"USERPROFILE": str(home), "PATH": ""}
+
+    report = inspect_installed_tools(managers=["brew"], env=env, home=home, platform="win32")
+    candidates = inspect_tool_paths(["brew"], managers=["brew"], env=env, home=home, platform="win32")
+
+    assert report.installed == ()
+    assert report.sources == ()
+    assert candidates.sources == ()
+    assert candidates.tools == {}
+
+
 def test_scoop_resolves_local_roots_and_shims(tmp_path: Path) -> None:
     home = tmp_path / "home"
     root = tmp_path / "scoop"

@@ -10,6 +10,8 @@ from prescribe.tools.models import InstalledTool, ManagerResult, ToolScope
 
 def inspect(ctx: InspectionContext, path_entries: list[Path], names: frozenset[str] | None = None) -> ManagerResult:
     prefix = _prefix(ctx)
+    if prefix is None:
+        return ManagerResult()
     cellar = prefix / "Cellar"
     return ManagerResult(
         sources=(
@@ -20,9 +22,11 @@ def inspect(ctx: InspectionContext, path_entries: list[Path], names: frozenset[s
     )
 
 
-def _prefix(ctx: InspectionContext) -> Path:
+def _prefix(ctx: InspectionContext) -> Path | None:
     if value := ctx.env.get("HOMEBREW_PREFIX"):
         return normalize_path(Path(value))
+    if ctx.is_windows:
+        return None
     if ctx.is_macos and Path("/opt/homebrew/bin/brew").exists():
         return Path("/opt/homebrew")
     if ctx.is_linux:
