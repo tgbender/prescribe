@@ -6,6 +6,7 @@
 
 - `validate-dir`, `status-dir`, and `apply-dir` now resolve file `priority` winners before checking ownership claims, so lower-priority alternatives across specs are skipped instead of reported as claim conflicts.
 - `validate-dir --json --explain-skips` now reports priority alternatives once per spec, with the lower-priority target marked inactive and annotated with the winning target.
+- `apply-dir` now preflights every spec before writing, so a later conflict or error cannot leave earlier specs partially applied.
 - Rolling back an asset mirror destination directory now restores displaced child backups created by `replace = true`.
 
 ## 0.3.0
