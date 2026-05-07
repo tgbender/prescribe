@@ -26,6 +26,7 @@ from prescribe.state import NetworkStatePathError, StateStore
 app = typer.Typer(help="Manage declarative config file changes.", add_completion=False)
 
 DIRECT_CHILD_SPEC_HELP = "Directory containing direct child *.toml specs; nested directories are ignored."
+DOCS_TOPIC_HELP = "Topic to explain. Run without a topic to list available docs."
 
 _STATUS_COLORS = {
     "applied": typer.colors.GREEN,
@@ -35,6 +36,250 @@ _STATUS_COLORS = {
     "would change": typer.colors.CYAN,
     "conflict": typer.colors.YELLOW,
     "error": typer.colors.RED,
+}
+
+def _text(*parts: str) -> str:
+    return " ".join(parts)
+
+
+_DOC_TOPICS: dict[str, dict[str, object]] = {
+    "overview": {
+        "title": "Overview",
+        "summary": _text(
+            "Prescribe applies declarative TOML specs to files, shell startup blocks,",
+            "assets, and environment state.",
+        ),
+        "body": [
+            _text(
+                "A spec describes desired changes. Prescribe plans those changes, writes them,",
+                "and records enough state to detect drift and undo managed changes later.",
+            ),
+            _text(
+                "The normal workflow is: validate a spec, inspect status or a plan, apply it,",
+                "then use status, list, backups, or rollback when you need to inspect or recover state.",
+            ),
+            "Command help is intentionally short. Use `prescribe docs TOPIC` for examples and terminology.",
+        ],
+        "examples": [
+            "prescribe validate dotfiles.toml --plan",
+            "prescribe status dotfiles.toml --diff",
+            "prescribe apply dotfiles.toml",
+            "prescribe docs rollback",
+        ],
+    },
+    "specs": {
+        "title": "Specs And Targets",
+        "summary": _text(
+            "Specs are TOML files. Targets are the files, env vars, shell blocks,",
+            "or assets selected from a spec.",
+        ),
+        "body": [
+            _text(
+                "`SPEC` is a filesystem path to one TOML spec. Relative paths are resolved",
+                "by the shell and spec loader from the current working directory.",
+            ),
+            _text(
+                "A matching target is a target that passes filters such as tags, platform,",
+                "architecture, machine, command checks, and env checks.",
+            ),
+            "Tags are comma-separated on the CLI: `--tags base,work`. Repeating `--tags` is not the intended syntax.",
+        ],
+        "examples": [
+            "prescribe validate ./prescribe.toml --explain-skips",
+            "prescribe apply ./prescribe.toml --tags base,work",
+            "prescribe status ./prescribe.toml --skip-tags experimental",
+        ],
+    },
+    "dirs": {
+        "title": "Directory Commands",
+        "summary": "Directory commands process direct child *.toml specs in sorted path order.",
+        "body": [
+            "`DIRECTORY` is scanned only for direct child `*.toml` files. Nested directories are ignored.",
+            _text(
+                "`list-specs DIRECTORY` shows the exact specs and order.",
+                "The order is the sorted filesystem path order returned by Prescribe's spec discovery.",
+            ),
+            "`apply-dir` first preflights the directory so conflicts can stop the run before writes begin.",
+        ],
+        "examples": [
+            "prescribe list-specs specs",
+            "prescribe validate-dir specs --plan --explain-skips",
+            "prescribe apply-dir specs --dry-run",
+            "prescribe apply-dir specs",
+        ],
+    },
+    "apply": {
+        "title": "Apply",
+        "summary": "Apply writes the desired state from a spec and records ownership, snapshots, and undo history.",
+        "body": [
+            _text(
+                "`apply SPEC` processes one spec.",
+                "`apply-dir DIRECTORY` processes every direct child spec in that directory.",
+            ),
+            _text(
+                "`--dry-run` plans without writing. `--tags` and `--skip-tags` filter targets.",
+                "`--explain-skips` shows why skipped targets did not run.",
+            ),
+            _text(
+                "`--on-claim-conflict take` changes the durable ownership record for overlapping",
+                "managed keys, blocks, or paths. It does not by itself mean overwrite external file drift.",
+            ),
+        ],
+        "examples": [
+            "prescribe apply dotfiles.toml --dry-run",
+            "prescribe apply dotfiles.toml --tags base",
+            "prescribe apply-dir specs --on-claim-conflict prompt",
+        ],
+    },
+    "status": {
+        "title": "Status",
+        "summary": "Status compares the current system to a spec without writing.",
+        "body": [
+            _text(
+                "`status SPEC` is a read-only sync check. It reports whether each target is in sync,",
+                "would change, is skipped, or has a conflict.",
+            ),
+            "`--diff` includes unified diffs for file-like targets that would change.",
+            "Use status when you want to know what apply would do against the real state database.",
+        ],
+        "examples": [
+            "prescribe status dotfiles.toml",
+            "prescribe status dotfiles.toml --diff",
+            "prescribe status-dir specs --tags windows --explain-skips",
+        ],
+    },
+    "validate": {
+        "title": "Validate",
+        "summary": "Validate parses specs and reports target selection without touching managed state.",
+        "body": [
+            "`validate SPEC` checks one spec. `validate-dir DIRECTORY` checks every direct child spec in a directory.",
+            _text(
+                "`--plan` adds a read-only plan showing whether matching targets would create, update,",
+                "or remain unchanged.",
+            ),
+            _text(
+                "`validate --plan` uses a temporary state database, so it is useful for spec correctness",
+                "and previews. Use `status` when you want the current managed-state view.",
+            ),
+        ],
+        "examples": [
+            "prescribe validate dotfiles.toml",
+            "prescribe validate dotfiles.toml --plan --diff",
+            "prescribe validate-dir specs --plan --explain-skips",
+        ],
+    },
+    "rollback": {
+        "title": "Rollback",
+        "summary": _text(
+            "Rollback applies Prescribe's recorded undo history for one managed file,",
+            "asset, displaced file, or mirror root.",
+        ),
+        "body": [
+            _text(
+                "`TARGET` is a filesystem path. It can be absolute or relative;",
+                "Prescribe normalizes it before matching recorded state.",
+            ),
+            _text(
+                "Default rollback undoes Prescribe-managed changes while preserving unrelated edits where possible.",
+                "It is not a repair-to-current-spec command.",
+            ),
+            _text(
+                "`--original` restores managed content to the state from before Prescribe first managed it.",
+                "If Prescribe created the file, it removes that file.",
+            ),
+            _text(
+                "`--on-conflict` applies when rollback finds outside edits inside managed content.",
+                "`prompt` asks per entry in a TTY, `revert` applies the recorded undo anyway,",
+                "and `ignore` leaves the edited entry alone.",
+            ),
+            _text(
+                "For asset mirrors, pass the mirror root to restore all displaced extra files,",
+                "or pass one displaced extra file path to restore just that file.",
+            ),
+        ],
+        "examples": [
+            "prescribe rollback ~/.gitconfig --dry-run",
+            "prescribe rollback ~/.gitconfig",
+            "prescribe rollback ~/.gitconfig --on-conflict revert",
+            "prescribe rollback ~/.config/mytool --original",
+        ],
+    },
+    "backups": {
+        "title": "Recovery Backups",
+        "summary": _text(
+            "Recovery backups are byte-for-byte copies captured before Prescribe overwrites",
+            "or deletes existing files.",
+        ),
+        "body": [
+            "`backups` is an audit command. It lists recovery backups, not every internal asset-displacement backup.",
+            _text(
+                "`TARGET` is optional. When provided, it is a filesystem path filter;",
+                "Prescribe normalizes the path before matching the recorded target path.",
+            ),
+            _text(
+                "Recovery backups are broader than rollback history. They capture the bytes that existed",
+                "immediately before apply, asset writes, rollback writes, and rollback-original deletes.",
+            ),
+        ],
+        "examples": [
+            "prescribe backups",
+            "prescribe backups ~/.gitconfig",
+            "prescribe backups --json",
+        ],
+    },
+    "claims": {
+        "title": "Claims And Conflicts",
+        "summary": "Claims record which spec owns a managed file/key/block/asset address.",
+        "body": [
+            "Claims prevent two specs from silently managing the same address.",
+            _text(
+                "`--on-claim-conflict fail` refuses to continue. `prompt` asks in a TTY.",
+                "`take` updates the durable ownership record to the current spec.",
+            ),
+            _text(
+                "Claim conflicts are different from rollback content conflicts.",
+                "Claim conflicts are about ownership records; rollback content conflicts are about outside edits",
+                "inside managed content.",
+            ),
+        ],
+        "examples": [
+            "prescribe apply specs/base.toml --on-claim-conflict fail",
+            "prescribe apply specs/work.toml --on-claim-conflict take",
+            "prescribe validate-dir specs --explain-skips",
+        ],
+    },
+    "safety": {
+        "title": "Safety Model",
+        "summary": "Prescribe favors recoverable writes and explicit refusal over destructive filesystem behavior.",
+        "body": [
+            "Mutating commands use a SQLite run lock and durable ownership claims.",
+            "Prescribe refuses unsafe symlink/junction-like paths for managed writes and rollback operations.",
+            "Before overwriting or deleting existing files, Prescribe records recovery backups when possible.",
+            _text(
+                "SQLite state is rejected on network filesystems unless `--allow-network-state`",
+                "or the matching environment override is used.",
+            ),
+        ],
+        "examples": [
+            "prescribe doctor",
+            "prescribe apply dotfiles.toml --dry-run",
+            "prescribe backups --json",
+        ],
+    },
+}
+
+_DOC_ALIASES = {
+    "command": "overview",
+    "commands": "overview",
+    "directory": "dirs",
+    "directories": "dirs",
+    "dir": "dirs",
+    "conflict": "claims",
+    "conflicts": "claims",
+    "recovery": "backups",
+    "backup": "backups",
+    "target": "specs",
+    "targets": "specs",
 }
 
 
@@ -553,6 +798,35 @@ def list_backups(
         typer.echo(f"{kind}  {date}  {r.operation:<24}  {size:<12}  {r.target_path}")
 
 
+@app.command("docs")
+def docs(
+    topic: str | None = typer.Argument(None, metavar="TOPIC", help=DOCS_TOPIC_HELP),
+    output_json: bool = typer.Option(False, "--json", help="Output docs topic as JSON."),
+) -> None:
+    """Show explanations and examples for Prescribe commands and terminology."""
+    topic_key = _resolve_doc_topic(topic)
+    if topic_key is None:
+        if output_json:
+            typer.echo(json.dumps({"topics": _doc_topic_index()}, indent=2))
+            return
+        typer.echo(_render_doc_index())
+        return
+    if topic_key not in _DOC_TOPICS:
+        message = f"unknown docs topic: {topic}"
+        if output_json:
+            typer.echo(json.dumps({"error": message, "topics": _doc_topic_index()}, indent=2))
+        else:
+            typer.echo(f"error: {message}", err=True)
+            typer.echo("Run `prescribe docs` to list topics.", err=True)
+        raise typer.Exit(1)
+
+    payload = _DOC_TOPICS[topic_key]
+    if output_json:
+        typer.echo(json.dumps({"topic": topic_key, **payload}, indent=2))
+        return
+    typer.echo(_render_doc_topic(topic_key, payload))
+
+
 @app.command()
 def doctor(
     output_json: bool = typer.Option(False, "--json", help="Output diagnostics as JSON."),
@@ -832,6 +1106,63 @@ def _print_results(spec_obj: Spec, results: list[OrchestrationResult], *, explai
             typer.style("materialize      ", fg=typer.colors.YELLOW) + err,
             err=True,
         )
+
+
+def _resolve_doc_topic(topic: str | None) -> str | None:
+    if topic is None:
+        return None
+    normalized = topic.strip().lower()
+    return _DOC_ALIASES.get(normalized, normalized)
+
+
+def _doc_topic_index() -> list[dict[str, str]]:
+    return [
+        {
+            "topic": key,
+            "title": str(value["title"]),
+            "summary": str(value["summary"]),
+        }
+        for key, value in _DOC_TOPICS.items()
+    ]
+
+
+def _render_doc_index() -> str:
+    lines = [
+        "Prescribe docs",
+        "",
+        "Run `prescribe docs TOPIC` for explanations and examples.",
+        "",
+        "Topics:",
+    ]
+    for item in _doc_topic_index():
+        lines.append(f"  {item['topic']:<10} {item['summary']}")
+    lines.extend(
+        [
+            "",
+            "Common starting points:",
+            "  prescribe docs specs",
+            "  prescribe docs apply",
+            "  prescribe docs rollback",
+            "  prescribe docs safety",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _render_doc_topic(topic: str, payload: dict[str, object]) -> str:
+    lines = [str(payload["title"]), "", str(payload["summary"]), ""]
+    body = payload.get("body")
+    if isinstance(body, list):
+        lines.append("Details:")
+        lines.extend(f"  - {item}" for item in body)
+        lines.append("")
+    examples = payload.get("examples")
+    if isinstance(examples, list):
+        lines.append("Examples:")
+        lines.extend(f"  {example}" for example in examples)
+        lines.append("")
+    lines.append(f"Topic: {topic}")
+    return "\n".join(lines)
 
 
 def main() -> None:

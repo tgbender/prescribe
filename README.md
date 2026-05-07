@@ -24,10 +24,21 @@ prescribe status-dir specs --diff      # Preview a whole spec directory
 prescribe validate-dir specs --plan    # Validate and plan a whole spec directory
 prescribe list                         # List all managed files
 prescribe backups                      # List recovery backups captured before writes/deletes
+prescribe docs rollback                # Explain a command or concept with examples
 prescribe rollback TARGET              # Undo Prescribe-managed changes for a file or asset target
 ```
 
 All commands accept `--json` for machine-readable output and `--state` (or `PRESCRIBE_STATE` env var) to set the database path.
+
+Use `prescribe docs` for CLI-oriented explanations and examples:
+
+```sh
+prescribe docs
+prescribe docs apply
+prescribe docs rollback
+prescribe docs backups
+prescribe docs safety
+```
 
 `prescribe rollback TARGET` accepts `--on-conflict` (prompt/revert/ignore) and `--original`. `TARGET` is a managed config file, a managed asset file, the original path of a displaced extra asset file, or an asset mirror destination directory. Default rollback applies Prescribe's recorded undo operations while preserving unrelated edits where possible. `--original` restores the target's managed content to its pre-Prescribe baseline; if Prescribe created the file, it removes it.
 For mirrored assets with `replace = true`, rolling back the mirror destination directory restores displaced extra files from managed backup storage.

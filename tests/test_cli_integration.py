@@ -324,6 +324,40 @@ def test_backups_lists_recovery_backups_after_existing_file_apply(run, workdir: 
     assert Path(data[0]["backup_path"]).read_bytes() == b"count = 1\n"
 
 
+def test_docs_lists_topics(run) -> None:
+    result = run("docs")
+
+    assert result.returncode == 0
+    assert "Prescribe docs" in result.stdout
+    assert "rollback" in result.stdout
+    assert "safety" in result.stdout
+
+
+def test_docs_topic_explains_rollback(run) -> None:
+    result = run("docs", "rollback")
+
+    assert result.returncode == 0
+    assert "Rollback" in result.stdout
+    assert "--original" in result.stdout
+    assert "prescribe rollback" in result.stdout
+
+
+def test_docs_alias_and_json_output(run) -> None:
+    result = run("docs", "recovery", "--json")
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["topic"] == "backups"
+    assert data["title"] == "Recovery Backups"
+
+
+def test_docs_unknown_topic_exits_nonzero(run) -> None:
+    result = run("docs", "nope")
+
+    assert result.returncode != 0
+    assert "unknown docs topic" in result.stderr
+
+
 # ---------------------------------------------------------------------------
 # rollback
 # ---------------------------------------------------------------------------
