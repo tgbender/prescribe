@@ -3,6 +3,7 @@ from pathlib import Path
 
 from prescribe.atomic import atomic_write_text, normalize_newlines, preferred_text_newline
 from prescribe.document import Document
+from prescribe.encoding import read_utf8_text
 from prescribe.jsonc import (
     diff_paths,
     modify_text,
@@ -15,7 +16,7 @@ class JsoncAdapter:
     format_name = "jsonc"
 
     def load(self, path: Path) -> Document:
-        text = path.read_text(encoding="utf-8")
+        text = read_utf8_text(path)
         root = parse_jsonc(text) or {}
         tree = parse_tree(text)
         return Document(

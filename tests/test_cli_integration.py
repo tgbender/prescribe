@@ -534,6 +534,30 @@ def test_validate_plan_json_includes_status(run, workdir: Path) -> None:
     assert data["targets"][0]["status"] == "would change"
 
 
+def test_validate_rejects_case_insensitive_path_collision(run, workdir: Path) -> None:
+    spec = workdir / "spec.toml"
+    spec.write_text(
+        "[[files]]\n"
+        "path = 'Foo.toml'\n"
+        "format = 'toml'\n"
+        "[files.data]\n"
+        "a = 1\n"
+        "\n"
+        "[[files]]\n"
+        "path = 'foo.toml'\n"
+        "format = 'toml'\n"
+        "[files.data]\n"
+        "b = 2\n"
+    )
+
+    result = run("validate", "spec.toml")
+
+    assert result.returncode != 0
+    assert "portable path collision" in result.stderr
+    assert "Foo.toml" in result.stderr
+    assert "foo.toml" in result.stderr
+
+
 def test_list_specs_reports_sorted_top_level_specs(run, workdir: Path) -> None:
     specs = workdir / "specs"
     nested = specs / "nested"
@@ -605,6 +629,20 @@ def test_apply_dir_rejects_overlapping_claims_before_writing(run, workdir: Path)
     assert result.returncode != 0
     assert "claim conflict" in result.stdout
     assert config.read_text() == "count = 0\n"
+
+
+def test_validate_dir_rejects_case_insensitive_path_collision_across_specs(run, workdir: Path) -> None:
+    specs = workdir / "specs"
+    specs.mkdir()
+    (specs / "10-first.toml").write_text("[[files]]\npath = '../Foo.toml'\nformat = 'toml'\n[files.data]\na = 1\n")
+    (specs / "20-second.toml").write_text("[[files]]\npath = '../foo.toml'\nformat = 'toml'\n[files.data]\nb = 2\n")
+
+    result = run("validate-dir", "specs")
+
+    assert result.returncode != 0
+    assert "portable path collision" in result.stdout
+    assert "Foo.toml" in result.stdout
+    assert "foo.toml" in result.stdout
 
 
 def test_validate_dir_json_reports_asset_targets_without_state(run, workdir: Path) -> None:

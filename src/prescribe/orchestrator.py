@@ -15,7 +15,7 @@ from typing import Any
 
 from prescribe._util import _MISSING, mapping_value, sha256_bytes
 from prescribe.adapters import adapter_for_path
-from prescribe.atomic import permission_bits
+from prescribe.atomic import atomic_write_bytes, permission_bits
 from prescribe.backups import move_to_backup
 from prescribe.claims import (
     Claim,
@@ -35,6 +35,7 @@ from prescribe.core.conflict import (
 from prescribe.core.planner import PlannedOperation
 from prescribe.core.result import OrchestrationResult
 from prescribe.document import Adapter, Document
+from prescribe.encoding import decode_utf8_bytes, read_utf8_text
 from prescribe.rollback import ConflictResolver, perform_rollback
 from prescribe.shell import render_shell_block
 from prescribe.spec import AssetTarget, EnvTarget, FileTarget, ShellTarget, Spec
@@ -443,7 +444,7 @@ class Orchestrator:
             diffs: list[str] = []
             for source, dest in entries:
                 source_bytes = source.read_bytes()
-                source_text = source_bytes.decode("utf-8")
+                source_text = decode_utf8_bytes(source_bytes, path=source)
                 current = _asset_destination_state(dest)
                 if current.text == source_text and not current.is_symlink and current.hardlink_count <= 1:
                     if run_id is not None and not dry_run:
@@ -562,12 +563,10 @@ class Orchestrator:
         original_exists = original.exists
         dest.parent.mkdir(parents=True, exist_ok=True)
         permissions = original.permissions if original.permissions is not None else source_permissions
-        if dest.exists() or dest.is_symlink():
+        if dest.is_symlink():
             dest.unlink()
-        dest.write_bytes(source_bytes)
-        with contextlib.suppress(OSError):
-            dest.chmod(permissions)
-        source_text = source_bytes.decode("utf-8")
+        source_text = decode_utf8_bytes(source_bytes, path=dest)
+        atomic_write_bytes(dest, source_bytes, permissions=permissions)
         stat = dest.stat()
         content_hash = sha256_bytes(dest.read_bytes())
         existing_baseline = self.state_store.original_baseline(dest, connection=connection)
@@ -860,7 +859,7 @@ class Orchestrator:
         if dry_run:
             return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True, diff=diff_text)
 
-        original_text = target.path.read_text(encoding="utf-8")
+        original_text = read_utf8_text(target.path)
         return self._apply_and_record(
             run_id=run_id,
             spec_hash=spec_hash,
@@ -1070,7 +1069,7 @@ class Orchestrator:
 
             if run_id is None:
                 raise RuntimeError("run_id is None in _apply_shell_block")
-            original_text = target.path.read_text(encoding="utf-8") if target.path.exists() else ""
+            original_text = read_utf8_text(target.path) if target.path.exists() else ""
             original_exists = target.path.exists()
 
             return self._apply_and_record(
@@ -1221,7 +1220,7 @@ class Orchestrator:
         apply_operations(document, operations)
         adapter.dump(document, target.path)
         new_bytes = target.path.read_bytes()
-        written_text = new_bytes.decode("utf-8")
+        written_text = decode_utf8_bytes(new_bytes, path=target.path)
         new_stat = target.path.stat()
         new_hash = sha256_bytes(new_bytes)
         if run_id is None:
@@ -1498,6 +1497,8 @@ def _active_claims(spec: Spec, *, tags: set[str] | None, skip_tags: set[str] | N
 
 
 def _claim_conflict_result(conflict: ClaimConflict) -> OrchestrationResult:
+    if conflict.message is not None:
+        return OrchestrationResult(status="error", applied=False, changed=False, error=conflict.message)
     claim = conflict.claim
     return OrchestrationResult(
         status="error",
@@ -1552,7 +1553,7 @@ def _asset_destination_state(path: Path) -> _AssetDestinationState:
     if not exists:
         return _AssetDestinationState(exists=False)
     symlink_target = os.readlink(path) if is_symlink else None
-    text = path.read_bytes().decode("utf-8") if path.exists() else None
+    text = read_utf8_text(path) if path.exists() else None
     hardlink_count = 0
     permissions: int | None = None
     if path.exists() and not is_symlink:

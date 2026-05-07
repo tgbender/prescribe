@@ -1,3 +1,4 @@
+import ntpath
 import os
 import shutil
 import socket
@@ -8,6 +9,8 @@ from pathlib import Path
 from typing import Any, cast
 
 import tomlkit
+
+from prescribe.encoding import read_utf8_text
 
 KNOWN_FORMATS = frozenset({"toml", "yaml", "jsonc", "line"})
 KNOWN_PLATFORMS = frozenset({"linux", "macos", "windows", "wsl"})
@@ -119,7 +122,7 @@ class Spec:
 class SpecLoader:
     def load(self, spec_path: Path) -> Spec:
         try:
-            data = tomlkit.parse(spec_path.read_text(encoding="utf-8"))
+            data = tomlkit.parse(read_utf8_text(spec_path))
         except Exception as exc:
             raise SpecError(f"failed to parse spec {spec_path}: {exc}") from exc
 
@@ -223,7 +226,7 @@ class SpecLoader:
             if _has_glob(str(text_path)):
                 raise SpecError(f"{ctx}: text_from must not be a glob pattern")
             try:
-                lines = _text_to_lines(text_path.read_text(encoding="utf-8"))
+                lines = _text_to_lines(read_utf8_text(text_path))
             except OSError as exc:
                 raise SpecError(f"{ctx}: failed to read text_from {text_path}: {exc}") from exc
         return FileTarget(
@@ -680,14 +683,20 @@ def _normalize_toml_value(value: Any) -> Any:
 
 def _validate_no_duplicate_overlapping_files(spec_path: Path, targets: list[FileTarget]) -> None:
     for index, target in enumerate(targets):
+        target_identity = _portable_path_identity(target.path)
         for prev_idx in range(index):
             previous = targets[prev_idx]
-            if target.path != previous.path:
+            if target_identity != _portable_path_identity(previous.path):
                 continue
             if not _file_targets_overlap(target, previous):
                 continue
             if target.priority != previous.priority:
                 continue
+            if str(target.path) != str(previous.path):
+                raise SpecError(
+                    f"spec {spec_path} files[{index}]: portable path collision: "
+                    f"{previous.path} and {target.path} refer to the same case-insensitive path"
+                )
             raise SpecError(
                 f"spec {spec_path} files[{index}]: duplicate path {target.path} overlaps with files[{prev_idx}]"
                 f" (same priority {target.priority})"
@@ -696,6 +705,10 @@ def _validate_no_duplicate_overlapping_files(spec_path: Path, targets: list[File
 
 def _file_targets_overlap(left: FileTarget, right: FileTarget) -> bool:
     return _values_overlap(left.platforms, right.platforms) and _values_overlap(left.machine, right.machine)
+
+
+def _portable_path_identity(path: Path) -> str:
+    return ntpath.normcase(ntpath.normpath(str(path)))
 
 
 def _values_overlap(left: list[str], right: list[str]) -> bool:

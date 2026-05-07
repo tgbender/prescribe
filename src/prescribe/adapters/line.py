@@ -5,6 +5,7 @@ from pathlib import Path
 
 from prescribe.atomic import atomic_write_text
 from prescribe.document import Document
+from prescribe.encoding import read_utf8_text
 
 _CRLF_EXTENSIONS = frozenset({".bat", ".cmd"})
 
@@ -133,7 +134,7 @@ class LineAdapter:
     format_name = "line"
 
     def load(self, path: Path) -> Document:
-        raw = path.read_bytes().decode("utf-8")
+        raw = read_utf8_text(path)
         root = parse_line_document(path, raw)
         return Document(path=path, format=self.format_name, root=root)
 

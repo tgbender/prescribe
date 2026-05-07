@@ -508,6 +508,21 @@ def test_orchestrator_reports_corrupt_existing_file(tmp_path: Path, state_store)
     assert config_toml.read_text() == "title = 'hello'\ncount = [\n"
 
 
+def test_orchestrator_reports_non_utf8_existing_file_clearly(tmp_path: Path, state_store) -> None:
+    config_toml = tmp_path / "config.toml"
+    config_toml.write_bytes(b"\xff\xfec\x00o\x00u\x00n\x00t\x00 \x00=\x00 \x001\x00")
+
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    results = Orchestrator(state_store).run(spec_path)
+
+    assert results[0].status == "error"
+    assert results[0].error is not None
+    assert "expected UTF-8 text" in results[0].error
+    assert "UTF-16 LE" in results[0].error
+
+
 def test_orchestrator_reports_corrupt_line_file(tmp_path: Path, state_store) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text("# prescribe:begin managed\nalpha=1\n# prescribe:end other\n")

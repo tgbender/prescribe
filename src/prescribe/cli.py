@@ -204,6 +204,20 @@ def validate(
     tag_set = _parse_tags(tags)
     skip_set = _parse_tags(skip_tags)
     explain = _option_bool(explain_skips)
+    claim_conflicts = detect_internal_claim_conflicts(
+        compute_claims(
+            spec_obj,
+            include=lambda target: _claim_target_matches(target, tags=tag_set, skip_tags=skip_set),
+        )
+    )
+    if claim_conflicts:
+        message = _claim_conflict_message(claim_conflicts[0])
+        if output_json:
+            typer.echo(json.dumps({"valid": False, "error": message, "targets": []}, indent=2))
+        else:
+            typer.echo(f"error: {message}", err=True)
+        raise typer.Exit(1)
+
     targets = _validation_targets(
         spec_obj,
         tags=tag_set,
@@ -818,6 +832,8 @@ def _claim_target_matches(target: object, *, tags: set[str] | None, skip_tags: s
 
 
 def _claim_conflict_message(conflict: ClaimConflict) -> str:
+    if conflict.message is not None:
+        return conflict.message
     claim = conflict.claim
     return (
         f"claim conflict: {claim.target_type} {claim.subject} {claim.address} is managed by {conflict.existing_owner}"

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ntpath
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -16,6 +18,8 @@ class Claim:
     owner_id: str
     spec_path: str | None
     target_id: str | None
+    raw_subject: str | None = None
+    portable_subject: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +27,7 @@ class ClaimConflict:
     claim: Claim
     existing_owner: str
     existing: ManagedClaimRecord | None = None
+    message: str | None = None
 
 
 ClaimResolver = Callable[[ClaimConflict], bool]
@@ -36,26 +41,32 @@ def compute_claims(spec: Spec, *, include: Callable[[object], bool] | None = Non
             continue
         owner = _owner_id(spec_path, "files", index)
         if file_target.format == "line" and file_target.managed_block_id:
+            subject = str(file_target.path)
             claims.append(
                 Claim(
                     target_type="line",
-                    subject=str(file_target.path),
+                    subject=_claim_subject("line", subject),
                     address=file_target.managed_block_id,
                     owner_id=owner,
                     spec_path=spec_path,
                     target_id=f"files[{index}]",
+                    raw_subject=subject,
+                    portable_subject=_portable_path_subject(subject),
                 )
             )
             continue
+        subject = str(file_target.path)
         for key in sorted({*_mapping_claim_keys(file_target.data), *file_target.delete}):
             claims.append(
                 Claim(
                     target_type="file",
-                    subject=str(file_target.path),
+                    subject=_claim_subject("file", subject),
                     address=key,
                     owner_id=owner,
                     spec_path=spec_path,
                     target_id=f"files[{index}]",
+                    raw_subject=subject,
+                    portable_subject=_portable_path_subject(subject),
                 )
             )
 
@@ -65,7 +76,7 @@ def compute_claims(spec: Spec, *, include: Callable[[object], bool] | None = Non
         claims.append(
             Claim(
                 target_type="env",
-                subject=env_target.name,
+                subject=_claim_subject("env", env_target.name),
                 address="value",
                 owner_id=f"{spec_path or '<memory>'}#env:{env_target.name}",
                 spec_path=spec_path,
@@ -76,14 +87,17 @@ def compute_claims(spec: Spec, *, include: Callable[[object], bool] | None = Non
     for index, shell_target in enumerate(spec.shell):
         if include is not None and not include(shell_target):
             continue
+        subject = str(shell_target.path)
         claims.append(
             Claim(
                 target_type="shell",
-                subject=str(shell_target.path),
+                subject=_claim_subject("shell", subject),
                 address=shell_target.managed_block_id,
                 owner_id=_owner_id(spec_path, "shell", index),
                 spec_path=spec_path,
                 target_id=f"shell[{index}]",
+                raw_subject=subject,
+                portable_subject=_portable_path_subject(subject),
             )
         )
 
@@ -91,14 +105,17 @@ def compute_claims(spec: Spec, *, include: Callable[[object], bool] | None = Non
         if include is not None and not include(asset_target):
             continue
         address = "tree" if asset_target.mode == "mirror" else "file"
+        subject = str(asset_target.dest)
         claims.append(
             Claim(
                 target_type="asset",
-                subject=str(asset_target.dest),
+                subject=_claim_subject("asset", subject),
                 address=address,
                 owner_id=_owner_id(spec_path, "assets", index),
                 spec_path=spec_path,
                 target_id=f"assets[{index}]",
+                raw_subject=subject,
+                portable_subject=_portable_path_subject(subject),
             )
         )
 
@@ -115,6 +132,7 @@ def detect_internal_claim_conflicts(claims: list[Claim]) -> list[ClaimConflict]:
             conflicts.append(ClaimConflict(claim=claim, existing_owner=existing.owner_id))
             continue
         seen[key] = claim
+    conflicts.extend(_detect_portable_path_collisions(claims))
     return conflicts
 
 
@@ -156,6 +174,51 @@ def persist_claims(
 def _owner_id(spec_path: str | None, section: str, index: int) -> str:
     prefix = spec_path or "<memory>"
     return f"{prefix}#{section}[{index}]"
+
+
+def _claim_subject(target_type: str, subject: str) -> str:
+    if sys.platform != "win32":
+        return subject
+    if target_type in {"file", "line", "shell", "asset"}:
+        return ntpath.normcase(subject)
+    if target_type == "env":
+        return subject.casefold()
+    return subject
+
+
+def _portable_path_subject(subject: str) -> str:
+    return ntpath.normcase(ntpath.normpath(subject))
+
+
+def _detect_portable_path_collisions(claims: list[Claim]) -> list[ClaimConflict]:
+    seen: dict[str, Claim] = {}
+    conflicts: list[ClaimConflict] = []
+    for claim in claims:
+        if claim.portable_subject is None:
+            continue
+        existing = seen.get(claim.portable_subject)
+        if existing is None:
+            seen[claim.portable_subject] = claim
+            continue
+        if existing.raw_subject == claim.raw_subject:
+            continue
+        if (
+            existing.target_type == claim.target_type
+            and existing.subject == claim.subject
+            and existing.address == claim.address
+        ):
+            continue
+        conflicts.append(
+            ClaimConflict(
+                claim=claim,
+                existing_owner=existing.owner_id,
+                message=(
+                    "portable path collision: "
+                    f"{existing.raw_subject} and {claim.raw_subject} refer to the same case-insensitive path"
+                ),
+            )
+        )
+    return conflicts
 
 
 def _mapping_claim_keys(value: dict[str, Any], prefix: str = "") -> set[str]:

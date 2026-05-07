@@ -3,8 +3,11 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
+from prescribe.claims import compute_claims, detect_internal_claim_conflicts
 from prescribe.orchestrator import Orchestrator
-from prescribe.spec import SpecLoader
+from prescribe.spec import AssetTarget, FileTarget, ShellTarget, Spec, SpecLoader
 
 
 def test_run_lock_refuses_fresh_owner_and_allows_expired(memory_state_store) -> None:
@@ -93,3 +96,61 @@ def test_claims_follow_active_tag_filter(tmp_path: Path, memory_state_store) -> 
     claims = memory_state_store.claims()
     assert len(claims) == 1
     assert claims[0].owner_id.endswith("#files[0]")
+
+
+def test_windows_file_claim_subjects_are_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.platform", "win32")
+    spec = Spec(
+        path=Path("spec.toml"),
+        files=[
+            FileTarget(path=Path(r"C:\Users\Travis\.config\Tool.toml"), format="toml", data={"a": 1}),
+            FileTarget(path=Path(r"c:\users\travis\.config\tool.toml"), format="toml", data={"a": 2}),
+        ],
+    )
+
+    conflicts = detect_internal_claim_conflicts(compute_claims(spec))
+
+    assert len(conflicts) == 1
+
+
+def test_path_claims_reject_portable_case_collisions() -> None:
+    spec = Spec(
+        path=Path("spec.toml"),
+        files=[
+            FileTarget(path=Path("Foo.toml"), format="toml", data={"a": 1}),
+            FileTarget(path=Path("foo.toml"), format="toml", data={"b": 2}),
+        ],
+    )
+
+    conflicts = detect_internal_claim_conflicts(compute_claims(spec))
+
+    assert len(conflicts) == 1
+    assert conflicts[0].message is not None
+    assert "portable path collision" in conflicts[0].message
+    assert "Foo.toml" in conflicts[0].message
+    assert "foo.toml" in conflicts[0].message
+
+
+def test_path_claims_reject_portable_collisions_across_target_types() -> None:
+    spec = Spec(
+        path=Path("spec.toml"),
+        shell=[ShellTarget(path=Path("Profile.ps1"), managed_block_id="profile")],
+        assets=[AssetTarget(source="profile.ps1", dest=Path("profile.ps1"))],
+    )
+
+    conflicts = detect_internal_claim_conflicts(compute_claims(spec))
+
+    assert len(conflicts) == 1
+    assert conflicts[0].message is not None
+    assert "portable path collision" in conflicts[0].message
+
+
+def test_windows_env_claim_subjects_are_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
+    from prescribe.spec import EnvTarget
+
+    monkeypatch.setattr("sys.platform", "win32")
+    spec = Spec(path=Path("spec.toml"), env=[EnvTarget(name="Path", value="a"), EnvTarget(name="PATH", value="b")])
+
+    conflicts = detect_internal_claim_conflicts(compute_claims(spec))
+
+    assert len(conflicts) == 1

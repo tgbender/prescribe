@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import ctypes
 import os
 import sys
 from pathlib import Path
-from typing import Any, cast
+
+from prescribe.platform.windows import is_remote_drive
 
 _NETWORK_FS_TYPES = {
     "9p",
@@ -52,9 +52,7 @@ def _is_windows_network_path(path: Path) -> bool:
     if not anchor:
         return False
 
-    windll = cast(Any, ctypes).windll
-    drive_type = cast(int, windll.kernel32.GetDriveTypeW(str(Path(anchor))))
-    return drive_type == 4  # DRIVE_REMOTE
+    return is_remote_drive(str(Path(anchor)))
 
 
 def _is_posix_network_path(path: Path) -> bool:

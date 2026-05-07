@@ -17,6 +17,7 @@ from prescribe.atomic import atomic_write_text
 from prescribe.backups import restore_backup
 from prescribe.core.result import OrchestrationResult
 from prescribe.document import Document
+from prescribe.encoding import decode_utf8_bytes
 from prescribe.state import StateStore
 
 ConflictResolver = Callable[[str], bool] | None
@@ -67,7 +68,7 @@ def perform_rollback(
         if dry_run:
             return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(checkpoint.content_text, encoding="utf-8")
+        atomic_write_text(path, checkpoint.content_text, newline="")
 
     adapter = adapter_for_path(path, fmt=format_name)
     try:
@@ -92,7 +93,7 @@ def perform_rollback(
     original_exists = batches[0].original_exists
     if original_exists or _document_has_content(document):
         adapter.dump(document, path)
-        written_text = path.read_text(encoding="utf-8")
+        written_text = decode_utf8_bytes(path.read_bytes(), path=path)
         new_stat = path.stat()
         new_hash = sha256_bytes(path.read_bytes())
         state_store.record_checkpoint(
@@ -264,7 +265,7 @@ def _rollback_asset(
                     changed=False,
                     error=f"unsupported rollback asset operation: {operation.get('kind')}",
                 )
-            current_text = path.read_bytes().decode("utf-8") if path.exists() else None
+            current_text = decode_utf8_bytes(path.read_bytes(), path=path) if path.exists() else None
             expected = operation.get("value")
             if current_text != expected and not (resolver is not None and resolver("file")):
                 skipped = True
