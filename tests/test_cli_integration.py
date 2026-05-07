@@ -685,6 +685,34 @@ def test_apply_dir_rejects_overlapping_claims_before_writing(run, workdir: Path)
     assert config.read_text() == "count = 0\n"
 
 
+def test_apply_dir_preflights_all_specs_before_writing(run, workdir: Path) -> None:
+    specs = workdir / "specs"
+    specs.mkdir()
+    config = workdir / "config.toml"
+    config.write_text("count = 1\n")
+    conflict = workdir / "conflict.toml"
+    conflict.write_text("count = 1\n")
+    first_spec = workdir / "first.toml"
+    first_spec.write_text("[[files]]\npath = 'conflict.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+    first_apply = run("apply", "first.toml")
+    assert first_apply.returncode == 0
+    conflict.write_text("count = 99\n")
+
+    (specs / "10-create.toml").write_text(
+        "[[files]]\npath = '../created.toml'\nformat = 'toml'\n[files.data]\ncreated = true\n"
+    )
+    (specs / "20-conflict.toml").write_text(
+        "[[files]]\npath = '../conflict.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n"
+    )
+
+    result = run("apply-dir", "specs")
+
+    assert result.returncode != 0
+    assert "conflict" in result.stdout
+    assert not (workdir / "created.toml").exists()
+    assert conflict.read_text() == "count = 99\n"
+
+
 def test_apply_dir_allows_priority_alternatives_across_specs(run, workdir: Path) -> None:
     specs = workdir / "specs"
     specs.mkdir()

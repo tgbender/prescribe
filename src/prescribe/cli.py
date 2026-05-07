@@ -811,6 +811,37 @@ def _run_spec_directory(
             )
             display_items.append((Path(conflict.claim.spec_path or ""), None, [], _claim_conflict_message(conflict)))
 
+    if not had_error and not dry_run:
+        preflight_items: list[tuple[Path, Spec, list[OrchestrationResult]]] = []
+        for spec_path, spec_obj in loaded_specs:
+            results = Orchestrator(store).run(
+                spec_obj,
+                dry_run=True,
+                tags=tag_set,
+                skip_tags=skip_set,
+                diff=diff,
+                explain_skips=explain,
+                file_skip_reasons=file_skip_reasons,
+            )
+            preflight_items.append((spec_path, spec_obj, results))
+            if any(r.status in {"error", "conflict"} for r in results):
+                had_error = True
+
+        if had_error:
+            for spec_path, spec_obj, results in preflight_items:
+                payload.append(
+                    {
+                        "spec": str(spec_path),
+                        "results": _results_to_json(
+                            spec_obj,
+                            results,
+                            display_status=True,
+                            explain_skips=explain,
+                        ),
+                    }
+                )
+                display_items.append((spec_path, spec_obj, results, None))
+
     if not had_error:
         for spec_path, spec_obj in loaded_specs:
             results = Orchestrator(store).run(
