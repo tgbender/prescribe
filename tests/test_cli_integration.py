@@ -685,6 +685,51 @@ def test_apply_dir_rejects_overlapping_claims_before_writing(run, workdir: Path)
     assert config.read_text() == "count = 0\n"
 
 
+def test_apply_dir_allows_priority_alternatives_across_specs(run, workdir: Path) -> None:
+    specs = workdir / "specs"
+    specs.mkdir()
+    config = workdir / "config.toml"
+    config.write_text("count = 0\n")
+    (specs / "10-fallback.toml").write_text(
+        "[[files]]\npath = '../config.toml'\nformat = 'toml'\npriority = 10\n[files.data]\ncount = 10\n"
+    )
+    (specs / "20-preferred.toml").write_text(
+        "[[files]]\npath = '../config.toml'\nformat = 'toml'\npriority = 0\n[files.data]\ncount = 1\n"
+    )
+
+    result = run("apply-dir", "specs", "--explain-skips")
+
+    assert result.returncode == 0
+    assert "lower priority target selected" in result.stdout
+    assert config.read_text() == "count = 1\n"
+
+
+def test_validate_dir_reports_priority_alternatives_once(run, workdir: Path) -> None:
+    specs = workdir / "specs"
+    specs.mkdir()
+    (specs / "10-fallback.toml").write_text(
+        "[[files]]\npath = '../config.toml'\nformat = 'toml'\npriority = 10\n[files.data]\ncount = 10\n"
+    )
+    (specs / "20-preferred.toml").write_text(
+        "[[files]]\npath = '../config.toml'\nformat = 'toml'\npriority = 0\n[files.data]\ncount = 1\n"
+    )
+
+    result = run("validate-dir", "specs", "--json", "--explain-skips")
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["valid"] is True
+    assert [item["spec"] for item in data["specs"]] == [
+        "specs\\10-fallback.toml",
+        "specs\\20-preferred.toml",
+    ]
+    fallback_targets = data["specs"][0]["targets"]
+    preferred_targets = data["specs"][1]["targets"]
+    assert fallback_targets[0]["active"] is False
+    assert fallback_targets[0]["skip_reason"].startswith("lower priority target selected")
+    assert preferred_targets[0]["active"] is True
+
+
 def test_validate_dir_rejects_case_insensitive_path_collision_across_specs(run, workdir: Path) -> None:
     specs = workdir / "specs"
     specs.mkdir()

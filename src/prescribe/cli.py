@@ -349,13 +349,26 @@ def validate_dir(
     payload: list[dict[str, object]] = []
     had_error = False
     all_claims = []
+    loaded_specs: list[tuple[Path, Spec]] = []
     for spec_path in specs:
         try:
             spec_obj = SpecLoader().load(spec_path)
+            loaded_specs.append((spec_path, spec_obj))
+        except SpecError as exc:
+            had_error = True
+            payload.append({"spec": str(spec_path), "valid": False, "error": str(exc), "targets": []})
+    file_skip_reasons = _directory_file_skip_reasons(loaded_specs, tags=tag_set, skip_tags=skip_set)
+    for spec_path, spec_obj in loaded_specs:
+        try:
             all_claims.extend(
                 compute_claims(
                     spec_obj,
-                    include=lambda target: _claim_target_matches(target, tags=tag_set, skip_tags=skip_set),
+                    include=lambda target: _claim_target_matches(
+                        target,
+                        tags=tag_set,
+                        skip_tags=skip_set,
+                        file_skip_reasons=file_skip_reasons,
+                    ),
                 )
             )
             targets = _validation_targets(
@@ -365,6 +378,7 @@ def validate_dir(
                 explain_skips=explain,
                 plan=_option_bool(plan),
                 diff=_option_bool(diff),
+                file_skip_reasons=file_skip_reasons,
             )
             plan_error = _targets_have_plan_errors(targets)
             had_error = had_error or plan_error
@@ -773,13 +787,19 @@ def _run_spec_directory(
             display_items.append((spec_path, None, [], str(exc)))
             continue
         loaded_specs.append((spec_path, spec_obj))
+    file_skip_reasons = _directory_file_skip_reasons(loaded_specs, tags=tag_set, skip_tags=skip_set)
     claim_conflicts = detect_internal_claim_conflicts(
         [
             claim
             for _, spec_obj in loaded_specs
             for claim in compute_claims(
                 spec_obj,
-                include=lambda target: _claim_target_matches(target, tags=tag_set, skip_tags=skip_set),
+                include=lambda target: _claim_target_matches(
+                    target,
+                    tags=tag_set,
+                    skip_tags=skip_set,
+                    file_skip_reasons=file_skip_reasons,
+                ),
             )
         ]
     )
@@ -801,6 +821,7 @@ def _run_spec_directory(
                 diff=diff,
                 explain_skips=explain,
                 claim_resolver=claim_resolver,
+                file_skip_reasons=file_skip_reasons,
             )
             if any(r.status in {"error", "conflict"} for r in results):
                 had_error = True
@@ -839,10 +860,49 @@ def _option_bool(value: object) -> bool:
     return value if isinstance(value, bool) else False
 
 
-def _claim_target_matches(target: object, *, tags: set[str] | None, skip_tags: set[str] | None) -> bool:
+def _claim_target_matches(
+    target: object,
+    *,
+    tags: set[str] | None,
+    skip_tags: set[str] | None,
+    file_skip_reasons: dict[int, str] | None = None,
+) -> bool:
     if not isinstance(target, (FileTarget, EnvTarget, ShellTarget, AssetTarget)):
         return False
+    if isinstance(target, FileTarget) and id(target) in (file_skip_reasons or {}):
+        return False
     return condition_matches(target=target, tags=tags, skip_tags=skip_tags)
+
+
+def _directory_file_skip_reasons(
+    loaded_specs: list[tuple[Path, Spec]],
+    *,
+    tags: set[str] | None,
+    skip_tags: set[str] | None,
+) -> dict[int, str]:
+    candidates: dict[Path, list[FileTarget]] = {}
+    for _, spec_obj in loaded_specs:
+        for target in spec_obj.files:
+            if condition_matches(target=target, tags=tags, skip_tags=skip_tags):
+                candidates.setdefault(target.path, []).append(target)
+
+    skip_reasons: dict[int, str] = {}
+    for path_targets in candidates.values():
+        if len(path_targets) < 2:
+            continue
+        best_priority = min(target.priority for target in path_targets)
+        winners = [target for target in path_targets if target.priority == best_priority]
+        if len(winners) != 1:
+            continue
+        winner = winners[0]
+        for target in path_targets:
+            if target is winner:
+                continue
+            skip_reasons[id(target)] = (
+                "lower priority target selected "
+                f"(winner path {winner.path}, winner priority {winner.priority}; skipped priority {target.priority})"
+            )
+    return skip_reasons
 
 
 def _claim_conflict_message(conflict: ClaimConflict) -> str:
@@ -862,6 +922,7 @@ def _validation_targets(
     explain_skips: bool = False,
     plan: bool = False,
     diff: bool = False,
+    file_skip_reasons: dict[int, str] | None = None,
 ) -> list[dict[str, object]]:
     plan_results = (
         _validation_plan_results(spec_obj, tags=tags, skip_tags=skip_tags, diff=diff, explain_skips=explain_skips)
@@ -871,7 +932,8 @@ def _validation_targets(
     result_idx = 0
     targets: list[dict[str, object]] = []
     for file_target in spec_obj.files:
-        active = condition_matches(target=file_target, tags=tags, skip_tags=skip_tags)
+        directory_skip_reason = (file_skip_reasons or {}).get(id(file_target))
+        active = directory_skip_reason is None and condition_matches(target=file_target, tags=tags, skip_tags=skip_tags)
         entry: dict[str, object] = {
             "type": "file",
             "path": str(file_target.path),
@@ -879,7 +941,9 @@ def _validation_targets(
             "active": active,
         }
         if explain_skips and not active:
-            entry["skip_reason"] = condition_skip_reason(target=file_target, tags=tags, skip_tags=skip_tags)
+            entry["skip_reason"] = directory_skip_reason or condition_skip_reason(
+                target=file_target, tags=tags, skip_tags=skip_tags
+            )
         if plan and result_idx < len(plan_results):
             result = plan_results[result_idx]
             result_idx += 1

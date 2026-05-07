@@ -217,6 +217,7 @@ class Orchestrator:
         diff: bool = False,
         explain_skips: bool = False,
         claim_resolver: ClaimResolver | None = None,
+        file_skip_reasons: dict[int, str] | None = None,
     ) -> list[OrchestrationResult]:
         from prescribe.spec import SpecLoader
 
@@ -228,7 +229,7 @@ class Orchestrator:
             spec_obj = spec
             spec_hash = _spec_hash(spec_obj)
 
-        claims = _active_claims(spec_obj, tags=tags, skip_tags=skip_tags)
+        claims = _active_claims(spec_obj, tags=tags, skip_tags=skip_tags, file_skip_reasons=file_skip_reasons)
         claim_conflicts = detect_internal_claim_conflicts(claims)
         if claim_conflicts:
             return [_claim_conflict_result(claim_conflicts[0])]
@@ -244,6 +245,7 @@ class Orchestrator:
                 skip_tags=skip_tags,
                 diff=diff,
                 explain_skips=explain_skips,
+                file_skip_reasons=file_skip_reasons,
             )
 
         self.state_store.initialize()
@@ -281,6 +283,7 @@ class Orchestrator:
                     skip_tags=skip_tags,
                     diff=diff,
                     explain_skips=explain_skips,
+                    file_skip_reasons=file_skip_reasons,
                     connection=connection,
                 )
             self._record_target_runs(run.id, spec_obj, results)
@@ -320,6 +323,7 @@ class Orchestrator:
         skip_tags: set[str] | None = None,
         diff: bool = False,
         explain_skips: bool = False,
+        file_skip_reasons: dict[int, str] | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> list[OrchestrationResult]:
         results: list[OrchestrationResult] = []
@@ -329,9 +333,12 @@ class Orchestrator:
         # so that CLI/JSON pairing stays aligned.
         active_files, skipped_files = _resolve_active_files(spec.files, tags=tags, skip_tags=skip_tags)
         for file_target in spec.files:
-            if file_target in skipped_files or file_target not in active_files:
+            directory_skip_reason = (file_skip_reasons or {}).get(id(file_target))
+            if directory_skip_reason is not None or file_target in skipped_files or file_target not in active_files:
                 reason = condition_skip_reason(target=file_target, tags=tags, skip_tags=skip_tags)
-                if reason is None:
+                if directory_skip_reason is not None:
+                    reason = directory_skip_reason
+                elif reason is None:
                     winner = _active_file_for_path(active_files, file_target.path)
                     reason = _priority_skip_reason(file_target, winner)
                 results.append(
@@ -1527,9 +1534,16 @@ def _lock_owner() -> str:
     return f"{current_machine()}:{os.getpid()}"
 
 
-def _active_claims(spec: Spec, *, tags: set[str] | None, skip_tags: set[str] | None) -> list[Claim]:
+def _active_claims(
+    spec: Spec,
+    *,
+    tags: set[str] | None,
+    skip_tags: set[str] | None,
+    file_skip_reasons: dict[int, str] | None = None,
+) -> list[Claim]:
     active_files, _ = _resolve_active_files(spec.files, tags=tags, skip_tags=skip_tags)
-    active_ids = {id(target) for target in active_files}
+    skipped_file_ids = set(file_skip_reasons or ())
+    active_ids = {id(target) for target in active_files if id(target) not in skipped_file_ids}
     for env_target in spec.env:
         if condition_matches(target=env_target, tags=tags, skip_tags=skip_tags):
             active_ids.add(id(env_target))
