@@ -627,7 +627,7 @@ def _resolve_candidate_path(spec_path: Path, raw_path: str) -> Path:
     candidate = Path(expanded)
     if not candidate.is_absolute():
         candidate = spec_path.parent / candidate
-    return candidate.resolve()
+    return candidate.parent.resolve() / candidate.name
 
 
 def _resolve_source_pattern(spec_path: Path, raw_path: str) -> Path:
@@ -637,7 +637,7 @@ def _resolve_source_pattern(spec_path: Path, raw_path: str) -> Path:
         candidate = spec_path.parent / candidate
     if _has_glob(str(candidate)):
         return candidate
-    return candidate.resolve()
+    return candidate.parent.resolve() / candidate.name
 
 
 def _resolve_destination_path(spec_path: Path, raw_path: str) -> Path:

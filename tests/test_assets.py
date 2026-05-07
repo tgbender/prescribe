@@ -417,7 +417,7 @@ def test_orchestrator_asset_replace_refuses_binary_extra_file(tmp_path: Path, st
     assert not (tmp_path / "system" / "managed.txt").exists()
 
 
-def test_orchestrator_asset_replaces_symlink_without_mutating_target(tmp_path: Path, state_store) -> None:
+def test_orchestrator_asset_refuses_symlink_destination_without_mutating_target(tmp_path: Path, state_store) -> None:
     source = tmp_path / "repo" / "config.txt"
     source.parent.mkdir()
     source.write_text("managed\n")
@@ -433,18 +433,73 @@ def test_orchestrator_asset_replaces_symlink_without_mutating_target(tmp_path: P
     spec_path.write_text("[[assets]]\nsource = 'repo/config.txt'\ndest = 'system/config.txt'\n")
 
     orchestrator = Orchestrator(state_store)
-    applied = orchestrator.run(spec_path)[0]
+    result = orchestrator.run(spec_path)[0]
 
-    assert applied.status == "applied"
+    assert result.status == "error"
+    assert "symlink" in (result.error or "")
     assert real.read_text() == "real\n"
-    assert not dest.is_symlink()
-    assert dest.read_text() == "managed\n"
-
-    rolled_back = orchestrator.rollback(dest)
-
-    assert rolled_back.status == "rolled-back"
     assert dest.is_symlink()
     assert dest.resolve() == real.resolve()
+
+
+def test_orchestrator_asset_refuses_symlink_source(tmp_path: Path, state_store) -> None:
+    real = tmp_path / "real.txt"
+    real.write_text("real\n")
+    source = tmp_path / "repo" / "config.txt"
+    source.parent.mkdir()
+    try:
+        source.symlink_to(real)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    dest = tmp_path / "system" / "config.txt"
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[assets]]\nsource = 'repo/config.txt'\ndest = 'system/config.txt'\n")
+
+    result = Orchestrator(state_store).run(spec_path)[0]
+
+    assert result.status == "error"
+    assert "symlink" in (result.error or "")
+    assert not dest.exists()
+
+
+def test_orchestrator_asset_replace_refuses_symlink_extra(tmp_path: Path, state_store) -> None:
+    (tmp_path / "repo").mkdir()
+    (tmp_path / "repo" / "managed.txt").write_text("managed\n")
+    real = tmp_path / "real.txt"
+    real.write_text("real\n")
+    extra = tmp_path / "system" / "extra.txt"
+    extra.parent.mkdir()
+    try:
+        extra.symlink_to(real)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[assets]]\nsource = 'repo/*.txt'\ndest = 'system'\nreplace = true\n")
+
+    result = Orchestrator(state_store).run(spec_path)[0]
+
+    assert result.status == "error"
+    assert "symlink" in (result.error or "")
+    assert real.read_text() == "real\n"
+    assert extra.is_symlink()
+    assert not (tmp_path / "system" / "managed.txt").exists()
+
+
+def test_orchestrator_asset_replace_refuses_extra_directory(tmp_path: Path, state_store) -> None:
+    (tmp_path / "repo").mkdir()
+    (tmp_path / "repo" / "managed.txt").write_text("managed\n")
+    extra_dir = tmp_path / "system" / "old"
+    extra_dir.mkdir(parents=True)
+    (extra_dir / "keep.txt").write_text("keep\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[assets]]\nsource = 'repo/*.txt'\ndest = 'system'\nreplace = true\n")
+
+    result = Orchestrator(state_store).run(spec_path)[0]
+
+    assert result.status == "error"
+    assert "will not displace directories" in (result.error or "")
+    assert (extra_dir / "keep.txt").read_text() == "keep\n"
+    assert not (tmp_path / "system" / "managed.txt").exists()
 
 
 def test_orchestrator_asset_replaces_hardlink_without_mutating_other_name(tmp_path: Path, state_store) -> None:

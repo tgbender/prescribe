@@ -7,11 +7,14 @@ from pathlib import Path
 from typing import Protocol, cast
 
 DRIVE_REMOTE = 4
+FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 REPLACEFILE_IGNORE_MERGE_ERRORS = 0x00000002
 
 
 class _Kernel32(Protocol):
     def GetDriveTypeW(self, root_path_name: str) -> int: ...
+
+    def GetFileAttributesW(self, file_name: str) -> int: ...
 
     def ReplaceFileW(
         self,
@@ -37,6 +40,12 @@ class WindowsApi:
     def is_remote_drive(self, anchor: str) -> bool:
         return self.kernel32.GetDriveTypeW(anchor) == DRIVE_REMOTE
 
+    def is_reparse_point(self, path: Path) -> bool:
+        attrs = self.kernel32.GetFileAttributesW(str(path))
+        if attrs == -1:
+            return False
+        return bool(attrs & FILE_ATTRIBUTE_REPARSE_POINT)
+
     def replace_file(self, source: Path, dest: Path) -> None:
         ok = self.kernel32.ReplaceFileW(
             str(dest),
@@ -60,6 +69,10 @@ def default_api() -> WindowsApi:
 
 def is_remote_drive(anchor: str, *, api: WindowsApi | None = None) -> bool:
     return (api or default_api()).is_remote_drive(anchor)
+
+
+def is_reparse_point(path: Path, *, api: WindowsApi | None = None) -> bool:
+    return (api or default_api()).is_reparse_point(path)
 
 
 def replace_file_preserving_metadata(source: Path, dest: Path, *, api: WindowsApi | None = None) -> None:

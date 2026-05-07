@@ -36,6 +36,12 @@ from prescribe.core.planner import PlannedOperation
 from prescribe.core.result import OrchestrationResult
 from prescribe.document import Adapter, Document
 from prescribe.encoding import decode_utf8_bytes, read_utf8_text
+from prescribe.fs_safety import (
+    UnsafePathError,
+    ensure_safe_asset_source_path,
+    ensure_safe_displace_regular_file,
+    ensure_safe_managed_write_path,
+)
 from prescribe.rollback import ConflictResolver, perform_rollback
 from prescribe.shell import render_shell_block
 from prescribe.spec import AssetTarget, EnvTarget, FileTarget, ShellTarget, Spec
@@ -443,6 +449,8 @@ class Orchestrator:
             changed = False
             diffs: list[str] = []
             for source, dest in entries:
+                ensure_safe_asset_source_path(source)
+                ensure_safe_managed_write_path(dest, operation="asset write")
                 source_bytes = source.read_bytes()
                 source_text = decode_utf8_bytes(source_bytes, path=source)
                 current = _asset_destination_state(dest)
@@ -563,8 +571,6 @@ class Orchestrator:
         original_exists = original.exists
         dest.parent.mkdir(parents=True, exist_ok=True)
         permissions = original.permissions if original.permissions is not None else source_permissions
-        if dest.is_symlink():
-            dest.unlink()
         source_text = decode_utf8_bytes(source_bytes, path=dest)
         atomic_write_bytes(dest, source_bytes, permissions=permissions)
         stat = dest.stat()
@@ -709,6 +715,7 @@ class Orchestrator:
         adapter = adapter_for_path(target.path, fmt=target.format)
 
         try:
+            ensure_safe_managed_write_path(target.path, operation="file target")
             if not target.path.exists():
                 return self._process_new_file(
                     run_id,
@@ -1031,6 +1038,7 @@ class Orchestrator:
         adapter = adapter_for_path(target.path, fmt="line")
 
         try:
+            ensure_safe_managed_write_path(target.path, operation="shell target")
             document = adapter.load(target.path) if target.path.exists() else _empty_document(target.path, "line")
 
             desired = DesiredState(
@@ -1573,12 +1581,15 @@ def _asset_destination_state(path: Path) -> _AssetDestinationState:
 def _asset_extra_paths(target: AssetTarget, entries: list[tuple[Path, Path]]) -> list[Path]:
     if not target.dest.exists() or not target.dest.is_dir():
         return []
-    desired = {dest.resolve() for _, dest in entries}
+    desired = {dest.absolute() for _, dest in entries}
     extras: list[Path] = []
     for path in sorted(target.dest.rglob("*")):
-        if path.resolve() in desired:
+        resolved = path.absolute()
+        if resolved in desired:
             continue
-        if path.is_symlink() or path.is_file():
+        if path.is_dir() and any(_is_relative_to(dest, resolved) for dest in desired):
+            continue
+        if path.is_symlink() or path.is_file() or path.is_dir():
             extras.append(path)
     return extras
 
@@ -1589,18 +1600,15 @@ def _unsafe_asset_replace_reason(target: AssetTarget, extras: list[Path]) -> str
     if not _safe_asset_replace_root(target.dest):
         return f"asset replace destination is too broad: {target.dest}"
     for path in extras:
-        if path.is_symlink():
-            continue
-        if path.is_dir():
-            return f"asset replace will not displace directories; clean up first: {path}"
-        size = path.stat().st_size
-        if size > target.max_displace_bytes:
-            return (
-                f"asset replace refused to displace {path}: size {size} exceeds "
-                f"max_displace_bytes {target.max_displace_bytes}"
+        try:
+            ensure_safe_displace_regular_file(
+                path,
+                operation="asset replace",
+                max_bytes=target.max_displace_bytes,
+                allow_binary=target.allow_binary,
             )
-        if not target.allow_binary and _looks_binary(path):
-            return f"asset replace refused to displace binary-looking file: {path}"
+        except UnsafePathError as exc:
+            return str(exc)
     return None
 
 
@@ -1613,11 +1621,6 @@ def _safe_asset_replace_root(path: Path) -> bool:
         return False
     anchor = Path(resolved.anchor)
     return resolved != anchor
-
-
-def _looks_binary(path: Path) -> bool:
-    sample = path.read_bytes()[:4096]
-    return b"\0" in sample
 
 
 def _asset_source_base(source_pattern: str) -> Path:
@@ -1633,6 +1636,14 @@ def _asset_source_base(source_pattern: str) -> Path:
     if base.is_file():
         return base.parent
     return base.resolve()
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
 
 
 def _asset_diff(dest: Path, current_text: str | None, desired_text: str) -> str:

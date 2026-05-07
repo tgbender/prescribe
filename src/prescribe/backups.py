@@ -1,8 +1,8 @@
-import os
 import shutil
 from pathlib import Path
 
 from prescribe._util import sha256_bytes
+from prescribe.fs_safety import ensure_safe_displace_regular_file
 from prescribe.paths import data_dir
 from prescribe.state import StateStore
 
@@ -33,16 +33,16 @@ def move_to_backup(
     run_id: int,
     path: Path,
 ) -> tuple[Path, bytes, int, int | None, str]:
-    is_symlink = path.is_symlink()
-    file_type = "symlink" if is_symlink else "file"
-    if is_symlink:
-        payload = os.readlink(path).encode("utf-8")
-        size = len(payload)
-        mtime_ns = None
-    else:
-        payload = path.read_bytes()
-        size = path.stat().st_size
-        mtime_ns = path.stat().st_mtime_ns
+    ensure_safe_displace_regular_file(
+        path,
+        operation="asset backup",
+        max_bytes=path.stat().st_size,
+        allow_binary=True,
+    )
+    file_type = "file"
+    payload = path.read_bytes()
+    size = path.stat().st_size
+    mtime_ns = path.stat().st_mtime_ns
     content_hash = sha256_bytes(payload)
     backup_path = backup_asset_path(
         state_store=state_store,
