@@ -526,23 +526,23 @@ def _make_claim_resolver(on_claim_conflict: str | None) -> ClaimResolver | None:
 
 @app.command()
 def rollback(
-    path: Path = typer.Argument(..., help="Path to the config file to roll back."),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be rolled back."),
+    path: Path = typer.Argument(..., help="Path whose Prescribe-managed changes should be undone."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what managed changes would be undone."),
     output_json: bool = typer.Option(False, "--json", help="Output result as JSON."),
     state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
     on_conflict: str | None = typer.Option(
         None,
         "--on-conflict",
-        help="Behavior when a key was externally modified: prompt (default when TTY), revert, or ignore.",
+        help="Behavior when a managed key was externally modified: prompt (default when TTY), revert, or ignore.",
     ),
-    original: bool = typer.Option(False, "--original", help="Restore to pre-prescribe state (before first apply)."),
+    original: bool = typer.Option(False, "--original", help="Restore the pre-Prescribe baseline before first apply."),
     allow_network_state: bool = typer.Option(
         False,
         "--allow-network-state",
         help="Allow the SQLite state database on a network filesystem.",
     ),
 ) -> None:
-    """Roll back managed changes to a config file."""
+    """Undo Prescribe-managed changes while preserving unrelated edits where possible."""
     result = Orchestrator(_make_store(state, allow_network_state=allow_network_state)).rollback(
         path, dry_run=dry_run, original=original, conflict_resolver=_make_conflict_resolver(on_conflict)
     )

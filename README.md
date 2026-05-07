@@ -1,6 +1,6 @@
 # prescribe
 
-Declarative, idempotent config management with rollback, diff preview, and OS-level environment persistence.
+Declarative, idempotent config management with rollback, diff preview, and OS-level environment persistence where supported.
 
 Write a TOML spec describing what your config files, env vars, and shell blocks should look like. Run `prescribe apply`. Done. `prescribe status --diff` shows exactly what would change before you commit.
 
@@ -23,12 +23,12 @@ prescribe apply-dir specs              # Apply every top-level *.toml spec in a 
 prescribe status-dir specs --diff      # Preview a whole spec directory
 prescribe validate-dir specs --plan    # Validate and plan a whole spec directory
 prescribe list                         # List all managed files
-prescribe rollback path/to/file        # Roll back changes to a file
+prescribe rollback path/to/file        # Undo Prescribe-managed changes to a file
 ```
 
 All commands accept `--json` for machine-readable output and `--state` (or `PRESCRIBE_STATE` env var) to set the database path.
 
-`prescribe rollback` accepts `--on-conflict` (prompt/revert/ignore) and `--original` (restore pre-prescribe state).
+`prescribe rollback` accepts `--on-conflict` (prompt/revert/ignore) and `--original` (restore the pre-Prescribe baseline).
 For mirrored assets with `replace = true`, rolling back the mirror destination directory restores displaced extra files from managed backup storage.
 
 Mutating commands use a short-lived SQLite run lock to prevent concurrent writes. Prescribe also records durable ownership claims for managed keys, blocks, env vars, and assets; overlapping claims fail before writes unless ownership is explicitly taken with `--on-claim-conflict take` or approved interactively with `--on-claim-conflict prompt`.
@@ -126,6 +126,8 @@ tags = ["work"]
 - `paths` — fallback list if `path` doesn't exist
 - `text` / `text_from` — for `format = "line"` managed blocks, define block content inline or from a file
 
+Lower priority numbers win. If you use a base-plus-overlay pattern, give the overlay a lower number than the base, such as `priority = -10`. Run with `--explain-skips` to see which same-path target won.
+
 ### `[[assets]]` — repo-owned file materialization
 
 Use assets when your dotfiles repo should own a whole file or tree at the destination.
@@ -209,7 +211,7 @@ tags = ["secrets"]
 - `value` — last one wins for duplicate names
 - `prepend` / `append` — accumulated in spec order, deduplicated
 - `path_prepend` / `path_append` — forwarded to PATH construction
-- `materialize` — persist to OS-level store (best-effort, no secrets check)
+- `materialize` — persist to the OS-level store where supported (best-effort, no secrets check; Linux requires systemd user environment support)
 - `!command` values pass through as literal strings (shell block resolves at source time)
 - `if_env_missing = true` — skip if already set in process env
 
@@ -243,10 +245,12 @@ Targets and location candidates support gating:
 
 Prescribe tracks every change in a SQLite state database. Managed keys are fingerprinted before and after every apply. If someone edits a managed key outside of prescribe, the next `apply` detects the conflict and refuses to overwrite.
 
+`rollback` means "undo Prescribe-managed changes" for a path. It removes or reverts the operations Prescribe recorded while preserving unrelated/manual edits where possible. It is not a force-repair command that reapplies the spec over external drift. Use `apply` to converge to the spec; a future force/repair mode may explicitly overwrite managed drift.
+
 ```sh
-prescribe rollback ~/.gitconfig                    # Roll back last change
-prescribe rollback ~/.gitconfig --original         # Restore to pre-prescribe state
-prescribe rollback ~/.gitconfig --on-conflict revert  # Force-revert external edits
+prescribe rollback ~/.gitconfig                    # Undo Prescribe-managed changes
+prescribe rollback ~/.gitconfig --original         # Restore pre-Prescribe baseline
+prescribe rollback ~/.gitconfig --on-conflict revert  # Undo even externally edited managed keys
 ```
 
 ---
@@ -327,7 +331,7 @@ materialize(env_vars={"EDITOR": "nvim"})
 
 - **Declarative** — spec says what the state should be, not how to get there
 - **Idempotent** — re-running produce zero changes if everything is in sync
-- **Rollback** — every change is recorded; undo to any previous state
+- **Rollback** — recorded managed changes can be undone while preserving unrelated edits
 - **Round-trip safe** — unmanaged keys, comments, and formatting are preserved
-- **Cross-platform** — macOS, Linux, Windows. File paths and env persistence work everywhere
+- **Cross-platform** — macOS, Linux, Windows, and WSL path handling; env persistence is platform-dependent
 - **Pure function design** — conditions and shell rendering are standalone functions, no hidden state
