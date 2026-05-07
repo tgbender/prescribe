@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -72,6 +73,8 @@ def inspect(ctx: InspectionContext, path_entries: list[Path], names: frozenset[s
 
 
 def _installed(installs: Path, ctx: InspectionContext, names: frozenset[str] | None) -> list[InstalledTool]:
+    if names is not None:
+        return _targeted_installed(installs, ctx, names)
     manifest = read_toml(installs / ".mise-installs.toml")
     configured_versions = _configured_versions(ctx)
     installed: list[InstalledTool] = []
@@ -113,8 +116,68 @@ def _installed(installs: Path, ctx: InspectionContext, names: frozenset[str] | N
     return installed
 
 
+def _targeted_installed(installs: Path, ctx: InspectionContext, names: frozenset[str]) -> list[InstalledTool]:
+    manifest = _manifest_installs(installs)
+    configured = _configured_tools(ctx)
+    installed: list[InstalledTool] = []
+    seen: set[str] = set()
+    for tool_name in _candidate_tool_names(names, configured, manifest):
+        if tool_name in seen:
+            continue
+        seen.add(tool_name)
+        configured_tool = configured.get(tool_name)
+        version = configured_tool[0] if configured_tool is not None else None
+        folder = manifest.get(tool_name) or (configured_tool[1] if configured_tool is not None else tool_name)
+        path = installs / folder
+        if not path.exists():
+            continue
+        install = MiseToolInstall(name=tool_name, path=path, version=version)
+        entrypoints = _tool_entrypoints(install, names, ctx)
+        if not entrypoints and tool_name not in names and tool_name not in manifest:
+            continue
+        installed.append(
+            InstalledTool(
+                name=tool_name,
+                manager="mise",
+                path=path,
+                scope="intentional" if tool_name in manifest or configured_tool is not None else "unknown",
+                version=version,
+                entrypoints=entrypoints,
+            )
+        )
+    return installed
+
+
 def _short_name(value: str) -> str:
     return value.rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+
+
+def _candidate_tool_names(
+    names: frozenset[str], configured: dict[str, tuple[str, str]], manifest: dict[str, str]
+) -> tuple[str, ...]:
+    candidates: list[str] = []
+    for name in sorted(names):
+        candidates.append(name)
+        for tool_name, entrypoints in _KNOWN_ENTRYPOINTS.items():
+            if name in entrypoints:
+                candidates.append(tool_name)
+        if name in configured:
+            candidates.append(name)
+    candidates.extend(tool_name for tool_name in sorted(_TOOL_SEARCHERS) if tool_name in manifest)
+    return tuple(candidates)
+
+
+def _manifest_installs(installs: Path) -> dict[str, str]:
+    manifest = read_toml(installs / ".mise-installs.toml")
+    if not isinstance(manifest, dict):
+        return {}
+    mapping: dict[str, str] = {}
+    for folder, info in manifest.items():
+        if not isinstance(info, dict):
+            continue
+        short = str(info.get("short") or info.get("full") or folder)
+        mapping[_short_name(short)] = str(folder)
+    return mapping
 
 
 def _tool_entrypoints(
@@ -168,18 +231,33 @@ def _version_roots(root: Path, *, version: str | None) -> tuple[Path, ...]:
 
 
 def _configured_versions(ctx: InspectionContext) -> dict[str, str]:
+    return {name: version for name, (version, _folder) in _configured_tools(ctx).items()}
+
+
+def _configured_tools(ctx: InspectionContext) -> dict[str, tuple[str, str]]:
     config = read_toml(_global_config_path(ctx))
     if not isinstance(config, dict):
         return {}
     tools = config.get("tools")
     if not isinstance(tools, dict):
         return {}
-    versions: dict[str, str] = {}
+    configured: dict[str, tuple[str, str]] = {}
     for key, value in tools.items():
         version = _configured_version(value)
         if version:
-            versions[str(key)] = version
-    return versions
+            key_text = str(key)
+            configured[_short_name(key_text)] = (version, _key_to_folder(key_text))
+    return configured
+
+
+def _key_to_folder(key: str) -> str:
+    return "-".join(_camel_to_kebab(part) for part in re.split(r"[:/]", key) if part)
+
+
+def _camel_to_kebab(value: str) -> str:
+    value = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1-\2", value)
+    value = re.sub(r"([a-z\d])([A-Z])", r"\1-\2", value)
+    return value.lower()
 
 
 def _global_config_path(ctx: InspectionContext) -> Path:

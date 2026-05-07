@@ -17,19 +17,19 @@ def inspect(ctx: InspectionContext, path_entries: list[Path], names: frozenset[s
     root = env_path(ctx, "SCOOP") or config_path(config, "ROOT_PATH", ctx) or ctx.home / "scoop"
     program_data = env_path(ctx, "COMMONAPPLICATIONDATA") or Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
     global_root = env_path(ctx, "SCOOP_GLOBAL") or config_path(config, "GLOBAL_PATH", ctx) or program_data / "scoop"
-    cache = env_path(ctx, "SCOOP_CACHE") or config_path(config, "CACHE_PATH", ctx) or root / "cache"
-    installed = _installed(root, "scoop") + _installed(global_root, "scoop-global")
+    installed = _installed(root, "scoop", names) + _installed(global_root, "scoop-global", names)
     return ManagerResult(
         sources=(
             source("scoop", "shims", root / "shims", path_entries),
             source("scoop", "global-shims", global_root / "shims", path_entries),
-            source("scoop", "cache", cache, path_entries),
         ),
         installed=tuple(installed),
     )
 
 
-def _installed(root: Path, manager: str) -> list[InstalledTool]:
+def _installed(root: Path, manager: str, names: frozenset[str] | None) -> list[InstalledTool]:
+    if names is not None:
+        return _targeted_installed(root, manager, names)
     entrypoints = _shim_entrypoints(root)
     installed: list[InstalledTool] = []
     for app in iter_dirs(root / "apps"):
@@ -48,6 +48,33 @@ def _installed(root: Path, manager: str) -> list[InstalledTool]:
     return installed
 
 
+def _targeted_installed(root: Path, manager: str, names: frozenset[str]) -> list[InstalledTool]:
+    by_app: dict[str, tuple[str, list[ToolEntrypoint]]] = {}
+    for name in sorted(names):
+        target = _shim_target(root / "shims" / f"{name}.shim")
+        if target is None:
+            continue
+        app = _target_app(target)
+        if app is None:
+            continue
+        _app, entrypoints = by_app.setdefault(app.casefold(), (app, []))
+        entrypoints.append(ToolEntrypoint(name=name, path=_shim_executable(root, name), source="scoop-shim"))
+    installed: list[InstalledTool] = []
+    for _app_key, (app, entrypoints) in sorted(by_app.items()):
+        app_dir = root / "apps" / app
+        current = app_dir / "current"
+        installed.append(
+            InstalledTool(
+                name=app,
+                manager=manager,
+                path=current if current.exists() else app_dir,
+                scope="intentional",
+                entrypoints=tuple(entrypoints),
+            )
+        )
+    return installed
+
+
 def _shim_entrypoints(root: Path) -> dict[str, list[ToolEntrypoint]]:
     by_app: dict[str, list[ToolEntrypoint]] = {}
     shims = root / "shims"
@@ -61,14 +88,9 @@ def _shim_entrypoints(root: Path) -> dict[str, list[ToolEntrypoint]]:
         target = _shim_target(child)
         if target is None:
             continue
-        parts = [part.casefold() for part in target.parts]
-        try:
-            app_index = parts.index("apps") + 1
-        except ValueError:
+        app = _target_app(target)
+        if app is None:
             continue
-        if app_index >= len(target.parts):
-            continue
-        app = target.parts[app_index]
         by_app.setdefault(app.casefold(), []).append(
             ToolEntrypoint(name=child.stem, path=_shim_executable(root, child.stem), source="scoop-shim")
         )
@@ -85,6 +107,17 @@ def _shim_target(path: Path) -> Path | None:
         if separator and key.strip().casefold() == "path":
             return Path(value.strip().strip('"'))
     return None
+
+
+def _target_app(target: Path) -> str | None:
+    parts = [part.casefold() for part in target.parts]
+    try:
+        app_index = parts.index("apps") + 1
+    except ValueError:
+        return None
+    if app_index >= len(target.parts):
+        return None
+    return target.parts[app_index]
 
 
 def _shim_executable(root: Path, name: str) -> Path:

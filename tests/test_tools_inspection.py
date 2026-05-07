@@ -6,7 +6,14 @@ import os
 import stat
 from pathlib import Path
 
-from prescribe import InstalledTool, ManagerResult, ToolEntrypoint, ToolPathSource, inspect_tool_paths
+from prescribe import (
+    InstalledTool,
+    ManagerResult,
+    ToolEntrypoint,
+    ToolPathSource,
+    inspect_installed_tools,
+    inspect_tool_paths,
+)
 from prescribe.tools.managers.mise import MiseToolInstall, register_tool_search
 
 
@@ -41,7 +48,7 @@ def test_uv_targeted_lookup_uses_tool_bin_override(tmp_path: Path) -> None:
 
     assert [tool.name for tool in report.installed] == ["ruff"]
     assert report.tools["ruff"][0].path == bin_dir / "ruff.exe"
-    assert report.tools["ruff"][0].active is True
+    assert report.tools["ruff"][0].active is False
     assert report.tools["ruff"][0].installed_name == "ruff"
     assert report.sources[0].kind == "tool-bin"
 
@@ -60,7 +67,7 @@ def test_mise_reads_manifest_for_intentional_installs(tmp_path: Path) -> None:
 
     assert [(tool.name, tool.scope) for tool in report.installed] == [("ripgrep", "intentional")]
     assert report.tools["rg"][0].source == "mise"
-    assert report.tools["rg"][0].active is True
+    assert report.tools["rg"][0].active is False
 
 
 def test_compat_attribution_flag_uses_metadata_not_recursive_search(tmp_path: Path) -> None:
@@ -83,7 +90,7 @@ def test_compat_attribution_flag_uses_metadata_not_recursive_search(tmp_path: Pa
     )
 
     assert report.tools["rg"][0].installed_name is None
-    assert report.tools["rg"][0].scope == "active"
+    assert report.tools["rg"][0].scope == "candidate"
 
 
 def test_targeted_lookup_attributes_mise_shims_from_tool_specific_metadata(tmp_path: Path) -> None:
@@ -115,9 +122,7 @@ def test_targeted_lookup_does_not_attribute_path_entries_by_executable_name(tmp_
 
     report = inspect_tool_paths(["python"], managers=["mise"], env=env, home=home, platform="win32")
 
-    assert report.tools["python"][0].source == "path[0]"
-    assert report.tools["python"][0].installed_name is None
-    assert report.tools["python"][0].scope == "active"
+    assert "python" not in report.tools
 
 
 def test_brew_filters_transitive_dependencies_by_default(tmp_path: Path) -> None:
@@ -170,8 +175,43 @@ def test_scoop_resolves_local_roots_and_shims(tmp_path: Path) -> None:
 
     assert [(tool.name, tool.manager, tool.scope) for tool in report.installed] == [("ripgrep", "scoop", "intentional")]
     assert report.tools["rg"][0].path == shims / "rg.exe"
-    assert report.tools["rg"][0].active is True
+    assert report.tools["rg"][0].active is False
     assert report.tools["rg"][0].installed_name == "ripgrep"
+
+
+def test_scoop_cache_is_not_a_tool_source(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    root = tmp_path / "scoop"
+    cache = root / "cache"
+    _exe(cache / "rg.exe")
+    env = {
+        "USERPROFILE": str(home),
+        "PATH": str(cache),
+        "PATHEXT": ".EXE;.CMD",
+        "SCOOP": str(root),
+        "SCOOP_CACHE": str(cache),
+        "CommonApplicationData": str(tmp_path / "ProgramData"),
+    }
+
+    report = inspect_tool_paths(["rg"], managers=["scoop"], env=env, home=home, platform="win32", include_path=False)
+
+    assert "rg" not in report.tools
+    assert all(source.kind != "cache" for source in report.sources)
+
+
+def test_installed_tool_inspection_skips_candidate_sources(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    bin_dir = tmp_path / "uv-bin"
+    tool_dir = tmp_path / "uv-tools"
+    _exe(bin_dir / "ruff.exe")
+    (tool_dir / "ruff").mkdir(parents=True)
+    env = {"HOME": str(home), "PATH": str(bin_dir), "UV_TOOL_BIN_DIR": str(bin_dir), "UV_TOOL_DIR": str(tool_dir)}
+
+    report = inspect_installed_tools(managers=["uv"], env=env, home=home, platform="linux")
+
+    assert [tool.name for tool in report.installed] == ["ruff"]
+    assert report.sources == ()
+    assert report.tools == {}
 
 
 def test_custom_manager_backends_are_injectable(tmp_path: Path) -> None:
@@ -215,7 +255,8 @@ def test_mise_tool_search_backends_are_injectable(tmp_path: Path) -> None:
     tool_root = installs / "custom-tool" / "1.0.0"
     shims = data / "mise" / "shims"
     _exe(shims / "customcmd.exe")
-    installs.mkdir(parents=True)
+    tool_root.mkdir(parents=True)
+    installs.mkdir(parents=True, exist_ok=True)
     (installs / ".mise-installs.toml").write_text('[custom-tool]\nshort = "custom-tool"\n', encoding="utf-8")
     env = {"USERPROFILE": str(home), "PATH": str(shims), "XDG_DATA_HOME": str(data), "PATHEXT": ".EXE;.CMD"}
 
@@ -250,7 +291,7 @@ def test_pnpm_uses_home_bin_and_lists_global_packages(tmp_path: Path) -> None:
         ("@scope/tool", "intentional"),
         ("typescript", "intentional"),
     ]
-    assert report.tools["typescript"][0].active is True
+    assert report.tools["typescript"][0].active is False
 
 
 def test_targeted_lookup_does_not_scan_unrequested_names(tmp_path: Path) -> None:
@@ -273,7 +314,7 @@ def test_batch_lookup_reports_duplicates_and_active_path_order(tmp_path: Path) -
     _exe(second / "uv")
     env = {"HOME": str(home), "PATH": os.pathsep.join([str(first), str(second)]), "UV_TOOL_BIN_DIR": str(second)}
 
-    report = inspect_tool_paths(["uv"], managers=["uv"], env=env, home=home, platform="linux")
+    report = inspect_tool_paths(["uv"], managers=["uv"], env=env, home=home, platform="linux", include_path=True)
 
     assert len(report.duplicates["uv"]) == 2
     assert [candidate.active for candidate in report.duplicates["uv"]] == [False, True]

@@ -13,7 +13,7 @@ def inspect(ctx: InspectionContext, path_entries: list[Path], names: frozenset[s
     tool_dir = env_path(ctx, "UV_TOOL_DIR") or state / "tools"
     bin_dir = _executable_dir(ctx, "UV_TOOL_BIN_DIR")
     python_bin_dir = _executable_dir(ctx, "UV_PYTHON_BIN_DIR")
-    installed = tuple(_installed_tool(path) for path in iter_dirs(tool_dir))
+    installed = tuple(_targeted_installed(tool_dir, names) if names is not None else _all_installed(tool_dir))
     return ManagerResult(
         sources=(
             source("uv", "tool-bin", bin_dir, path_entries),
@@ -54,6 +54,19 @@ def _executable_dir(ctx: InspectionContext, env_var: str) -> Path:
     if xdg_data := absolute_env_path(ctx, "XDG_DATA_HOME"):
         return xdg_data.parent / "bin"
     return ctx.home / ".local" / "bin"
+
+
+def _all_installed(tool_dir: Path) -> list[InstalledTool]:
+    return [_installed_tool(path) for path in iter_dirs(tool_dir)]
+
+
+def _targeted_installed(tool_dir: Path, names: frozenset[str]) -> list[InstalledTool]:
+    installed: list[InstalledTool] = []
+    for path in iter_dirs(tool_dir):
+        tool = _installed_tool(path)
+        if tool.name in names or any(entrypoint.name in names for entrypoint in tool.entrypoints):
+            installed.append(tool)
+    return installed
 
 
 def _installed_tool(path: Path) -> InstalledTool:

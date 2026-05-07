@@ -1,6 +1,6 @@
 """Read-only tool and tool-manager inspection."""
 
-from prescribe.tools.inventory import inspect_tool_paths
+from prescribe.tools.inventory import inspect_installed_tools, inspect_tool_paths
 from prescribe.tools.models import (
     InstalledTool,
     ManagerInspector,
@@ -24,4 +24,5 @@ __all__ = [
     "ToolPathSource",
     "ToolScope",
     "inspect_tool_paths",
+    "inspect_installed_tools",
 ]

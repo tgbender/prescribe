@@ -42,16 +42,21 @@ def inspect_tool_paths(
     env: dict[str, str] | None = None,
     home: Path | str | None = None,
     platform: str | None = None,
-    include_path: bool = True,
+    include_path: bool = False,
     include_transitive: bool = False,
     attribute_installed_executables: bool = False,
     backends: dict[str, ManagerInspector] | None = None,
+    include_candidates: bool = True,
 ) -> ToolInventory:
     """Inspect tool-manager paths and executable candidates without subprocesses.
 
     ``names`` enables targeted lookup: only those executable names are checked in
-    candidate bin directories. When omitted, existing bin directories are scanned
-    once and known manager install metadata is included.
+    manager-owned candidate directories. When omitted, existing manager bin
+    directories are scanned once and known manager install metadata is included.
+
+    ``include_path`` is explicit opt-in for whole-PATH discovery and active
+    executable resolution. The default follows manager env vars, XDG paths,
+    config files, and metadata only.
 
     ``backends`` can override or add manager inspectors. Each backend owns its
     manager-specific metadata lookup and receives targeted ``names`` so it can
@@ -60,12 +65,15 @@ def inspect_tool_paths(
     ``attribute_installed_executables`` is retained for compatibility. Tool
     attribution now comes from manager metadata and backend-owned targeted
     search, not inventory-level recursive install scans.
+
+    Set ``include_candidates=False`` for installed inventory only. That mode
+    reads manager metadata but does not inspect executable sources or PATH.
     """
 
     ctx = context(env=env, home=home, platform=platform)
     selected = tuple(managers or _DEFAULT_MANAGERS)
     target_names = frozenset(names) if names is not None else None
-    entries = path_entries(ctx)
+    entries = path_entries(ctx) if include_path else []
     resolvers = dict(_MANAGER_RESOLVERS)
     if backends:
         resolvers.update(backends)
@@ -75,19 +83,24 @@ def inspect_tool_paths(
     issues: list[str] = []
     for manager in selected:
         result = resolvers[manager](ctx, entries, target_names)
-        sources.extend(result.sources)
+        if include_candidates:
+            sources.extend(result.sources)
         installed.extend(result.installed)
         issues.extend(result.issues)
-    if include_path:
+    if include_candidates and include_path:
         sources.extend(path_sources(entries))
 
     visible_installed = tuple(tool for tool in installed if include_transitive or tool.scope != "dependency")
-    candidates = _candidate_map(
-        sources=sources,
-        installed=visible_installed,
-        path_entries=entries,
-        names=target_names,
-        ctx=ctx,
+    candidates = (
+        _candidate_map(
+            sources=sources,
+            installed=visible_installed,
+            path_entries=entries if include_path else [],
+            names=target_names,
+            ctx=ctx,
+        )
+        if include_candidates
+        else {}
     )
     duplicates = {name: values for name, values in candidates.items() if len(values) > 1}
     return ToolInventory(
@@ -97,6 +110,29 @@ def inspect_tool_paths(
         tools=candidates,
         duplicates=duplicates,
         issues=tuple(issues),
+    )
+
+
+def inspect_installed_tools(
+    *,
+    managers: list[ToolManager] | tuple[ToolManager, ...] | set[ToolManager] | None = None,
+    env: dict[str, str] | None = None,
+    home: Path | str | None = None,
+    platform: str | None = None,
+    include_transitive: bool = False,
+    backends: dict[str, ManagerInspector] | None = None,
+) -> ToolInventory:
+    """Inspect installed manager metadata without executable or PATH discovery."""
+
+    return inspect_tool_paths(
+        managers=managers,
+        env=env,
+        home=home,
+        platform=platform,
+        include_path=False,
+        include_transitive=include_transitive,
+        backends=backends,
+        include_candidates=False,
     )
 
 

@@ -61,6 +61,7 @@ from prescribe.tools import (
     ToolEntrypoint,
     ToolInventory,
     ToolPathSource,
+    inspect_installed_tools,
     inspect_tool_paths,
 )
 
@@ -137,5 +138,6 @@ __all__ = [
     "ToolEntrypoint",
     "ToolInventory",
     "ToolPathSource",
+    "inspect_installed_tools",
     "inspect_tool_paths",
 ]
