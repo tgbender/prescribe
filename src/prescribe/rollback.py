@@ -14,7 +14,7 @@ from prescribe._util import (
 )
 from prescribe.adapters import adapter_for_path
 from prescribe.atomic import atomic_write_text
-from prescribe.backups import restore_backup
+from prescribe.backups import copy_to_recovery_backup, restore_backup
 from prescribe.core.result import OrchestrationResult
 from prescribe.document import Document
 from prescribe.encoding import decode_utf8_bytes
@@ -104,6 +104,14 @@ def perform_rollback(
 
     original_exists = batches[0].original_exists
     if original_exists or _document_has_content(document):
+        _record_recovery_backup(
+            state_store,
+            run_id=batches[-1].run_id,
+            path=path,
+            target_kind=format_name,
+            operation="rollback",
+            connection=connection,
+        )
         adapter.dump(document, path)
         written_text = decode_utf8_bytes(path.read_bytes(), path=path)
         new_stat = path.stat()
@@ -126,6 +134,14 @@ def perform_rollback(
             connection=connection,
         )
     elif path.exists():
+        _record_recovery_backup(
+            state_store,
+            run_id=batches[-1].run_id,
+            path=path,
+            target_kind=format_name,
+            operation="rollback-delete",
+            connection=connection,
+        )
         ensure_safe_unlink_path(path, operation="rollback delete")
         path.unlink()
 
@@ -174,6 +190,14 @@ def perform_rollback_original(
             return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
         if dry_run:
             return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
+        _record_recovery_backup(
+            state_store,
+            run_id=baseline.run_id,
+            path=path,
+            target_kind=baseline.format or "file",
+            operation="rollback-original-delete",
+            connection=connection,
+        )
         ensure_safe_unlink_path(path, operation="rollback-original delete")
         path.unlink()
         _record_rollback_event(
@@ -250,6 +274,36 @@ def _record_rollback_event(
     )
 
 
+def _record_recovery_backup(
+    state_store: StateStore,
+    *,
+    run_id: int,
+    path: Path,
+    target_kind: str,
+    operation: str,
+    connection: sqlite3.Connection | None = None,
+) -> None:
+    if not path.exists() or path.is_symlink():
+        return
+    backup_path, content_hash, size, mtime_ns, content_text = copy_to_recovery_backup(
+        state_store=state_store,
+        run_id=run_id,
+        path=path,
+    )
+    state_store.record_recovery_backup(
+        run_id=run_id,
+        target_path=path,
+        target_kind=target_kind,
+        operation=operation,
+        backup_path=backup_path,
+        content_hash=content_hash,
+        size=size,
+        mtime_ns=mtime_ns,
+        content_text=content_text,
+        connection=connection,
+    )
+
+
 def rollback_batch(
     document: Document, operations: list[dict[str, Any]], resolver: ConflictResolver = None
 ) -> tuple[bool, list[str], list[str]]:
@@ -294,6 +348,15 @@ def _rollback_asset(
             if dry_run:
                 return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
             if path.exists() or path.is_symlink():
+                if path.exists() and not path.is_symlink():
+                    _record_recovery_backup(
+                        state_store,
+                        run_id=batch.run_id,
+                        path=path,
+                        target_kind="asset",
+                        operation="asset-rollback",
+                        connection=connection,
+                    )
                 ensure_safe_unlink_path(path, operation="asset rollback delete")
                 path.unlink()
             if before_exists:

@@ -17,7 +17,7 @@ from typing import Any
 from prescribe._util import _MISSING, mapping_value, sha256_bytes
 from prescribe.adapters import adapter_for_path
 from prescribe.atomic import atomic_write_bytes, permission_bits
-from prescribe.backups import move_to_backup, restore_backup
+from prescribe.backups import copy_to_recovery_backup, move_to_backup, restore_backup
 from prescribe.claims import (
     Claim,
     ClaimConflict,
@@ -607,6 +607,14 @@ class Orchestrator:
         dest.parent.mkdir(parents=True, exist_ok=True)
         permissions = original.permissions if original.permissions is not None else source_permissions
         source_text = decode_utf8_bytes(source_bytes, path=dest)
+        if original_exists and dest.exists():
+            self._record_recovery_backup(
+                run_id=run_id,
+                path=dest,
+                target_kind="asset",
+                operation="asset-write",
+                connection=connection,
+            )
         atomic_write_bytes(dest, source_bytes, permissions=permissions)
         stat = dest.stat()
         content_hash = sha256_bytes(dest.read_bytes())
@@ -1270,14 +1278,22 @@ class Orchestrator:
         connection: sqlite3.Connection | None = None,
         original_text: str | None = None,
     ) -> OrchestrationResult:
+        if run_id is None:
+            raise RuntimeError("run_id is None in _apply_and_record")
+        if original_exists and target.path.exists():
+            self._record_recovery_backup(
+                run_id=run_id,
+                path=target.path,
+                target_kind="shell" if isinstance(target, ShellTarget) else "file",
+                operation=event_type,
+                connection=connection,
+            )
         apply_operations(document, operations)
         adapter.dump(document, target.path)
         new_bytes = target.path.read_bytes()
         written_text = decode_utf8_bytes(new_bytes, path=target.path)
         new_stat = target.path.stat()
         new_hash = sha256_bytes(new_bytes)
-        if run_id is None:
-            raise RuntimeError("run_id is None in _apply_and_record")
         existing_baseline = self.state_store.original_baseline(target.path, connection=connection)
         if existing_baseline is None:
             self.state_store.record_baseline(
@@ -1323,6 +1339,33 @@ class Orchestrator:
             connection=connection,
         )
         return OrchestrationResult(status="applied", applied=True, changed=True)
+
+    def _record_recovery_backup(
+        self,
+        *,
+        run_id: int,
+        path: Path,
+        target_kind: str,
+        operation: str,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        backup_path, content_hash, size, mtime_ns, content_text = copy_to_recovery_backup(
+            state_store=self.state_store,
+            run_id=run_id,
+            path=path,
+        )
+        self.state_store.record_recovery_backup(
+            run_id=run_id,
+            target_path=path,
+            target_kind=target_kind,
+            operation=operation,
+            backup_path=backup_path,
+            content_hash=content_hash,
+            size=size,
+            mtime_ns=mtime_ns,
+            content_text=content_text,
+            connection=connection,
+        )
 
 
 # ── module-level helpers ──────────────────────────────────

@@ -181,3 +181,25 @@ class AssetBackup(Base):
         Index("idx_asset_backups_original_path_id", "original_path", "id"),
         Index("idx_asset_backups_target_dest_id", "target_dest", "id"),
     )
+
+
+class RecoveryBackup(Base):
+    __tablename__ = "recovery_backups"
+
+    id = Column(Integer, primary_key=True, default=snowflake_id)
+    run_id = Column(Integer, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    target_path = Column(Text, nullable=False)
+    target_kind = Column(Text, nullable=False)
+    operation = Column(Text, nullable=False)
+    backup_path = Column(Text, nullable=False)
+    created_at = Column(Text, nullable=False)
+    hash_algo = Column(Text, nullable=False)
+    content_hash = Column(LargeBinary, nullable=False)
+    size = Column(Integer, nullable=False)
+    mtime_ns = Column(Integer)
+    content_text = Column(Text)
+
+    __table_args__ = (
+        Index("idx_recovery_backups_target_path_id", "target_path", "id"),
+        Index("idx_recovery_backups_run_id", "run_id"),
+    )

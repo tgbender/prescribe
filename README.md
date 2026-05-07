@@ -23,6 +23,7 @@ prescribe apply-dir specs              # Apply every top-level *.toml spec in a 
 prescribe status-dir specs --diff      # Preview a whole spec directory
 prescribe validate-dir specs --plan    # Validate and plan a whole spec directory
 prescribe list                         # List all managed files
+prescribe backups                      # List recovery backups captured before writes/deletes
 prescribe rollback TARGET              # Undo Prescribe-managed changes for a file or asset target
 ```
 
@@ -244,6 +245,8 @@ Targets and location candidates support gating:
 ## Rollback and conflict detection
 
 Prescribe tracks every change in a SQLite state database. Managed keys are fingerprinted before and after every apply. If someone edits a managed key outside of prescribe, the next `apply` detects the conflict and refuses to overwrite.
+
+Before Prescribe mutates or deletes an existing file, it also captures a recovery backup of the current bytes in managed backup storage and records the backup in SQLite. These backups are intentionally broader than the rollback ledger: they cover the value that was present immediately before an apply, asset write, rollback, or `rollback --original` delete. Use `prescribe backups` to audit what was captured.
 
 `rollback` means "undo Prescribe-managed changes" for a target. It removes or reverts the operations Prescribe recorded while preserving unrelated/manual edits where possible. It is not a force-repair command that reapplies the spec over external drift. Use `apply` to converge to the spec; a future force/repair mode may explicitly overwrite managed drift.
 

@@ -119,6 +119,22 @@ class AssetBackupRecord:
 
 
 @dataclass(slots=True)
+class RecoveryBackupRecord:
+    id: int
+    run_id: int
+    target_path: Path
+    target_kind: str
+    operation: str
+    backup_path: Path
+    created_at: datetime
+    hash_algo: str
+    content_hash: bytes
+    size: int
+    mtime_ns: int | None
+    content_text: str | None
+
+
+@dataclass(slots=True)
 class RunLockRecord:
     name: str
     owner: str
@@ -1006,6 +1022,85 @@ class StateStore:
         with self._connection(connection) as conn:
             conn.execute("UPDATE asset_backups SET restored_at = ? WHERE id = ?", (restored.isoformat(), backup_id))
 
+    def record_recovery_backup(
+        self,
+        *,
+        run_id: int,
+        target_path: Path | str,
+        target_kind: str,
+        operation: str,
+        backup_path: Path | str,
+        content_hash: bytes,
+        size: int,
+        hash_algo: str = "sha256",
+        mtime_ns: int | None = None,
+        content_text: str | None = None,
+        created_at: datetime | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> RecoveryBackupRecord:
+        created = _utcnow(created_at)
+        target_text = str(_canonical_path(target_path))
+        backup_text = str(_canonical_path(backup_path))
+        with self._connection(connection) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO recovery_backups (
+                    run_id, target_path, target_kind, operation, backup_path, created_at,
+                    hash_algo, content_hash, size, mtime_ns, content_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    target_text,
+                    target_kind,
+                    operation,
+                    backup_text,
+                    created.isoformat(),
+                    hash_algo,
+                    content_hash,
+                    size,
+                    mtime_ns,
+                    content_text,
+                ),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("INSERT into recovery_backups did not produce a rowid")
+            backup_id = cursor.lastrowid
+        return RecoveryBackupRecord(
+            id=backup_id,
+            run_id=run_id,
+            target_path=Path(target_text),
+            target_kind=target_kind,
+            operation=operation,
+            backup_path=Path(backup_text),
+            created_at=created,
+            hash_algo=hash_algo,
+            content_hash=content_hash,
+            size=size,
+            mtime_ns=mtime_ns,
+            content_text=content_text,
+        )
+
+    def recovery_backups(
+        self,
+        path: Path | str | None = None,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[RecoveryBackupRecord]:
+        query = """
+            SELECT id, run_id, target_path, target_kind, operation, backup_path, created_at,
+                   hash_algo, content_hash, size, mtime_ns, content_text
+            FROM recovery_backups
+        """
+        params: tuple[str, ...] = ()
+        if path is not None:
+            query += " WHERE target_path = ?"
+            params = (str(_canonical_path(path)),)
+        query += " ORDER BY id ASC"
+        with self._connection(connection) as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [_recovery_backup_from_row(row) for row in rows]
+
     def latest_run_id(self, *, connection: sqlite3.Connection | None = None) -> int | None:
         with self._connection(connection) as conn:
             row = conn.execute("SELECT id FROM runs ORDER BY id DESC LIMIT 1").fetchone()
@@ -1083,6 +1178,23 @@ def _asset_backup_from_row(row: sqlite3.Row | tuple[Any, ...]) -> AssetBackupRec
         mtime_ns=row[9],
         file_type=row[10],
         restored_at=None if row[11] is None else _parse_datetime(row[11]),
+    )
+
+
+def _recovery_backup_from_row(row: sqlite3.Row | tuple[Any, ...]) -> RecoveryBackupRecord:
+    return RecoveryBackupRecord(
+        id=row[0],
+        run_id=row[1],
+        target_path=Path(row[2]),
+        target_kind=row[3],
+        operation=row[4],
+        backup_path=Path(row[5]),
+        created_at=_parse_datetime(row[6]),
+        hash_algo=row[7],
+        content_hash=row[8],
+        size=row[9],
+        mtime_ns=row[10],
+        content_text=row[11],
     )
 
 

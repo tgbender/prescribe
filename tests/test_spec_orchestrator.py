@@ -385,6 +385,25 @@ def test_orchestrator_rollback_restores_managed_changes_and_preserves_unrelated_
     assert config_toml.read_text() == "title = 'hello'\ncount = 1\nexternal = false\n"
 
 
+def test_orchestrator_apply_records_recovery_backup_before_overwriting_existing_file(
+    tmp_path: Path, state_store
+) -> None:
+    config_toml = tmp_path / "config.toml"
+    config_toml.write_bytes(b"count = 1\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    applied = Orchestrator(state_store).run(spec_path)
+
+    assert applied[0].status == "applied"
+    backups = state_store.recovery_backups(config_toml)
+    assert len(backups) == 1
+    assert backups[0].target_kind == "file"
+    assert backups[0].operation == "applied"
+    assert backups[0].content_text == "count = 1\n"
+    assert backups[0].backup_path.read_bytes() == b"count = 1\n"
+
+
 def test_orchestrator_rollback_recreates_deleted_file_from_checkpoint(fake_root: Path, state_store) -> None:
     config_toml = fake_root / "config.toml"
     config_toml.write_text("title = 'hello'\ncount = 1\nexternal = true\n")
@@ -453,6 +472,27 @@ def test_orchestrator_rollback_removes_managed_file_created_by_app(tmp_path: Pat
     assert rolled_back.applied is True
     assert rolled_back.changed is True
     assert not config_toml.exists()
+
+
+def test_orchestrator_rollback_original_records_recovery_backup_before_deleting_manual_content(
+    tmp_path: Path, state_store
+) -> None:
+    config_toml = tmp_path / "new_config.toml"
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'new_config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    orchestrator = Orchestrator(state_store)
+    assert orchestrator.run(spec_path)[0].status == "applied"
+    config_toml.write_bytes(b"count = 2\nmanual = true\n")
+
+    rolled_back = orchestrator.rollback(config_toml, original=True)
+
+    assert rolled_back.status == "rolled-back"
+    assert not config_toml.exists()
+    backups = state_store.recovery_backups(config_toml)
+    assert backups[-1].operation == "rollback-original-delete"
+    assert backups[-1].content_text == "count = 2\nmanual = true\n"
+    assert backups[-1].backup_path.read_bytes() == b"count = 2\nmanual = true\n"
 
 
 def test_orchestrator_rollback_preserves_regex_manual_edit_across_multiple_batches(tmp_path: Path, state_store) -> None:

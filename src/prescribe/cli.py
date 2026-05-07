@@ -479,6 +479,60 @@ def list_managed(
         typer.echo(f"{fmt}  {date}  {r.path}{missing}")
 
 
+@app.command("backups")
+def list_backups(
+    path: Path | None = typer.Argument(None, metavar="TARGET", help="Optional target path to filter recovery backups."),
+    output_json: bool = typer.Option(False, "--json", help="Output results as JSON."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help="Path to state database."),
+) -> None:
+    """List recovery backups captured before Prescribe mutates or deletes existing data."""
+    store = _make_store(state)
+    if not store.path.exists():
+        if output_json:
+            typer.echo("[]")
+        else:
+            typer.echo("no recovery backups", err=True)
+        return
+
+    store.initialize()
+    records = store.recovery_backups(path)
+
+    if output_json:
+        typer.echo(
+            json.dumps(
+                [
+                    {
+                        "id": r.id,
+                        "run_id": r.run_id,
+                        "target_path": str(r.target_path),
+                        "target_kind": r.target_kind,
+                        "operation": r.operation,
+                        "backup_path": str(r.backup_path),
+                        "created_at": r.created_at.isoformat(),
+                        "hash_algo": r.hash_algo,
+                        "content_hash": r.content_hash.hex(),
+                        "size": r.size,
+                        "mtime_ns": r.mtime_ns,
+                        "has_text": r.content_text is not None,
+                    }
+                    for r in records
+                ],
+                indent=2,
+            )
+        )
+        return
+
+    if not records:
+        typer.echo("no recovery backups")
+        return
+
+    for r in records:
+        kind = typer.style(f"{r.target_kind:<8}", fg=typer.colors.BRIGHT_BLACK)
+        date = r.created_at.strftime("%Y-%m-%d %H:%M")
+        size = f"{r.size} bytes"
+        typer.echo(f"{kind}  {date}  {r.operation:<24}  {size:<12}  {r.target_path}")
+
+
 @app.command()
 def doctor(
     output_json: bool = typer.Option(False, "--json", help="Output diagnostics as JSON."),

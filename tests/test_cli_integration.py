@@ -306,6 +306,24 @@ def test_list_json_output(run, workdir: Path) -> None:
     assert data[0]["exists"] is True
 
 
+def test_backups_lists_recovery_backups_after_existing_file_apply(run, workdir: Path) -> None:
+    config = workdir / "config.toml"
+    config.write_bytes(b"count = 1\n")
+    spec = workdir / "spec.toml"
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    run("apply", "spec.toml")
+
+    result = run("backups", "--json")
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert len(data) == 1
+    assert data[0]["target_kind"] == "file"
+    assert data[0]["operation"] == "applied"
+    assert data[0]["size"] == len(b"count = 1\n")
+    assert Path(data[0]["backup_path"]).read_bytes() == b"count = 1\n"
+
+
 # ---------------------------------------------------------------------------
 # rollback
 # ---------------------------------------------------------------------------

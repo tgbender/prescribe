@@ -139,10 +139,10 @@ def test_orchestrator_materializes_asset_file_and_rolls_back_creation(tmp_path: 
 def test_orchestrator_asset_rollback_restores_existing_file(tmp_path: Path, state_store) -> None:
     source = tmp_path / "repo" / "config.txt"
     source.parent.mkdir()
-    source.write_text("managed\n")
+    source.write_bytes(b"managed\n")
     dest = tmp_path / "system" / "config.txt"
     dest.parent.mkdir()
-    dest.write_text("original\n")
+    dest.write_bytes(b"original\n")
     spec_path = tmp_path / "spec.toml"
     spec_path.write_text("[[assets]]\nsource = 'repo/config.txt'\ndest = 'system/config.txt'\n")
 
@@ -154,6 +154,29 @@ def test_orchestrator_asset_rollback_restores_existing_file(tmp_path: Path, stat
 
     assert rolled_back.status == "rolled-back"
     assert dest.read_text() == "original\n"
+
+
+def test_orchestrator_asset_apply_records_recovery_backup_before_replacing_existing_file(
+    tmp_path: Path, state_store
+) -> None:
+    source = tmp_path / "repo" / "config.txt"
+    source.parent.mkdir()
+    source.write_bytes(b"managed\n")
+    dest = tmp_path / "system" / "config.txt"
+    dest.parent.mkdir()
+    dest.write_bytes(b"original\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[assets]]\nsource = 'repo/config.txt'\ndest = 'system/config.txt'\n")
+
+    applied = Orchestrator(state_store).run(spec_path)[0]
+
+    assert applied.status == "applied"
+    backups = state_store.recovery_backups(dest)
+    assert len(backups) == 1
+    assert backups[0].target_kind == "asset"
+    assert backups[0].operation == "asset-write"
+    assert backups[0].content_text == "original\n"
+    assert backups[0].backup_path.read_bytes() == b"original\n"
 
 
 def test_orchestrator_asset_preserves_source_lf_bytes_on_windows(tmp_path: Path, state_store) -> None:
