@@ -1,6 +1,20 @@
 # Changelog
 
-## 0.3.1 (Unreleased)
+## 0.3.2 (Unreleased)
+
+### Features
+
+- Recovery backups now capture byte-for-byte copies before Prescribe overwrites or deletes existing files during apply, asset writes, and rollback operations.
+- `prescribe backups` lists recovery backup records for audit and recovery inspection.
+- `prescribe docs` now includes richer built-in reference topics and aliases for CLI terminology such as targets, selectors, result statuses, ownership, backups, state, and materialization.
+
+### Documentation
+
+- Clarified rollback behavior, `TARGET` path semantics, `--original`, and rollback conflict policies.
+- Clarified the difference between `status`, `validate --plan`, and `apply --dry-run`.
+- Refined CLI help text for specs, managed paths, recovery backups, directory commands, and docs discovery.
+
+## 0.3.1
 
 ### Bug Fixes
 
