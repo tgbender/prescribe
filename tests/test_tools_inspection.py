@@ -55,6 +55,40 @@ def test_mise_reads_manifest_for_intentional_installs(tmp_path: Path) -> None:
     assert report.tools["rg"][0].active is True
 
 
+def test_targeted_lookup_attributes_shims_to_installed_executables(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    data = tmp_path / "data"
+    installs = data / "mise" / "installs"
+    ripgrep_bin = installs / "ripgrep" / "15.1.0" / "pkg"
+    _exe(ripgrep_bin / "rg.exe")
+    (installs / ".mise-installs.toml").write_text('[ripgrep]\nshort = "ripgrep"\n', encoding="utf-8")
+    shims = data / "mise" / "shims"
+    _exe(shims / "rg.exe")
+    env = {"USERPROFILE": str(home), "PATH": str(shims), "XDG_DATA_HOME": str(data), "PATHEXT": ".EXE;.CMD"}
+
+    report = inspect_tool_paths(["rg"], managers=["mise"], env=env, home=home, platform="win32")
+
+    assert report.tools["rg"][0].installed_name == "ripgrep"
+    assert report.tools["rg"][0].scope == "intentional"
+
+
+def test_targeted_lookup_does_not_attribute_path_entries_by_executable_name(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    data = tmp_path / "data"
+    installs = data / "mise" / "installs"
+    _exe(installs / "mypy" / "1.0" / "bin" / "python.exe")
+    (installs / ".mise-installs.toml").write_text('[mypy]\nshort = "mypy"\n', encoding="utf-8")
+    path_dir = tmp_path / "path"
+    _exe(path_dir / "python.exe")
+    env = {"USERPROFILE": str(home), "PATH": str(path_dir), "XDG_DATA_HOME": str(data), "PATHEXT": ".EXE;.CMD"}
+
+    report = inspect_tool_paths(["python"], managers=["mise"], env=env, home=home, platform="win32")
+
+    assert report.tools["python"][0].source == "path[0]"
+    assert report.tools["python"][0].installed_name is None
+    assert report.tools["python"][0].scope == "active"
+
+
 def test_brew_filters_transitive_dependencies_by_default(tmp_path: Path) -> None:
     home = tmp_path / "home"
     prefix = tmp_path / "homebrew"

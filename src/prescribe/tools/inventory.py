@@ -9,6 +9,7 @@ from prescribe.tools.common import (
     candidate_paths,
     case_key,
     context,
+    is_executable,
     iter_executables,
     path_entries,
     path_sources,
@@ -91,6 +92,7 @@ def _candidate_map(
     by_path = {case_key(entry): index for index, entry in enumerate(path_entries)}
     active_by_name = _active_by_name(path_entries, names, ctx)
     installed_by_path = {case_key(tool.path): tool for tool in installed}
+    installed_by_executable = _installed_executable_index(installed, names, ctx)
     candidates: dict[str, list[ToolCandidate]] = {}
     for source in sources:
         if not source.exists:
@@ -99,6 +101,8 @@ def _candidate_map(
             name = tool_name(candidate, ctx)
             active = case_key(candidate) == case_key(active_by_name.get(name, Path()))
             installed_tool = _nearest_installed(candidate, installed_by_path)
+            if installed_tool is None and source.manager != "path":
+                installed_tool = installed_by_executable.get((source.manager, name))
             source_label = (
                 source.manager if source.manager != "path" else f"path[{by_path.get(case_key(source.path), -1)}]"
             )
@@ -113,6 +117,41 @@ def _candidate_map(
                 )
             )
     return {name: tuple(_dedupe_candidates(values)) for name, values in sorted(candidates.items())}
+
+
+def _installed_executable_index(
+    installed: tuple[InstalledTool, ...], names: frozenset[str] | None, ctx: InspectionContext
+) -> dict[tuple[str, str], InstalledTool]:
+    if names is None:
+        return {}
+    indexed: dict[tuple[str, str], InstalledTool] = {}
+    for tool in installed:
+        for name in names:
+            key = (tool.manager, name)
+            if key in indexed:
+                continue
+            if _installed_contains_executable(tool.path, name, ctx):
+                indexed[key] = tool
+    return indexed
+
+
+def _installed_contains_executable(root: Path, name: str, ctx: InspectionContext) -> bool:
+    stack = [(root, 0)]
+    while stack:
+        directory, depth = stack.pop()
+        for candidate in candidate_paths(directory, name, ctx):
+            if candidate.is_file() and is_executable(candidate, ctx):
+                return True
+        if depth >= 4:
+            continue
+        try:
+            children = list(directory.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if child.is_dir() and not child.name.startswith("."):
+                stack.append((child, depth + 1))
+    return False
 
 
 def _active_by_name(path_entries: list[Path], names: frozenset[str] | None, ctx: InspectionContext) -> dict[str, Path]:
