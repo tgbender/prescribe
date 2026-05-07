@@ -16,8 +16,10 @@ DEFAULT_TARGET = "~/tmp/prescribe-wsl-check"
 EXCLUDED_DIRS = {
     ".git",
     ".mypy_cache",
+    ".pytest-tmp",
     ".pytest_cache",
     ".ruff_cache",
+    ".tmp",
     ".uv-cache",
     ".venv",
     "__pycache__",

@@ -607,3 +607,7 @@ docs/site/
 
 # AI tools
 .aider*
+
+# Local test scratch
+.tmp/
+.pytest-tmp/

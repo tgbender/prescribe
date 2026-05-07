@@ -53,6 +53,13 @@ from prescribe.spec import (
     SpecLoader,
 )
 from prescribe.state import EventRecord, RunRecord, SnapshotRecord, StateStore
+from prescribe.tools import (
+    InstalledTool,
+    ToolCandidate,
+    ToolInventory,
+    ToolPathSource,
+    inspect_tool_paths,
+)
 
 __all__ = [
     # adapters
@@ -119,4 +126,10 @@ __all__ = [
     "RunRecord",
     "SnapshotRecord",
     "StateStore",
+    # tools
+    "InstalledTool",
+    "ToolCandidate",
+    "ToolInventory",
+    "ToolPathSource",
+    "inspect_tool_paths",
 ]

@@ -1,0 +1,156 @@
+"""Public inventory API for read-only tool inspection."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from prescribe.tools.common import (
+    InspectionContext,
+    candidate_paths,
+    case_key,
+    context,
+    iter_executables,
+    path_entries,
+    path_sources,
+    tool_name,
+)
+from prescribe.tools.managers import brew, bun, mise, pnpm, scoop, uv
+from prescribe.tools.models import InstalledTool, ToolCandidate, ToolInventory, ToolManager, ToolPathSource
+
+_DEFAULT_MANAGERS: tuple[ToolManager, ...] = ("uv", "bun", "pnpm", "mise", "scoop", "brew")
+_MANAGER_RESOLVERS = {
+    "uv": uv.inspect,
+    "bun": bun.inspect,
+    "pnpm": pnpm.inspect,
+    "mise": mise.inspect,
+    "scoop": scoop.inspect,
+    "brew": brew.inspect,
+}
+
+
+def inspect_tool_paths(
+    names: list[str] | tuple[str, ...] | set[str] | None = None,
+    *,
+    managers: list[ToolManager] | tuple[ToolManager, ...] | set[ToolManager] | None = None,
+    env: dict[str, str] | None = None,
+    home: Path | str | None = None,
+    platform: str | None = None,
+    include_path: bool = True,
+    include_transitive: bool = False,
+) -> ToolInventory:
+    """Inspect tool-manager paths and executable candidates without subprocesses.
+
+    ``names`` enables targeted lookup: only those executable names are checked in
+    candidate bin directories. When omitted, existing bin directories are scanned
+    once and known manager install metadata is included.
+    """
+
+    ctx = context(env=env, home=home, platform=platform)
+    selected = tuple(managers or _DEFAULT_MANAGERS)
+    target_names = frozenset(names) if names is not None else None
+    entries = path_entries(ctx)
+
+    sources: list[ToolPathSource] = []
+    installed: list[InstalledTool] = []
+    issues: list[str] = []
+    for manager in selected:
+        result = _MANAGER_RESOLVERS[manager](ctx, entries)
+        sources.extend(result.sources)
+        installed.extend(result.installed)
+        issues.extend(result.issues)
+    if include_path:
+        sources.extend(path_sources(entries))
+
+    visible_installed = tuple(tool for tool in installed if include_transitive or tool.scope != "dependency")
+    candidates = _candidate_map(
+        sources=sources,
+        installed=visible_installed,
+        path_entries=entries,
+        names=target_names,
+        ctx=ctx,
+    )
+    duplicates = {name: values for name, values in candidates.items() if len(values) > 1}
+    return ToolInventory(
+        path_entries=tuple(entries),
+        sources=tuple(sources),
+        installed=visible_installed,
+        tools=candidates,
+        duplicates=duplicates,
+        issues=tuple(issues),
+    )
+
+
+def _candidate_map(
+    *,
+    sources: list[ToolPathSource],
+    installed: tuple[InstalledTool, ...],
+    path_entries: list[Path],
+    names: frozenset[str] | None,
+    ctx: InspectionContext,
+) -> dict[str, tuple[ToolCandidate, ...]]:
+    by_path = {case_key(entry): index for index, entry in enumerate(path_entries)}
+    active_by_name = _active_by_name(path_entries, names, ctx)
+    installed_by_path = {case_key(tool.path): tool for tool in installed}
+    candidates: dict[str, list[ToolCandidate]] = {}
+    for source in sources:
+        if not source.exists:
+            continue
+        for candidate in iter_executables(source.path, names, ctx):
+            name = tool_name(candidate, ctx)
+            active = case_key(candidate) == case_key(active_by_name.get(name, Path()))
+            installed_tool = _nearest_installed(candidate, installed_by_path)
+            source_label = (
+                source.manager if source.manager != "path" else f"path[{by_path.get(case_key(source.path), -1)}]"
+            )
+            candidates.setdefault(name, []).append(
+                ToolCandidate(
+                    name=name,
+                    path=candidate,
+                    source=source_label,
+                    active=active,
+                    scope=installed_tool.scope if installed_tool is not None else ("active" if active else "candidate"),
+                    installed_name=installed_tool.name if installed_tool is not None else None,
+                )
+            )
+    return {name: tuple(_dedupe_candidates(values)) for name, values in sorted(candidates.items())}
+
+
+def _active_by_name(path_entries: list[Path], names: frozenset[str] | None, ctx: InspectionContext) -> dict[str, Path]:
+    found: dict[str, Path] = {}
+    if names is not None:
+        for directory in path_entries:
+            for name in names:
+                if name in found:
+                    continue
+                for candidate in candidate_paths(directory, name, ctx):
+                    if candidate.is_file():
+                        found[name] = candidate.resolve(strict=False)
+                        break
+        return found
+    for directory in path_entries:
+        for candidate in iter_executables(directory, None, ctx):
+            found.setdefault(tool_name(candidate, ctx), candidate)
+    return found
+
+
+def _nearest_installed(path: Path, installed_by_path: dict[str, InstalledTool]) -> InstalledTool | None:
+    current = path
+    while True:
+        match = installed_by_path.get(case_key(current))
+        if match is not None:
+            return match
+        if current.parent == current:
+            return None
+        current = current.parent
+
+
+def _dedupe_candidates(values: list[ToolCandidate]) -> list[ToolCandidate]:
+    seen: set[str] = set()
+    result: list[ToolCandidate] = []
+    for value in values:
+        key = case_key(value.path)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
