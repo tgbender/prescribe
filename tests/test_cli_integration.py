@@ -534,6 +534,44 @@ def test_validate_plan_json_includes_status(run, workdir: Path) -> None:
     assert data["targets"][0]["status"] == "would change"
 
 
+def test_validate_plan_reports_filesystem_safety_error(run, workdir: Path) -> None:
+    real = workdir / "real.toml"
+    real.write_text("count = 1\n")
+    link = workdir / "config.toml"
+    try:
+        link.symlink_to(real)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    spec = workdir / "spec.toml"
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    result = run("validate", "--plan", "spec.toml")
+
+    assert result.returncode != 0
+    assert "error:" in result.stdout
+    assert "symlink" in result.stdout
+    assert real.read_text() == "count = 1\n"
+
+
+def test_validate_plan_json_includes_filesystem_safety_error(run, workdir: Path) -> None:
+    (workdir / "repo").mkdir()
+    (workdir / "repo" / "managed.txt").write_text("managed\n")
+    extra_dir = workdir / "system" / "old"
+    extra_dir.mkdir(parents=True)
+    (extra_dir / "keep.txt").write_text("keep\n")
+    spec = workdir / "spec.toml"
+    spec.write_text("[[assets]]\nsource = 'repo/*.txt'\ndest = 'system'\nreplace = true\n")
+
+    result = run("validate", "--plan", "--json", "spec.toml")
+
+    assert result.returncode != 0
+    data = json.loads(result.stdout)
+    assert data["valid"] is False
+    assert data["targets"][0]["status"] == "error"
+    assert "will not displace directories" in data["targets"][0]["error"]
+    assert (extra_dir / "keep.txt").read_text() == "keep\n"
+
+
 def test_validate_rejects_case_insensitive_path_collision(run, workdir: Path) -> None:
     spec = workdir / "spec.toml"
     spec.write_text(
@@ -660,6 +698,24 @@ def test_validate_dir_json_reports_asset_targets_without_state(run, workdir: Pat
     assert data["specs"][0]["targets"][0]["type"] == "asset"
     assert data["specs"][0]["targets"][0]["status"] == "would change"
     assert not (workdir / ".prescribe" / "state.db").exists()
+
+
+def test_validate_dir_plan_reports_filesystem_safety_error(run, workdir: Path) -> None:
+    specs = workdir / "specs"
+    specs.mkdir()
+    (workdir / "repo").mkdir()
+    (workdir / "repo" / "managed.txt").write_text("managed\n")
+    extra_dir = workdir / "system" / "old"
+    extra_dir.mkdir(parents=True)
+    (extra_dir / "keep.txt").write_text("keep\n")
+    (specs / "agent.toml").write_text("[[assets]]\nsource = '../repo/*.txt'\ndest = '../system'\nreplace = true\n")
+
+    result = run("validate-dir", "--plan", "specs")
+
+    assert result.returncode != 0
+    assert "error:" in result.stdout
+    assert "will not displace directories" in result.stdout
+    assert (extra_dir / "keep.txt").read_text() == "keep\n"
 
 
 # ---------------------------------------------------------------------------

@@ -226,14 +226,17 @@ def validate(
         plan=_option_bool(plan),
         diff=_option_bool(diff),
     )
+    had_plan_error = _targets_have_plan_errors(targets)
 
     if output_json:
-        typer.echo(json.dumps({"valid": True, "targets": targets}, indent=2))
+        typer.echo(json.dumps({"valid": not had_plan_error, "targets": targets}, indent=2))
+        if had_plan_error:
+            raise typer.Exit(1)
         return
 
     active = sum(1 for target in targets if target["active"])
     skipped = len(targets) - active
-    typer.echo(f"valid: {spec}")
+    typer.echo(f"{'error' if had_plan_error else 'valid'}: {spec}")
     typer.echo(f"targets: {active} active, {skipped} skipped")
     for target in targets:
         status = "active" if target["active"] else "skipped"
@@ -241,10 +244,14 @@ def validate(
         detail = target.get("path") or target.get("name") or ""
         if plan and target.get("status"):
             status = str(target["status"])
+        if plan and target.get("error"):
+            detail = f"{detail}  — {target['error']}"
         reason = f"  — {target['skip_reason']}" if explain and target.get("skip_reason") else ""
         typer.echo(f"{label}  {status:<7}  {detail}{reason}")
         if plan and target.get("diff"):
             typer.echo(str(target["diff"]), nl=False)
+    if had_plan_error:
+        raise typer.Exit(1)
 
 
 @app.command("list-specs")
@@ -359,7 +366,12 @@ def validate_dir(
                 plan=_option_bool(plan),
                 diff=_option_bool(diff),
             )
-            payload.append({"spec": str(spec_path), "valid": True, "targets": targets})
+            plan_error = _targets_have_plan_errors(targets)
+            had_error = had_error or plan_error
+            item: dict[str, object] = {"spec": str(spec_path), "valid": not plan_error, "targets": targets}
+            if plan_error:
+                item["error"] = _first_target_error(targets) or "validation plan failed"
+            payload.append(item)
         except SpecError as exc:
             had_error = True
             payload.append({"spec": str(spec_path), "valid": False, "error": str(exc), "targets": []})
@@ -397,6 +409,8 @@ def validate_dir(
                 if plan and target.get("status"):
                     status = str(target["status"])
                 detail = target.get("path") or target.get("dest") or target.get("name") or ""
+                if plan and target.get("error"):
+                    detail = f"{detail}  — {target['error']}"
                 reason = f"  — {target['skip_reason']}" if explain and target.get("skip_reason") else ""
                 typer.echo(f"  {str(target['type']):<6}  {status:<7}  {detail}{reason}")
                 if plan and target.get("diff"):
@@ -871,6 +885,10 @@ def _validation_targets(
             result_idx += 1
             entry["status"] = _display_status(result.status, result.changed)
             entry["changed"] = result.changed
+            if result.error:
+                entry["error"] = result.error
+            elif result.conflict is not None:
+                entry["error"] = result.conflict.reason
             if result.diff:
                 entry["diff"] = result.diff
         targets.append(entry)
@@ -892,6 +910,10 @@ def _validation_targets(
             result_idx += 1
             entry["status"] = _display_status(result.status, result.changed)
             entry["changed"] = result.changed
+            if result.error:
+                entry["error"] = result.error
+            elif result.conflict is not None:
+                entry["error"] = result.conflict.reason
             if result.diff:
                 entry["diff"] = result.diff
         targets.append(entry)
@@ -912,10 +934,26 @@ def _validation_targets(
             result_idx += 1
             entry["status"] = _display_status(result.status, result.changed)
             entry["changed"] = result.changed
+            if result.error:
+                entry["error"] = result.error
+            elif result.conflict is not None:
+                entry["error"] = result.conflict.reason
             if result.diff:
                 entry["diff"] = result.diff
         targets.append(entry)
     return targets
+
+
+def _targets_have_plan_errors(targets: list[dict[str, object]]) -> bool:
+    return any(target.get("active") and target.get("status") in {"error", "conflict"} for target in targets)
+
+
+def _first_target_error(targets: list[dict[str, object]]) -> str | None:
+    for target in targets:
+        error = target.get("error")
+        if isinstance(error, str):
+            return error
+    return None
 
 
 def _validation_plan_results(
