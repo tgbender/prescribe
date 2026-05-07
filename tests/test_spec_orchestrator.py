@@ -9,7 +9,9 @@ from prescribe.adapters.toml import TomlAdapter
 from prescribe.core import Planner
 from prescribe.orchestrator import (
     Orchestrator,
+    arch_matches,
     condition_skip_reason,
+    current_arch,
     current_machine,
     machine_matches,
     platform_matches,
@@ -45,6 +47,28 @@ def test_platform_matches_any_selector() -> None:
 def test_machine_matches_current_machine() -> None:
     assert machine_matches([current_machine()]) is True
     assert machine_matches(["not-the-current-machine"]) is False
+
+
+def test_arch_matches_current_arch_and_aliases(monkeypatch) -> None:
+    import prescribe.orchestrator as orchestrator
+
+    monkeypatch.setattr(orchestrator.platform, "machine", lambda: "AMD64")
+
+    assert current_arch() == "x86_64"
+    assert arch_matches(["x86_64"]) is True
+    assert arch_matches(["x64"]) is True
+    assert arch_matches(["amd64"]) is True
+    assert arch_matches(["arm64"]) is False
+    assert arch_matches(["all"]) is True
+
+
+def test_condition_skip_reason_reports_non_matching_arch(tmp_path: Path, monkeypatch) -> None:
+    import prescribe.orchestrator as orchestrator
+
+    monkeypatch.setattr(orchestrator.platform, "machine", lambda: "x86_64")
+    target = FileTarget(path=tmp_path / "config.toml", format="toml", arch=["arm64"])
+
+    assert condition_skip_reason(target=target) == "architecture did not match"
 
 
 def test_condition_skip_reason_reports_first_failed_condition(tmp_path: Path) -> None:

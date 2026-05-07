@@ -60,6 +60,29 @@ def test_same_path_same_priority_rejected(tmp_path: Path):
         SpecLoader().load(spec_path)
 
 
+def test_same_path_same_priority_different_arch_allowed(tmp_path: Path):
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text(
+        "[[files]]\n"
+        "path = 'config.toml'\n"
+        "format = 'toml'\n"
+        "arch = ['x86_64']\n"
+        "[files.data]\n"
+        "count = 0\n"
+        "\n"
+        "[[files]]\n"
+        "path = 'config.toml'\n"
+        "format = 'toml'\n"
+        "arch = ['arm64']\n"
+        "[files.data]\n"
+        "count = 10\n"
+    )
+
+    spec = SpecLoader().load(spec_path)
+
+    assert [target.arch for target in spec.files] == [["x86_64"], ["arm64"]]
+
+
 # ── Orchestrator resolution ──────────────────────────────
 
 

@@ -1,5 +1,6 @@
 import ntpath
 import os
+import platform
 import shutil
 import socket
 import sys
@@ -15,6 +16,7 @@ from prescribe.path_policy import PathPolicyError, validate_portable_path
 
 KNOWN_FORMATS = frozenset({"toml", "yaml", "jsonc", "line"})
 KNOWN_PLATFORMS = frozenset({"linux", "macos", "windows", "wsl"})
+KNOWN_ARCHES = frozenset({"x86_64", "arm64", "x86", "armv7", "all"})
 KNOWN_SHELLS = frozenset({"xonsh", "bash", "zsh", "fish", "nu", "pwsh", "cmd"})
 KNOWN_ASSET_MODES = frozenset({"file", "mirror"})
 KNOWN_LOCATION_MODES = frozenset({"first_existing_parent", "first_existing", "first", "required", "create_parent"})
@@ -33,6 +35,7 @@ class SpecError(Exception):
 class LocationCandidate:
     path: Path
     platforms: list[str] = field(default_factory=list)
+    arch: list[str] = field(default_factory=list)
     machine: list[str] = field(default_factory=list)
     if_command_exists: list[str] = field(default_factory=list)
 
@@ -55,6 +58,7 @@ class FileTarget:
     managed_block_id: str | None = None
     lines: list[str] = field(default_factory=list)
     platforms: list[str] = field(default_factory=list)
+    arch: list[str] = field(default_factory=list)
     machine: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     if_command_exists: list[str] = field(default_factory=list)
@@ -70,6 +74,7 @@ class EnvTarget:
     path_append: list[str] = field(default_factory=list)
     materialize: bool = False
     platforms: list[str] = field(default_factory=list)
+    arch: list[str] = field(default_factory=list)
     machine: list[str] = field(default_factory=list)
     shells: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
@@ -83,6 +88,7 @@ class ShellTarget:
     managed_block_id: str
     shells: list[str] = field(default_factory=list)
     platforms: list[str] = field(default_factory=list)
+    arch: list[str] = field(default_factory=list)
     machine: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
 
@@ -98,6 +104,7 @@ class AssetTarget:
     max_displace_bytes: int = 10 * 1024 * 1024
     allow_binary: bool = False
     platforms: list[str] = field(default_factory=list)
+    arch: list[str] = field(default_factory=list)
     machine: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     if_command_exists: list[str] = field(default_factory=list)
@@ -254,6 +261,7 @@ class SpecLoader:
             managed_block_id=_coerce_optional_string(raw.get("managed_block_id"), ctx, "managed_block_id"),
             lines=lines,
             platforms=_coerce_platforms(raw.get("platforms", []), ctx),
+            arch=_coerce_arch(raw.get("arch", []), ctx),
             machine=_coerce_string_list(raw.get("machine", []), ctx, "machine"),
             tags=_coerce_string_list(raw.get("tags", []), ctx, "tags"),
             if_command_exists=_coerce_string_list(raw.get("if_command_exists", []), ctx, "if_command_exists"),
@@ -290,6 +298,7 @@ class SpecLoader:
             path_append=[_expand_v(e) for e in _coerce_string_list(raw.get("path_append", []), ctx, "path_append")],
             materialize=bool(raw.get("materialize", False)),
             platforms=_coerce_platforms(raw.get("platforms", []), ctx),
+            arch=_coerce_arch(raw.get("arch", []), ctx),
             machine=_coerce_string_list(raw.get("machine", []), ctx, "machine"),
             shells=_coerce_shells(raw.get("shells", []), ctx),
             tags=_coerce_string_list(raw.get("tags", []), ctx, "tags"),
@@ -343,6 +352,7 @@ class SpecLoader:
             managed_block_id=str(block_id),
             shells=_coerce_shells(raw.get("shells", []), ctx),
             platforms=_coerce_platforms(raw.get("platforms", []), ctx),
+            arch=_coerce_arch(raw.get("arch", []), ctx),
             machine=_coerce_string_list(raw.get("machine", []), ctx, "machine"),
             tags=_coerce_string_list(raw.get("tags", []), ctx, "tags"),
         )
@@ -418,6 +428,7 @@ class SpecLoader:
             max_displace_bytes=max_displace_bytes,
             allow_binary=bool(raw.get("allow_binary", False)),
             platforms=_coerce_platforms(raw.get("platforms", []), ctx),
+            arch=_coerce_arch(raw.get("arch", []), ctx),
             machine=_coerce_string_list(raw.get("machine", []), ctx, "machine"),
             tags=_coerce_string_list(raw.get("tags", []), ctx, "tags"),
             if_command_exists=_coerce_string_list(raw.get("if_command_exists", []), ctx, "if_command_exists"),
@@ -438,11 +449,13 @@ def _parse_location_candidate(
     if isinstance(raw, str):
         path = raw
         platforms: list[str] = []
+        arch: list[str] = []
         machine: list[str] = []
         if_command_exists: list[str] = []
     elif isinstance(raw, Mapping):
         path = _coerce_required_string(raw.get("path"), ctx, "path")
         platforms = _coerce_platforms(raw.get("platforms", []), ctx)
+        arch = _coerce_arch(raw.get("arch", []), ctx)
         machine = _coerce_string_list(raw.get("machine", []), ctx, "machine")
         if_command_exists = _coerce_string_list(raw.get("if_command_exists", []), ctx, "if_command_exists")
     else:
@@ -450,6 +463,7 @@ def _parse_location_candidate(
     return LocationCandidate(
         path=_resolve_destination_path(spec_path, _validated_expanded_path(path, vars_dict, ctx, "path")),
         platforms=platforms,
+        arch=arch,
         machine=machine,
         if_command_exists=if_command_exists,
     )
@@ -541,6 +555,8 @@ def _resolve_location(spec_path: Path, location: Location, ctx: str) -> Path:
 
 def _location_candidate_matches(candidate: LocationCandidate) -> bool:
     if not _platform_selectors_match(candidate.platforms):
+        return False
+    if not _arch_selectors_match(candidate.arch):
         return False
     if not _machine_selectors_match(candidate.machine):
         return False
@@ -637,10 +653,18 @@ def _coerce_string_list(value: Any, context: str, field_name: str) -> list[str]:
 
 def _coerce_platforms(value: Any, ctx: str) -> list[str]:
     platforms = _coerce_string_list(value, ctx, "platforms")
-    for platform in platforms:
-        if platform not in KNOWN_PLATFORMS:
-            raise SpecError(f"{ctx}: unknown platform {platform!r}, expected one of {sorted(KNOWN_PLATFORMS)}")
+    for selector in platforms:
+        if selector not in KNOWN_PLATFORMS:
+            raise SpecError(f"{ctx}: unknown platform {selector!r}, expected one of {sorted(KNOWN_PLATFORMS)}")
     return platforms
+
+
+def _coerce_arch(value: Any, ctx: str) -> list[str]:
+    arches = [_normalize_arch(arch) for arch in _coerce_string_list(value, ctx, "arch")]
+    for arch in arches:
+        if arch not in KNOWN_ARCHES:
+            raise SpecError(f"{ctx}: unknown arch {arch!r}, expected one of {sorted(KNOWN_ARCHES)}")
+    return arches
 
 
 def _coerce_shells(value: Any, ctx: str) -> list[str]:
@@ -747,7 +771,11 @@ def _validate_no_duplicate_overlapping_files(spec_path: Path, targets: list[File
 
 
 def _file_targets_overlap(left: FileTarget, right: FileTarget) -> bool:
-    return _values_overlap(left.platforms, right.platforms) and _values_overlap(left.machine, right.machine)
+    return (
+        _values_overlap(left.platforms, right.platforms)
+        and _values_overlap(left.arch, right.arch)
+        and _values_overlap(left.machine, right.machine)
+    )
 
 
 def _portable_path_identity(path: Path) -> str:
@@ -778,6 +806,30 @@ def _platform_selector_matches(selector: str) -> bool:
     if selector == "wsl":
         return sys.platform.startswith("linux") and _is_wsl()
     return False
+
+
+def _arch_selectors_match(selectors: list[str]) -> bool:
+    if not selectors:
+        return True
+    current = _current_arch()
+    return any(selector == current or selector == "all" for selector in selectors)
+
+
+def _current_arch() -> str:
+    return _normalize_arch(platform.machine())
+
+
+def _normalize_arch(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_")
+    if normalized in {"amd64", "x64"}:
+        return "x86_64"
+    if normalized in {"aarch64", "arm64e"}:
+        return "arm64"
+    if normalized in {"i386", "i686", "x86_32"}:
+        return "x86"
+    if normalized.startswith("armv7"):
+        return "armv7"
+    return normalized
 
 
 def _is_wsl() -> bool:

@@ -3,6 +3,7 @@ import difflib
 import glob
 import json
 import os
+import platform
 import re
 import shutil
 import socket
@@ -67,6 +68,10 @@ PLATFORM_MATCHERS: dict[str, Callable[[], bool]] = {
 }
 
 
+def current_arch() -> str:
+    return _normalize_arch(platform.machine())
+
+
 def current_machine() -> str:
     override = os.environ.get("PRESCRIBE_MACHINE")
     if override:
@@ -78,6 +83,26 @@ def platform_matches(selectors: list[str]) -> bool:
     if not selectors:
         return True
     return any(PLATFORM_MATCHERS.get(selector, lambda: False)() for selector in selectors)
+
+
+def arch_matches(selectors: list[str]) -> bool:
+    if not selectors:
+        return True
+    arch = current_arch()
+    return any(_normalize_arch(selector) == arch or selector == "all" for selector in selectors)
+
+
+def _normalize_arch(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_")
+    if normalized in {"amd64", "x64"}:
+        return "x86_64"
+    if normalized in {"aarch64", "arm64e"}:
+        return "arm64"
+    if normalized in {"i386", "i686", "x86_32"}:
+        return "x86"
+    if normalized.startswith("armv7"):
+        return "armv7"
+    return normalized
 
 
 def _is_wsl() -> bool:
@@ -112,6 +137,8 @@ def condition_skip_reason(
 ) -> str | None:
     if not platform_matches(target.platforms):
         return "platform did not match"
+    if not arch_matches(getattr(target, "arch", [])):
+        return "architecture did not match"
     if not machine_matches(target.machine):
         return "machine did not match"
 

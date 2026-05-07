@@ -25,7 +25,9 @@ from prescribe.document import Adapter, Document
 from prescribe.materialize import materialize
 from prescribe.orchestrator import (
     Orchestrator,
+    arch_matches,
     condition_matches,
+    current_arch,
     current_machine,
     machine_matches,
     platform_matches,
@@ -89,7 +91,9 @@ __all__ = [
     "file_fingerprint",
     # orchestrator
     "Orchestrator",
+    "arch_matches",
     "condition_matches",
+    "current_arch",
     "current_machine",
     "machine_matches",
     "platform_matches",

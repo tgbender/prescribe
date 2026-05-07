@@ -485,6 +485,22 @@ def test_validate_explain_skips_includes_reason(run, workdir: Path) -> None:
     assert data["targets"][0]["skip_reason"] == "platform did not match"
 
 
+def test_validate_explain_skips_includes_arch_reason(run, workdir: Path) -> None:
+    import platform
+
+    current = platform.machine().lower()
+    non_current = "arm64" if current not in {"arm64", "aarch64"} else "x86_64"
+    spec = workdir / "spec.toml"
+    spec.write_text(f"[[files]]\npath = 'arch.toml'\nformat = 'toml'\narch = ['{non_current}']\n")
+
+    result = run("validate", "--explain-skips", "--json", "spec.toml")
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["targets"][0]["active"] is False
+    assert data["targets"][0]["skip_reason"] == "architecture did not match"
+
+
 def test_validate_invalid_spec_exits_nonzero(run, workdir: Path) -> None:
     spec = workdir / "spec.toml"
     spec.write_text("[[targets]]\npath = 'old.toml'\nformat = 'toml'\n")
