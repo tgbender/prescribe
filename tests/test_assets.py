@@ -502,6 +502,90 @@ def test_orchestrator_asset_replace_refuses_extra_directory(tmp_path: Path, stat
     assert not (tmp_path / "system" / "managed.txt").exists()
 
 
+def test_orchestrator_asset_preflights_all_destinations_before_writing(tmp_path: Path, state_store) -> None:
+    (tmp_path / "repo").mkdir()
+    (tmp_path / "repo" / "a.txt").write_text("managed a\n")
+    (tmp_path / "repo" / "b.txt").write_text("managed b\n")
+    first = tmp_path / "system" / "a.txt"
+    first.parent.mkdir()
+    first.write_text("original a\n")
+    real = tmp_path / "real-b.txt"
+    real.write_text("real b\n")
+    unsafe = tmp_path / "system" / "b.txt"
+    try:
+        unsafe.symlink_to(real)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[assets]]\nsource = 'repo/*.txt'\ndest = 'system'\n")
+
+    result = Orchestrator(state_store).run(spec_path)[0]
+
+    assert result.status == "error"
+    assert "symlink" in (result.error or "")
+    assert first.read_text() == "original a\n"
+    assert real.read_text() == "real b\n"
+    assert unsafe.is_symlink()
+
+
+def test_orchestrator_asset_backup_restore_refuses_symlink_reappearance(tmp_path: Path, state_store) -> None:
+    (tmp_path / "repo").mkdir()
+    (tmp_path / "repo" / "managed.txt").write_text("managed\n")
+    extra = tmp_path / "system" / "extra.txt"
+    extra.parent.mkdir()
+    extra.write_text("old\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[assets]]\nsource = 'repo/*.txt'\ndest = 'system'\nreplace = true\n")
+    orchestrator = Orchestrator(state_store)
+    assert orchestrator.run(spec_path)[0].status == "applied"
+    backups = state_store.asset_backups(extra)
+    assert len(backups) == 1
+    real = tmp_path / "real-extra.txt"
+    real.write_text("real\n")
+    try:
+        extra.symlink_to(real)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    restored = orchestrator.rollback(extra)
+
+    assert restored.status == "error"
+    assert "symlink" in (restored.error or "")
+    assert real.read_text() == "real\n"
+    assert extra.is_symlink()
+    assert backups[0].restored_at is None
+    assert backups[0].backup_path.exists()
+
+
+def test_orchestrator_asset_displacement_restores_extra_if_state_recording_fails(
+    tmp_path: Path, state_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "repo").mkdir()
+    (tmp_path / "repo" / "managed.txt").write_text("managed\n")
+    extra = tmp_path / "system" / "extra.txt"
+    extra.parent.mkdir()
+    extra.write_text("old\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[assets]]\nsource = 'repo/*.txt'\ndest = 'system'\nreplace = true\n")
+    original_record_change_batch = state_store.record_change_batch
+
+    def fail_displaced_change_batch(*args, **kwargs):
+        if kwargs.get("format") == "asset-displaced":
+            raise RuntimeError("simulated state failure")
+        return original_record_change_batch(*args, **kwargs)
+
+    monkeypatch.setattr(state_store, "record_change_batch", fail_displaced_change_batch)
+
+    result = Orchestrator(state_store).run(spec_path)[0]
+
+    assert result.status == "error"
+    assert "simulated state failure" in (result.error or "")
+    assert extra.read_text() == "old\n"
+    backups = state_store.asset_backups(extra)
+    assert len(backups) == 1
+    assert backups[0].restored_at is not None
+
+
 def test_orchestrator_asset_replaces_hardlink_without_mutating_other_name(tmp_path: Path, state_store) -> None:
     source = tmp_path / "repo" / "config.txt"
     source.parent.mkdir()

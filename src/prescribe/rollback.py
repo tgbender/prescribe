@@ -33,6 +33,15 @@ def perform_rollback(
     resolver: ConflictResolver = None,
     connection: sqlite3.Connection | None = None,
 ) -> OrchestrationResult:
+    if path.is_symlink():
+        return OrchestrationResult(
+            status="error",
+            applied=False,
+            changed=False,
+            error=f"rollback refused for symlink path: {path}",
+            dry_run=dry_run,
+        )
+
     if original:
         return perform_rollback_original(path, state_store, dry_run=dry_run, resolver=resolver, connection=connection)
 

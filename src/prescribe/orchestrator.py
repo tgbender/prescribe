@@ -16,7 +16,7 @@ from typing import Any
 from prescribe._util import _MISSING, mapping_value, sha256_bytes
 from prescribe.adapters import adapter_for_path
 from prescribe.atomic import atomic_write_bytes, permission_bits
-from prescribe.backups import move_to_backup
+from prescribe.backups import move_to_backup, restore_backup
 from prescribe.claims import (
     Claim,
     ClaimConflict,
@@ -445,12 +445,13 @@ class Orchestrator:
                 unsafe = _unsafe_asset_replace_reason(target, replace_extras)
                 if unsafe is not None:
                     return OrchestrationResult(status="error", applied=False, changed=False, error=unsafe)
+            for source, dest in entries:
+                ensure_safe_asset_source_path(source)
+                ensure_safe_managed_write_path(dest, operation="asset write")
 
             changed = False
             diffs: list[str] = []
             for source, dest in entries:
-                ensure_safe_asset_source_path(source)
-                ensure_safe_managed_write_path(dest, operation="asset write")
                 source_bytes = source.read_bytes()
                 source_text = decode_utf8_bytes(source_bytes, path=source)
                 current = _asset_destination_state(dest)
@@ -644,47 +645,57 @@ class Orchestrator:
     ) -> None:
         if run_id is None:
             raise RuntimeError("run_id is None in _displace_asset_extra")
-        backup_path, content_hash, size, mtime_ns, file_type = move_to_backup(
-            state_store=self.state_store,
-            run_id=run_id,
-            path=path,
-        )
-        self.state_store.record_asset_backup(
-            run_id=run_id,
-            target_dest=target.dest,
-            original_path=path,
-            backup_path=backup_path,
-            content_hash=content_hash,
-            size=size,
-            mtime_ns=mtime_ns,
-            file_type=file_type,
-            connection=connection,
-        )
-        self.state_store.record_change_batch(
-            run_id=run_id,
-            path=path,
-            operations=[
-                {
-                    "kind": "displace_file",
-                    "key": "file",
-                    "value": None,
-                    "before_value": str(backup_path),
-                    "before_exists": True,
-                    "reason": "asset replace displaced extra file",
-                }
-            ],
-            original_exists=True,
-            format="asset-displaced",
-            connection=connection,
-        )
-        self.state_store.record_event(
-            run_id=run_id,
-            event_type="displaced",
-            path=path,
-            changed=True,
-            summary=f"moved extra asset to backup {backup_path}",
-            connection=connection,
-        )
+        backup_path: Path | None = None
+        backup_id: int | None = None
+        try:
+            backup_path, content_hash, size, mtime_ns, file_type = move_to_backup(
+                state_store=self.state_store,
+                run_id=run_id,
+                path=path,
+            )
+            backup_record = self.state_store.record_asset_backup(
+                run_id=run_id,
+                target_dest=target.dest,
+                original_path=path,
+                backup_path=backup_path,
+                content_hash=content_hash,
+                size=size,
+                mtime_ns=mtime_ns,
+                file_type=file_type,
+                connection=connection,
+            )
+            backup_id = backup_record.id
+            self.state_store.record_change_batch(
+                run_id=run_id,
+                path=path,
+                operations=[
+                    {
+                        "kind": "displace_file",
+                        "key": "file",
+                        "value": None,
+                        "before_value": str(backup_path),
+                        "before_exists": True,
+                        "reason": "asset replace displaced extra file",
+                    }
+                ],
+                original_exists=True,
+                format="asset-displaced",
+                connection=connection,
+            )
+            self.state_store.record_event(
+                run_id=run_id,
+                event_type="displaced",
+                path=path,
+                changed=True,
+                summary=f"moved extra asset to backup {backup_path}",
+                connection=connection,
+            )
+        except Exception:
+            if backup_path is not None and backup_path.exists() and not path.exists() and not path.is_symlink():
+                restore_backup(backup_path=backup_path, original_path=path)
+                if backup_id is not None:
+                    self.state_store.mark_asset_backup_restored(backup_id, connection=connection)
+            raise
 
     # ── file handling ─────────────────────────────────
 

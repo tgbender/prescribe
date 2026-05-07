@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from prescribe.adapters.toml import TomlAdapter
 from prescribe.core import Planner
 from prescribe.orchestrator import (
@@ -382,6 +384,30 @@ def test_orchestrator_rollback_recreates_deleted_file_from_checkpoint(fake_root:
     assert parsed["title"] == "hello"
     assert parsed["count"] == 1
     assert parsed["external"] is True
+
+
+def test_orchestrator_rollback_refuses_symlink_target_without_mutating_real_file(tmp_path: Path, state_store) -> None:
+    config_toml = tmp_path / "config.toml"
+    config_toml.write_text("count = 1\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    orchestrator = Orchestrator(state_store)
+    assert orchestrator.run(spec_path)[0].status == "applied"
+    config_toml.unlink()
+    real = tmp_path / "real.toml"
+    real.write_text("count = 99\n")
+    try:
+        config_toml.symlink_to(real)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    rolled_back = orchestrator.rollback(config_toml)
+
+    assert rolled_back.status == "error"
+    assert "symlink" in (rolled_back.error or "")
+    assert real.read_text() == "count = 99\n"
+    assert config_toml.is_symlink()
 
 
 def test_orchestrator_rollback_removes_managed_file_created_by_app(tmp_path: Path, state_store) -> None:
