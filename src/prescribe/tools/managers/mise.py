@@ -101,7 +101,7 @@ def _installed(installs: Path, ctx: InspectionContext, names: frozenset[str] | N
     for path in iter_dirs(installs):
         if path.name.startswith(".") or path.name == "incomplete" or str(path).casefold() in known:
             continue
-        version = configured_versions.get(path.name)
+        version = None
         install = MiseToolInstall(name=path.name, path=path, version=version)
         installed.append(
             InstalledTool(

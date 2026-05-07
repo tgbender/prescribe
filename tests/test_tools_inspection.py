@@ -70,6 +70,32 @@ def test_mise_reads_manifest_for_intentional_installs(tmp_path: Path) -> None:
     assert report.tools["rg"][0].active is False
 
 
+def test_mise_unknown_folder_does_not_inherit_configured_tool_version(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    config = tmp_path / "config"
+    data = tmp_path / "data"
+    installs = data / "mise" / "installs"
+    (installs / "aqua-eza-community-eza" / "0.23.4").mkdir(parents=True)
+    (installs / "eza").mkdir()
+    (installs / ".mise-installs.toml").write_text(
+        '[aqua-eza-community-eza]\nshort = "aqua:eza-community/eza"\n',
+        encoding="utf-8",
+    )
+    (config / "mise").mkdir(parents=True)
+    (config / "mise" / "config.toml").write_text(
+        '[tools]\n"aqua:eza-community/eza" = "latest"\n',
+        encoding="utf-8",
+    )
+    env = {"HOME": str(home), "XDG_DATA_HOME": str(data), "XDG_CONFIG_HOME": str(config)}
+
+    report = inspect_installed_tools(managers=["mise"], env=env, home=home, platform="linux")
+
+    assert [(tool.name, tool.scope, tool.version, tool.path.name) for tool in report.installed] == [
+        ("eza", "intentional", "latest", "aqua-eza-community-eza"),
+        ("eza", "unknown", None, "eza"),
+    ]
+
+
 def test_compat_attribution_flag_uses_metadata_not_recursive_search(tmp_path: Path) -> None:
     home = tmp_path / "home"
     data = tmp_path / "data"
