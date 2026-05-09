@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -10,6 +13,7 @@ from prescribe.claims import compute_claims, detect_internal_claim_conflicts
 from prescribe.adapters.toml import TomlAdapter
 from prescribe.orchestrator import Orchestrator
 from prescribe.spec import AssetTarget, EnvTarget, FileTarget, ShellTarget, Spec, SpecLoader
+from prescribe.state import StateStore
 
 
 def test_run_lock_refuses_fresh_owner_and_allows_expired(memory_state_store) -> None:
@@ -56,6 +60,44 @@ def test_run_lock_release_and_heartbeat_require_current_token(memory_state_store
 
     memory_state_store.release_lock("global", owner="one", token=first.token)
     assert memory_state_store.active_lock("global") is None
+
+
+def test_long_apply_heartbeats_global_lock(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.db"
+    store = StateStore(state_path)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_materialize(*, env_vars, dry_run=False) -> None:
+        started.set()
+        assert release.wait(timeout=2)
+
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[env]]\nname = 'EDITOR'\nvalue = 'nvim'\nmaterialize = true\n")
+    orch = Orchestrator(
+        store,
+        _materialize_fn=slow_materialize,
+        lock_ttl=timedelta(milliseconds=500),
+        lock_heartbeat_interval=timedelta(milliseconds=100),
+    )
+    result_holder: dict[str, list[Any]] = {}
+
+    def run_apply() -> None:
+        result_holder["results"] = orch.run(spec_path)
+
+    worker = threading.Thread(target=run_apply)
+    worker.start()
+    assert started.wait(timeout=2)
+    time.sleep(0.75)
+
+    competing = StateStore(state_path).acquire_lock("global", owner="other", ttl=timedelta(milliseconds=500))
+
+    release.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert competing.owner != "other"
+    assert result_holder["results"][0].status == "applied"
 
 
 def test_managed_claim_requires_take_for_new_owner(memory_state_store) -> None:
@@ -249,6 +291,63 @@ def test_durable_claim_blocks_even_without_active_reservation(tmp_path: Path, me
     assert TomlAdapter().load(config).root["count"] == 1
 
 
+def test_durable_claim_blocks_dry_run_without_writing(tmp_path: Path, memory_state_store) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+    spec = SpecLoader().load(spec_path)
+    claim = compute_claims(spec)[0]
+    memory_state_store.upsert_claim(
+        target_type=claim.target_type,
+        subject=claim.subject,
+        address=claim.address,
+        owner_id="other-spec#files[0]",
+    )
+
+    result = Orchestrator(memory_state_store).run(spec_path, dry_run=True)
+
+    assert result[0].status == "error"
+    assert "claim conflict" in (result[0].error or "")
+    assert TomlAdapter().load(config).root["count"] == 1
+
+
+def test_materialize_failure_fails_apply(tmp_path: Path, memory_state_store) -> None:
+    def failing_materialize(*, env_vars, dry_run=False) -> None:
+        raise RuntimeError("materialize exploded")
+
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[env]]\nname = 'EDITOR'\nvalue = 'nvim'\nmaterialize = true\n")
+
+    results = Orchestrator(memory_state_store, _materialize_fn=failing_materialize).run(spec_path)
+
+    assert results[0].status == "error"
+    assert "materialize exploded" in (results[0].error or "")
+    assert results[0].materialize_errors == ["materialize exploded"]
+
+
+class SnapshotFailingStore(StateStore):
+    def record_snapshot(self, *args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("snapshot recording failed")
+
+
+def test_post_write_state_failure_leaves_attempt_unfinished_for_recovery(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+    store = SnapshotFailingStore(tmp_path / "state.db")
+
+    results = Orchestrator(store).run(spec_path)
+
+    assert results[0].status == "error"
+    assert "snapshot recording failed" in (results[0].error or "")
+    assert "count = 2" in config.read_text()
+    attempts = store.unfinished_target_attempts()
+    assert len(attempts) == 1
+    assert attempts[0].phase == "attempting"
+
+
 def test_completed_attempts_do_not_block_later_apply(tmp_path: Path, memory_state_store) -> None:
     config = tmp_path / "config.toml"
     config.write_text("count = 1\n")
@@ -309,7 +408,7 @@ def test_apply_metadata_failure_leaves_recoverable_attempt_without_claim(
     run_id = memory_state_store.latest_run_id()
     assert run_id is not None
     assert memory_state_store.claims() == []
-    assert memory_state_store.list_managed() == []
+    assert [record.path for record in memory_state_store.list_managed()] == [config.resolve()]
     attempts = memory_state_store.target_attempts(run_id)
     assert len(attempts) == 1
     assert attempts[0].phase == "attempting"

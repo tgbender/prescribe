@@ -777,6 +777,60 @@ def test_apply_dir_rejects_overlapping_claims_before_writing(run, workdir: Path)
     assert config.read_text() == "count = 0\n"
 
 
+def test_apply_dry_run_reports_durable_claim_conflict(run, workdir: Path) -> None:
+    config = workdir / "config.toml"
+    config.write_text("count = 0\n")
+    first = workdir / "first.toml"
+    first.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 1\n")
+    second = workdir / "second.toml"
+    second.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    applied = run("apply", "first.toml")
+    assert applied.returncode == 0
+
+    result = run("apply", "--dry-run", "--on-claim-conflict", "fail", "second.toml")
+
+    assert result.returncode != 0
+    assert "claim conflict" in result.stdout
+    assert "count = 1" in config.read_text()
+
+
+def test_apply_dry_run_does_not_create_new_state_database(run, workdir: Path) -> None:
+    config = workdir / "config.toml"
+    config.write_text("count = 1\n")
+    spec = workdir / "spec.toml"
+    spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+    state = workdir / "new-state-dir" / "state.db"
+
+    result = run("apply", "--dry-run", "--state", str(state), "spec.toml")
+
+    assert result.returncode == 0
+    assert "would change" in result.stdout
+    assert not state.exists()
+    assert not state.parent.exists()
+
+
+def test_apply_dir_take_uses_claim_policy_during_preflight(run, workdir: Path) -> None:
+    config = workdir / "config.toml"
+    config.write_text("count = 0\n")
+    first = workdir / "first.toml"
+    first.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 1\n")
+    specs = workdir / "specs"
+    specs.mkdir()
+    (specs / "second.toml").write_text(
+        "[[files]]\npath = '../config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n"
+    )
+
+    applied = run("apply", "first.toml")
+    assert applied.returncode == 0
+
+    result = run("apply-dir", "--on-claim-conflict", "take", "specs")
+
+    assert result.returncode == 0
+    assert "applied" in result.stdout
+    assert "count = 2" in config.read_text()
+
+
 def test_apply_dir_preflights_all_specs_before_writing(run, workdir: Path) -> None:
     specs = workdir / "specs"
     specs.mkdir()

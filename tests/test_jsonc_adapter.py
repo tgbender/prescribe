@@ -48,6 +48,21 @@ def test_jsonc_round_trip_preserves_comments_and_structure(tmp_path: Path) -> No
     assert text.count("\n") > 1
 
 
+def test_jsonc_insert_nested_property_keeps_closing_brace_on_own_line() -> None:
+    text = (
+        "{\n"
+        '  "editor": {\n'
+        '    "fontSize": 14\n'
+        "  },\n"
+        '  "old": true\n'
+        "}\n"
+    )
+
+    result = modify_text(text, ["editor", "formatOnSave"], True)
+
+    assert '    "formatOnSave": true\n  },' in result
+
+
 @pytest.mark.parametrize(
     "text",
     [

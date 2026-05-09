@@ -367,7 +367,8 @@ def _modify_object(text: str, parent: JsoncNode, key: str, value: Any, *, indent
     gap = text[prev_end:close]
     if "\n" in gap or "\r" in gap:
         sep = f",{eol_local}{_line_indent(text, prev.offset)}"
-        return text[:prev_end] + sep + insertion + text[close:]
+        close_indent = _line_indent(text, parent.offset)
+        return text[:prev_end] + sep + insertion + eol_local + close_indent + text[close:]
     return text[:prev_end] + f", {insertion}" + text[close:]
 
 
@@ -388,8 +389,9 @@ def _modify_array(text: str, parent: JsoncNode, index: int, value: Any, *, inden
         gap = text[prev_end:close]
         if "\n" in gap or "\r" in gap:
             item_indent = _line_indent(text, prev.offset)
+            close_indent = _line_indent(text, parent.offset)
             rendered = _indent_multiline(rendered, item_indent)
-            return text[:prev_end] + f",{eol}{item_indent}{rendered}" + text[close:]
+            return text[:prev_end] + f",{eol}{item_indent}{rendered}{eol}{close_indent}" + text[close:]
         return text[:prev_end] + f", {rendered}" + text[close:]
     item = parent.children[index]
     return text[: item.offset] + rendered + text[item.offset + item.length :]

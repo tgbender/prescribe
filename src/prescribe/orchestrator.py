@@ -9,8 +9,10 @@ import shutil
 import socket
 import sqlite3
 import sys
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,7 @@ from prescribe.claims import (
     ClaimConflict,
     ClaimResolver,
     check_claim_conflicts,
+    check_claim_conflicts_against,
     claim_key,
     compute_claims,
     detect_internal_claim_conflicts,
@@ -73,6 +76,54 @@ class _ReservationConflict(Exception):
         super().__init__("claim reservation conflict")
         self.claim = claim
         self.existing_owner = existing_owner
+
+
+class _PostWriteStateError(Exception):
+    pass
+
+
+class _LockHeartbeat:
+    def __init__(
+        self,
+        state_store: StateStore,
+        *,
+        name: str,
+        owner: str,
+        token: str | None,
+        ttl: timedelta,
+        interval: timedelta,
+    ) -> None:
+        self.state_store = state_store
+        self.name = name
+        self.owner = owner
+        self.token = token
+        self.ttl = ttl
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> "_LockHeartbeat":
+        if self.token is None or self.ttl.total_seconds() <= 0 or self.interval.total_seconds() <= 0:
+            return self
+        self._thread = threading.Thread(target=self._run, name="prescribe-lock-heartbeat", daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(1.0, self.interval.total_seconds() * 2))
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval.total_seconds()):
+            refreshed = self.state_store.heartbeat_lock(
+                self.name,
+                owner=self.owner,
+                token=self.token or "",
+                ttl=self.ttl,
+            )
+            if refreshed is None:
+                return
 
 
 class InterruptedWorkError(Exception):
@@ -222,10 +273,14 @@ class Orchestrator:
         state_store: StateStore,
         *,
         _materialize_fn: Callable[..., None] | None = None,
+        lock_ttl: timedelta = timedelta(seconds=30),
+        lock_heartbeat_interval: timedelta = timedelta(seconds=10),
     ) -> None:
         self.state_store = state_store
         self.planner = Planner()
         self._materialize_fn = _materialize_fn
+        self._lock_ttl = lock_ttl
+        self._lock_heartbeat_interval = lock_heartbeat_interval
 
     def run(
         self,
@@ -256,7 +311,13 @@ class Orchestrator:
             return [_claim_conflict_result(claim_conflicts[0])]
 
         if dry_run:
-            self.state_store.initialize()
+            claim_check = check_claim_conflicts_against(
+                self.state_store.claims_for_dry_run(),
+                claims,
+                resolver=claim_resolver,
+            )
+            if claim_check.conflicts:
+                return [_claim_conflict_result(claim_check.conflicts[0])]
             return self._run_all(
                 run_id=None,
                 spec_hash=spec_hash,
@@ -271,7 +332,7 @@ class Orchestrator:
 
         self.state_store.initialize()
         lock_owner = _lock_owner()
-        lock = self.state_store.acquire_lock("global", owner=lock_owner)
+        lock = self.state_store.acquire_lock("global", owner=lock_owner, ttl=self._lock_ttl)
         if lock.owner != lock_owner:
             return [
                 OrchestrationResult(
@@ -282,29 +343,36 @@ class Orchestrator:
                 )
             ]
         try:
-            unfinished = self.state_store.unfinished_target_attempts()
-            if unfinished:
-                raise InterruptedWorkError(unfinished)
-            claim_check = check_claim_conflicts(
+            with _LockHeartbeat(
                 self.state_store,
-                claims,
-                resolver=claim_resolver,
-            )
-            if claim_check.conflicts:
-                return [_claim_conflict_result(claim_check.conflicts[0])]
-            with self.state_store.transaction() as connection:
-                run = self.state_store.start_run(
-                    spec_hash=spec_hash,
-                    tool_version=tool_version,
-                    platform=sys.platform,
-                    host=current_machine(),
-                    command="apply",
-                    cwd=Path.cwd(),
-                    connection=connection,
+                name="global",
+                owner=lock_owner,
+                token=lock.token,
+                ttl=self._lock_ttl,
+                interval=self._lock_heartbeat_interval,
+            ):
+                unfinished = self.state_store.unfinished_target_attempts()
+                if unfinished:
+                    raise InterruptedWorkError(unfinished)
+                claim_check = check_claim_conflicts(
+                    self.state_store,
+                    claims,
+                    resolver=claim_resolver,
                 )
-                self._reserve_claims(run.id, lock.token or lock_owner, claims, connection=connection)
-                self._record_target_attempts(run.id, claims, connection=connection)
-            with self.state_store.transaction() as connection:
+                if claim_check.conflicts:
+                    return [_claim_conflict_result(claim_check.conflicts[0])]
+                with self.state_store.transaction() as connection:
+                    run = self.state_store.start_run(
+                        spec_hash=spec_hash,
+                        tool_version=tool_version,
+                        platform=sys.platform,
+                        host=current_machine(),
+                        command="apply",
+                        cwd=Path.cwd(),
+                        connection=connection,
+                    )
+                    self._reserve_claims(run.id, lock.token or lock_owner, claims, connection=connection)
+                    self._record_target_attempts(run.id, claims, connection=connection)
                 results = self._run_all(
                     run_id=run.id,
                     spec_hash=spec_hash,
@@ -315,42 +383,53 @@ class Orchestrator:
                     diff=diff,
                     explain_skips=explain_skips,
                     file_skip_reasons=file_skip_reasons,
-                    connection=connection,
                 )
-                successful_ids = _successful_target_ids(spec_obj, results)
-                successful_claims = [claim for claim in claims if claim.target_id in successful_ids]
-                failed_ids = {claim.target_id for claim in claims if claim.target_id is not None} - successful_ids
-                self.state_store.update_target_attempts(
-                    run_id=run.id,
-                    target_ids=successful_ids,
-                    phase="succeeded",
-                    connection=connection,
+                with self.state_store.transaction() as connection:
+                    successful_ids = _successful_target_ids(spec_obj, results)
+                    successful_claims = [claim for claim in claims if claim.target_id in successful_ids]
+                    failed_ids = {claim.target_id for claim in claims if claim.target_id is not None} - successful_ids
+                    self.state_store.update_target_attempts(
+                        run_id=run.id,
+                        target_ids=successful_ids,
+                        phase="succeeded",
+                        connection=connection,
+                    )
+                    self.state_store.update_target_attempts(
+                        run_id=run.id,
+                        target_ids=failed_ids,
+                        phase="failed",
+                        connection=connection,
+                    )
+                    claim_conflicts = persist_claims(
+                        self.state_store,
+                        successful_claims,
+                        resolver=lambda conflict: claim_key(conflict.claim) in claim_check.take_keys,
+                        connection=connection,
+                    )
+                    if claim_conflicts:
+                        raise _DeferredClaimConflict(claim_conflicts[0])
+                    self._record_target_runs(run.id, spec_obj, results, connection=connection)
+                    status = (
+                        "failed" if any(result.status in {"error", "conflict"} for result in results) else "completed"
+                    )
+                    reservation_status = "promoted" if status == "completed" else "failed"
+                    self.state_store.release_claim_reservations(
+                        run_id=run.id,
+                        token=lock.token or lock_owner,
+                        status=reservation_status,
+                        connection=connection,
+                    )
+                    self.state_store.finish_run(run.id, status=status, connection=connection)
+                return results
+        except _PostWriteStateError as exc:
+            return [
+                OrchestrationResult(
+                    status="error",
+                    applied=False,
+                    changed=True,
+                    error=str(exc),
                 )
-                self.state_store.update_target_attempts(
-                    run_id=run.id,
-                    target_ids=failed_ids,
-                    phase="failed",
-                    connection=connection,
-                )
-                claim_conflicts = persist_claims(
-                    self.state_store,
-                    successful_claims,
-                    resolver=lambda conflict: claim_key(conflict.claim) in claim_check.take_keys,
-                    connection=connection,
-                )
-                if claim_conflicts:
-                    raise _DeferredClaimConflict(claim_conflicts[0])
-                self._record_target_runs(run.id, spec_obj, results, connection=connection)
-                status = "failed" if any(result.status in {"error", "conflict"} for result in results) else "completed"
-                reservation_status = "promoted" if status == "completed" else "failed"
-                self.state_store.release_claim_reservations(
-                    run_id=run.id,
-                    token=lock.token or lock_owner,
-                    status=reservation_status,
-                    connection=connection,
-                )
-                self.state_store.finish_run(run.id, status=status, connection=connection)
-            return results
+            ]
         except _DeferredClaimConflict as exc:
             return [_claim_conflict_result(exc.conflict)]
         except _ReservationConflict as exc:
@@ -534,11 +613,12 @@ class Orchestrator:
         if spec.env and not spec.files and not spec.shell and not spec.assets:
             results.append(
                 OrchestrationResult(
-                    status="applied" if not dry_run else "dry-run",
-                    applied=not dry_run,
+                    status="error" if materialize_errors else ("applied" if not dry_run else "dry-run"),
+                    applied=not dry_run and not materialize_errors,
                     changed=bool(resolved_env),
                     env_vars=resolved_env,
                     dry_run=dry_run,
+                    error=_materialize_error_message(materialize_errors) if materialize_errors else None,
                 )
             )
 
@@ -589,6 +669,18 @@ class Orchestrator:
                 r.env_vars = resolved_env
             if materialize_errors:
                 r.materialize_errors = materialize_errors
+
+        if materialize_errors and not (spec.env and not spec.files and not spec.shell and not spec.assets):
+            results.append(
+                OrchestrationResult(
+                    status="error",
+                    applied=False,
+                    changed=False,
+                    error=_materialize_error_message(materialize_errors),
+                    env_vars=resolved_env,
+                    materialize_errors=materialize_errors,
+                )
+            )
 
         return results
 
@@ -660,7 +752,13 @@ class Orchestrator:
                         )
                     continue
 
-                conflict = self._asset_conflict(dest, connection=connection)
+                conflict = None
+                if dry_run and run_id is None:
+                    with self.state_store.dry_run_connection() as read_conn:
+                        if read_conn is not None:
+                            conflict = self._asset_conflict(dest, connection=read_conn)
+                else:
+                    conflict = self._asset_conflict(dest, connection=connection)
                 if conflict is not None:
                     if run_id is not None and not dry_run:
                         self._record_conflict(run_id, conflict, connection=connection)
@@ -713,6 +811,8 @@ class Orchestrator:
                 dry_run=dry_run,
                 diff="".join(diffs) if diffs else None,
             )
+        except _PostWriteStateError:
+            raise
         except Exception as exc:
             if run_id is not None:
                 self.state_store.record_event(
@@ -773,64 +873,67 @@ class Orchestrator:
         atomic_write_bytes(dest, source_bytes, permissions=permissions)
         stat = dest.stat()
         content_hash = sha256_bytes(dest.read_bytes())
-        existing_baseline = self.state_store.original_baseline(dest, connection=connection)
-        if existing_baseline is None:
-            self.state_store.record_baseline(
+        try:
+            existing_baseline = self.state_store.original_baseline(dest, connection=connection)
+            if existing_baseline is None:
+                self.state_store.record_baseline(
+                    run_id=run_id,
+                    path=dest,
+                    content_text=original.text or "",
+                    format="asset",
+                    original_exists=original_exists,
+                    connection=connection,
+                )
+            self.state_store.record_checkpoint(
                 run_id=run_id,
                 path=dest,
-                content_text=original.text or "",
+                content_text=source_text,
                 format="asset",
                 original_exists=original_exists,
                 connection=connection,
             )
-        self.state_store.record_checkpoint(
-            run_id=run_id,
-            path=dest,
-            content_text=source_text,
-            format="asset",
-            original_exists=original_exists,
-            connection=connection,
-        )
-        self.state_store.record_snapshot(
-            run_id=run_id,
-            path=dest,
-            content_hash=content_hash,
-            size=stat.st_size,
-            mtime_ns=stat.st_mtime_ns,
-            format="asset",
-            spec_hash=spec_hash,
-            connection=connection,
-        )
-        self.state_store.record_change_batch(
-            run_id=run_id,
-            path=dest,
-            operations=[
-                {
-                    "kind": "replace_file",
-                    "key": "file",
-                    "value": source_text,
-                    "before_value": original.text,
-                    "before_exists": original_exists,
-                    "before_is_symlink": original.is_symlink,
-                    "before_symlink_target": original.symlink_target,
-                    "before_hardlink_count": original.hardlink_count,
-                    "before_permissions": _format_permissions(original.permissions),
-                    "after_permissions": _format_permissions(permission_bits(dest)),
-                    "reason": "asset materialized",
-                }
-            ],
-            original_exists=original_exists,
-            format="asset",
-            connection=connection,
-        )
-        self.state_store.record_event(
-            run_id=run_id,
-            event_type="applied",
-            path=dest,
-            changed=True,
-            summary="materialized asset",
-            connection=connection,
-        )
+            self.state_store.record_snapshot(
+                run_id=run_id,
+                path=dest,
+                content_hash=content_hash,
+                size=stat.st_size,
+                mtime_ns=stat.st_mtime_ns,
+                format="asset",
+                spec_hash=spec_hash,
+                connection=connection,
+            )
+            self.state_store.record_change_batch(
+                run_id=run_id,
+                path=dest,
+                operations=[
+                    {
+                        "kind": "replace_file",
+                        "key": "file",
+                        "value": source_text,
+                        "before_value": original.text,
+                        "before_exists": original_exists,
+                        "before_is_symlink": original.is_symlink,
+                        "before_symlink_target": original.symlink_target,
+                        "before_hardlink_count": original.hardlink_count,
+                        "before_permissions": _format_permissions(original.permissions),
+                        "after_permissions": _format_permissions(permission_bits(dest)),
+                        "reason": "asset materialized",
+                    }
+                ],
+                original_exists=original_exists,
+                format="asset",
+                connection=connection,
+            )
+            self.state_store.record_event(
+                run_id=run_id,
+                event_type="applied",
+                path=dest,
+                changed=True,
+                summary="materialized asset",
+                connection=connection,
+            )
+        except Exception as exc:
+            raise _PostWriteStateError(f"state recording failed after writing {dest}: {exc}") from exc
 
     def _displace_asset_extra(
         self,
@@ -943,6 +1046,8 @@ class Orchestrator:
                 diff=diff,
                 connection=connection,
             )
+        except _PostWriteStateError:
+            raise
         except Exception as exc:
             if run_id is not None:
                 self.state_store.record_event(
@@ -1024,21 +1129,25 @@ class Orchestrator:
         document = adapter.load(target.path)
         plan = self.planner.plan(document, _file_desired(target))
         managed_conflict: ConflictResult | None = None
-        if run_id is not None or dry_run:
+        if run_id is not None:
             ctx = self.state_store.connect() if connection is None else contextlib.nullcontext(connection)
             with ctx as read_conn:
                 managed_conflict = self._check_managed_conflict(document, plan, target, before, read_conn)
+        elif dry_run:
+            with self.state_store.dry_run_connection() as read_conn:
+                if read_conn is not None:
+                    managed_conflict = self._check_managed_conflict(document, plan, target, before, read_conn)
 
-            if managed_conflict is not None:
-                if run_id is not None and not dry_run:
-                    self._record_conflict(run_id, managed_conflict, connection=connection)
-                return OrchestrationResult(
-                    status="conflict",
-                    applied=False,
-                    changed=True,
-                    conflict=managed_conflict,
-                    dry_run=dry_run,
-                )
+        if managed_conflict is not None:
+            if run_id is not None and not dry_run:
+                self._record_conflict(run_id, managed_conflict, connection=connection)
+            return OrchestrationResult(
+                status="conflict",
+                applied=False,
+                changed=True,
+                conflict=managed_conflict,
+                dry_run=dry_run,
+            )
 
         if not plan.changed:
             if run_id is not None and not dry_run:
@@ -1300,6 +1409,8 @@ class Orchestrator:
                 connection=connection,
                 original_text=original_text if original_exists else None,
             )
+        except _PostWriteStateError:
+            raise
         except Exception as exc:
             if run_id is not None:
                 self.state_store.record_event(
@@ -1342,7 +1453,7 @@ class Orchestrator:
         path = Path(target_path)
         lock_owner = _lock_owner()
         if not dry_run:
-            lock = self.state_store.acquire_lock("global", owner=lock_owner)
+            lock = self.state_store.acquire_lock("global", owner=lock_owner, ttl=self._lock_ttl)
             if lock.owner != lock_owner:
                 return OrchestrationResult(
                     status="error",
@@ -1357,15 +1468,23 @@ class Orchestrator:
 
         try:
             if not dry_run:
-                with self.state_store.transaction() as connection:
-                    return perform_rollback(
-                        path,
-                        self.state_store,
-                        dry_run=False,
-                        original=original,
-                        resolver=conflict_resolver,
-                        connection=connection,
-                    )
+                with _LockHeartbeat(
+                    self.state_store,
+                    name="global",
+                    owner=lock_owner,
+                    token=lock.token,
+                    ttl=self._lock_ttl,
+                    interval=self._lock_heartbeat_interval,
+                ):
+                    with self.state_store.transaction() as connection:
+                        return perform_rollback(
+                            path,
+                            self.state_store,
+                            dry_run=False,
+                            original=original,
+                            resolver=conflict_resolver,
+                            connection=connection,
+                        )
             return perform_rollback(path, self.state_store, dry_run=True, original=original, resolver=conflict_resolver)
         finally:
             if not dry_run:
@@ -1449,50 +1568,53 @@ class Orchestrator:
         written_text = decode_utf8_bytes(new_bytes, path=target.path)
         new_stat = target.path.stat()
         new_hash = sha256_bytes(new_bytes)
-        existing_baseline = self.state_store.original_baseline(target.path, connection=connection)
-        if existing_baseline is None:
-            self.state_store.record_baseline(
+        try:
+            existing_baseline = self.state_store.original_baseline(target.path, connection=connection)
+            if existing_baseline is None:
+                self.state_store.record_baseline(
+                    run_id=run_id,
+                    path=target.path,
+                    content_text=original_text or "",
+                    format=getattr(target, "format", "line"),
+                    original_exists=original_exists,
+                    connection=connection,
+                )
+            self.state_store.record_checkpoint(
                 run_id=run_id,
                 path=target.path,
-                content_text=original_text or "",
+                content_text=written_text,
                 format=getattr(target, "format", "line"),
                 original_exists=original_exists,
                 connection=connection,
             )
-        self.state_store.record_checkpoint(
-            run_id=run_id,
-            path=target.path,
-            content_text=written_text,
-            format=getattr(target, "format", "line"),
-            original_exists=original_exists,
-            connection=connection,
-        )
-        self.state_store.record_snapshot(
-            run_id=run_id,
-            path=target.path,
-            content_hash=new_hash,
-            size=new_stat.st_size,
-            mtime_ns=new_stat.st_mtime_ns,
-            format=getattr(target, "format", "line"),
-            spec_hash=spec_hash,
-            connection=connection,
-        )
-        self.state_store.record_change_batch(
-            run_id=run_id,
-            path=target.path,
-            operations=[_operation_to_data(op) for op in operations],
-            original_exists=original_exists,
-            format=getattr(target, "format", "line"),
-            connection=connection,
-        )
-        self.state_store.record_event(
-            run_id=run_id,
-            event_type=event_type,
-            path=target.path,
-            changed=True,
-            summary=f"{event_type} with {len(operations)} ops",
-            connection=connection,
-        )
+            self.state_store.record_snapshot(
+                run_id=run_id,
+                path=target.path,
+                content_hash=new_hash,
+                size=new_stat.st_size,
+                mtime_ns=new_stat.st_mtime_ns,
+                format=getattr(target, "format", "line"),
+                spec_hash=spec_hash,
+                connection=connection,
+            )
+            self.state_store.record_change_batch(
+                run_id=run_id,
+                path=target.path,
+                operations=[_operation_to_data(op) for op in operations],
+                original_exists=original_exists,
+                format=getattr(target, "format", "line"),
+                connection=connection,
+            )
+            self.state_store.record_event(
+                run_id=run_id,
+                event_type=event_type,
+                path=target.path,
+                changed=True,
+                summary=f"{event_type} with {len(operations)} ops",
+                connection=connection,
+            )
+        except Exception as exc:
+            raise _PostWriteStateError(f"state recording failed after writing {target.path}: {exc}") from exc
         return OrchestrationResult(status="applied", applied=True, changed=True)
 
     def _record_recovery_backup(
@@ -1789,6 +1911,10 @@ def _interrupted_work_message(attempts: list[Any]) -> str:
         "interrupted prescribe operation detected; normal writes are blocked until recovery is resolved. "
         f"{preview}{suffix}"
     )
+
+
+def _materialize_error_message(errors: list[str]) -> str:
+    return "materialize failed: " + "; ".join(errors)
 
 
 def _successful_target_ids(

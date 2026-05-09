@@ -251,6 +251,41 @@ class StateStore:
         return self._open()
 
     @contextmanager
+    def dry_run_connection(self) -> Iterator[sqlite3.Connection | None]:
+        if str(self.path) == ":memory:" or "file:" in str(self.path):
+            conn = self._open()
+            try:
+                yield conn
+            finally:
+                conn.close()
+            return
+        if not self.path.exists():
+            yield None
+            return
+        uri = f"file:{self.path.as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            yield conn
+        finally:
+            conn.close()
+
+    def claims_for_dry_run(self) -> list[ManagedClaimRecord]:
+        with self.dry_run_connection() as conn:
+            if conn is None:
+                return []
+            if not _table_exists(conn, "managed_claims"):
+                return []
+            rows = conn.execute(
+                """
+                SELECT id, target_type, subject, address, owner_id, spec_path, target_id, created_at, last_seen_at
+                FROM managed_claims
+                ORDER BY subject, address
+                """
+            ).fetchall()
+        return [_managed_claim_record_from_row(row) for row in rows]
+
+    @contextmanager
     def _connection(self, connection: sqlite3.Connection | None = None) -> Iterator[sqlite3.Connection]:
         if connection is not None:
             yield connection
@@ -1696,6 +1731,14 @@ def _managed_claim_record_from_row(row: sqlite3.Row | tuple[Any, ...]) -> Manage
         created_at=_parse_datetime(row[7]),
         last_seen_at=_parse_datetime(row[8]),
     )
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        (table_name,),
+    ).fetchone()
+    return row is not None
 
 
 def _claim_reservation_from_row(row: sqlite3.Row | tuple[Any, ...]) -> ClaimReservationRecord:

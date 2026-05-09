@@ -188,7 +188,16 @@ def check_claim_conflicts(
     *,
     resolver: ClaimResolver | None,
 ) -> ClaimCheckResult:
-    existing = {claim_key(claim): claim for claim in store.claims()}
+    return check_claim_conflicts_against(store.claims(), claims, resolver=resolver)
+
+
+def check_claim_conflicts_against(
+    existing_claims: list[ManagedClaimRecord],
+    claims: list[Claim],
+    *,
+    resolver: ClaimResolver | None,
+) -> ClaimCheckResult:
+    existing = {claim_key(claim): claim for claim in existing_claims}
     conflicts: list[ClaimConflict] = []
     take_keys: set[ClaimKey] = set()
     for claim in claims:
