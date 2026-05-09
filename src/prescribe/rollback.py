@@ -80,7 +80,14 @@ def perform_rollback(
         if not backups:
             backups = state_store.unrestored_asset_backups_for_target(path, connection=connection)
         if backups:
-            return _restore_asset_backups(path, state_store, backups, dry_run=dry_run, connection=connection)
+            return _restore_asset_backups(
+                path,
+                state_store,
+                backups,
+                dry_run=dry_run,
+                connection=connection,
+                require_current=require_current,
+            )
         return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
 
     format_name = batches[-1].format
@@ -122,6 +129,7 @@ def perform_rollback(
         if dry_run:
             return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
         _require_current(require_current)
+        ensure_safe_managed_write_path(path, operation="rollback write")
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(path, checkpoint.content_text, newline="")
 
@@ -161,6 +169,7 @@ def perform_rollback(
     new_mtime_ns: int | None = None
     new_hash: bytes | None = None
     if original_exists or _document_has_content(document):
+        ensure_safe_managed_write_path(path, operation="rollback write")
         backup_data = _copy_recovery_backup(state_store, run_id=batches[-1].run_id, path=path)
         adapter.dump(document, path)
         written_text = decode_utf8_bytes(path.read_bytes(), path=path)
@@ -483,10 +492,16 @@ def _rollback_asset(
             before_exists = bool(operation.get("before_exists"))
             before_value = operation.get("before_value")
             before_is_symlink = bool(operation.get("before_is_symlink"))
-            before_symlink_target = operation.get("before_symlink_target")
             before_permissions = _parse_permissions(operation.get("before_permissions"))
             if dry_run:
                 return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
+            if before_exists and before_is_symlink:
+                return OrchestrationResult(
+                    status="error",
+                    applied=False,
+                    changed=False,
+                    error=f"asset rollback refused to recreate symlink path: {path}",
+                )
             _require_current(require_current)
             backup_data: RecoveryBackupData | None = None
             if path.exists() or path.is_symlink():
@@ -496,13 +511,6 @@ def _rollback_asset(
                 path.unlink()
             if before_exists:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                if before_is_symlink and before_symlink_target is not None:
-                    return OrchestrationResult(
-                        status="error",
-                        applied=False,
-                        changed=False,
-                        error=f"asset rollback refused to recreate symlink path: {path}",
-                    )
                 ensure_safe_managed_write_path(path, operation="asset rollback restore")
                 atomic_write_text(path, "" if before_value is None else str(before_value), newline="")
                 if before_permissions is not None:
@@ -560,17 +568,15 @@ def _restore_asset_backups(
     if dry_run:
         return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
     _require_current(require_current)
-    restored_ids = []
     try:
         for backup in reversed(backups):
             ensure_safe_managed_write_path(backup.original_path, operation="asset backup restore")
             restore_backup(backup_path=backup.backup_path, original_path=backup.original_path)
-            restored_ids.append(backup.id)
-    except UnsafePathError as exc:
-        return OrchestrationResult(status="error", applied=False, changed=False, error=str(exc))
+            with _state_write_connection(state_store, connection) as write_conn:
+                state_store.mark_asset_backup_restored(backup.id, connection=write_conn)
+    except (OSError, UnsafePathError) as exc:
+        return OrchestrationResult(status="error", applied=False, changed=False, error=f"{backup.backup_path}: {exc}")
     with _state_write_connection(state_store, connection) as write_conn:
-        for backup_id in restored_ids:
-            state_store.mark_asset_backup_restored(backup_id, connection=write_conn)
         state_store.record_event(
             run_id=backups[-1].run_id,
             event_type="restore",

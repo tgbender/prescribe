@@ -7,7 +7,9 @@ from stat import S_IMODE
 
 import pytest
 
+from prescribe._util import sha256_bytes
 from prescribe.orchestrator import Orchestrator
+from prescribe.rollback import perform_rollback
 from prescribe.spec import SpecLoader
 
 _CLI = shutil.which("prescribe")
@@ -578,6 +580,140 @@ def test_orchestrator_asset_backup_restore_refuses_symlink_reappearance(tmp_path
     assert extra.is_symlink()
     assert backups[0].restored_at is None
     assert backups[0].backup_path.exists()
+
+
+def test_rollback_refuses_symlink_parent_before_writing_file(tmp_path: Path, state_store) -> None:
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "config.toml").write_text("count = 2\n")
+    system = tmp_path / "system"
+    try:
+        system.symlink_to(victim, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    target = system / "config.toml"
+    run = state_store.start_run(command="seed")
+    state_store.record_change_batch(
+        run_id=run.id,
+        path=target,
+        operations=[
+            {
+                "kind": "update",
+                "key": "count",
+                "value": 2,
+                "before_value": 1,
+            }
+        ],
+        original_exists=True,
+        format="toml",
+    )
+
+    rolled_back = Orchestrator(state_store).rollback(target)
+
+    assert rolled_back.status == "error"
+    assert "parent path redirects" in (rolled_back.error or "")
+    assert (victim / "config.toml").read_text() == "count = 2\n"
+
+
+def test_asset_backup_restore_marks_successful_partial_restore(tmp_path: Path, state_store) -> None:
+    target = tmp_path / "system"
+    extra_a = target / "extra-a.txt"
+    extra_b = target / "extra-b.txt"
+    backup_a = tmp_path / "backups" / "extra-a.txt"
+    backup_b = tmp_path / "backups" / "extra-b.txt"
+    backup_a.parent.mkdir()
+    backup_a.write_text("old a\n")
+    backup_b.write_text("old b\n")
+    run = state_store.start_run(command="seed")
+    state_store.record_asset_backup(
+        run_id=run.id,
+        target_dest=target,
+        original_path=extra_a,
+        backup_path=backup_a,
+        content_hash=sha256_bytes(backup_a.read_bytes()),
+        size=backup_a.stat().st_size,
+        file_type="file",
+    )
+    state_store.record_asset_backup(
+        run_id=run.id,
+        target_dest=target,
+        original_path=extra_b,
+        backup_path=backup_b,
+        content_hash=sha256_bytes(backup_b.read_bytes()),
+        size=backup_b.stat().st_size,
+        file_type="file",
+    )
+    backup_a.unlink()
+
+    restored = Orchestrator(state_store).rollback(target)
+
+    assert restored.status == "error"
+    assert "extra-a.txt" in (restored.error or "")
+    assert not extra_a.exists()
+    assert extra_b.read_text() == "old b\n"
+    assert state_store.asset_backups(extra_a)[0].restored_at is None
+    assert state_store.asset_backups(extra_b)[0].restored_at is not None
+
+
+def test_asset_backup_fallback_restore_checks_current_lock(tmp_path: Path, state_store) -> None:
+    target = tmp_path / "system"
+    extra = target / "extra.txt"
+    backup = tmp_path / "backups" / "extra.txt"
+    backup.parent.mkdir()
+    backup.write_text("old\n")
+    run = state_store.start_run(command="seed")
+    state_store.record_asset_backup(
+        run_id=run.id,
+        target_dest=target,
+        original_path=extra,
+        backup_path=backup,
+        content_hash=sha256_bytes(backup.read_bytes()),
+        size=backup.stat().st_size,
+        file_type="file",
+    )
+
+    def lost_lock() -> None:
+        raise RuntimeError("global lock was lost")
+
+    with pytest.raises(RuntimeError, match="global lock was lost"):
+        perform_rollback(target, state_store, require_current=lost_lock)
+
+    assert not extra.exists()
+    assert backup.exists()
+    assert state_store.asset_backups(extra)[0].restored_at is None
+
+
+def test_asset_rollback_refuses_symlink_baseline_before_deleting_current_file(
+    tmp_path: Path, state_store
+) -> None:
+    dest = tmp_path / "system" / "asset.txt"
+    dest.parent.mkdir()
+    dest.write_bytes(b"managed\n")
+    run = state_store.start_run(command="seed")
+    state_store.record_change_batch(
+        run_id=run.id,
+        path=dest,
+        operations=[
+            {
+                "kind": "replace_file",
+                "key": "file",
+                "value": "managed\n",
+                "before_value": None,
+                "before_exists": True,
+                "before_is_symlink": True,
+                "before_symlink_target": "elsewhere.txt",
+            }
+        ],
+        original_exists=True,
+        format="asset",
+    )
+
+    rolled_back = Orchestrator(state_store).rollback(dest)
+
+    assert rolled_back.status == "error"
+    assert "symlink" in (rolled_back.error or "")
+    assert dest.read_bytes() == b"managed\n"
+    assert state_store.recovery_backups(dest) == []
 
 
 def test_orchestrator_asset_displacement_restores_extra_if_state_recording_fails(
