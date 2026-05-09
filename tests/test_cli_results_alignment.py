@@ -54,6 +54,30 @@ def test_results_to_json_has_correct_number_of_entries() -> None:
     assert len(data) == 2  # 1 file + 1 shell
 
 
+def test_results_to_json_includes_env_only_result() -> None:
+    spec = Spec(env=[EnvTarget(name="EDITOR", value="nvim")])
+    results = [
+        OrchestrationResult(
+            status="applied",
+            applied=True,
+            changed=True,
+            env_vars={"EDITOR": "nvim"},
+        )
+    ]
+
+    data = _results_to_json(spec, results, display_status=False)
+
+    assert data == [
+        {
+            "type": "env",
+            "status": "applied",
+            "applied": True,
+            "changed": True,
+            "vars": {"EDITOR": "nvim"},
+        }
+    ]
+
+
 def test_print_results_counts_resolved_env_in_mixed_spec(capsys) -> None:
     spec = Spec(
         files=[FileTarget(path=Path("config.toml"), format="toml")],

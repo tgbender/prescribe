@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -406,6 +407,47 @@ class SnapshotFailingStore(StateStore):
         raise RuntimeError("snapshot recording failed")
 
 
+class LostHeartbeatStore(StateStore):
+    def heartbeat_lock(self, *args: Any, **kwargs: Any) -> Any:
+        return None
+
+
+class ConnectionRequiredForDryRunRollbackStore(StateStore):
+    def change_batches(self, *args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("connection") is None:
+            raise RuntimeError("dry-run rollback did not pass read connection")
+        return super().change_batches(*args, **kwargs)
+
+
+class _RacingLockSession:
+    def __init__(self, session: Any, store: RacingCreateLockStore) -> None:
+        self._session = session
+        self._store = store
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._session, name)
+
+    def flush(self, *args: Any, **kwargs: Any) -> Any:
+        if not self._store.raced:
+            self._store.raced = True
+            self._store.inserted.append(
+                StateStore(self._store.path).acquire_lock("global", owner="one", ttl=timedelta(minutes=1))
+            )
+        return self._session.flush(*args, **kwargs)
+
+
+class RacingCreateLockStore(StateStore):
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self.raced = False
+        self.inserted: list[Any] = []
+
+    @contextmanager
+    def orm_session(self) -> Any:
+        with super().orm_session() as session:
+            yield _RacingLockSession(session, self)
+
+
 def test_post_write_state_failure_leaves_attempt_unfinished_for_recovery(tmp_path: Path) -> None:
     config = tmp_path / "config.toml"
     config.write_text("count = 1\n")
@@ -421,6 +463,50 @@ def test_post_write_state_failure_leaves_attempt_unfinished_for_recovery(tmp_pat
     attempts = store.unfinished_target_attempts()
     assert len(attempts) == 1
     assert attempts[0].phase == "attempting"
+
+
+def test_lost_lock_heartbeat_fails_apply_before_commit(tmp_path: Path) -> None:
+    def slow_materialize(*, env_vars: dict[str, str], dry_run: bool = False) -> None:
+        time.sleep(0.25)
+
+    store = LostHeartbeatStore(tmp_path / "state.db")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[env]]\nname = 'EDITOR'\nvalue = 'nvim'\nmaterialize = true\n")
+
+    results = Orchestrator(
+        store,
+        _materialize_fn=slow_materialize,
+        lock_ttl=timedelta(milliseconds=500),
+        lock_heartbeat_interval=timedelta(milliseconds=100),
+    ).run(spec_path)
+
+    assert results[0].status == "error"
+    assert "global lock was lost" in (results[0].error or "")
+    assert store.claims() == []
+
+
+def test_lock_create_race_returns_existing_lock(tmp_path: Path) -> None:
+    store = RacingCreateLockStore(tmp_path / "state.db")
+    store.initialize()
+
+    lock = store.acquire_lock("global", owner="two", ttl=timedelta(minutes=1))
+
+    assert store.inserted[0].acquired is True
+    assert lock.acquired is False
+    assert lock.owner == "one"
+
+
+def test_rollback_dry_run_passes_read_connection(tmp_path: Path) -> None:
+    store = ConnectionRequiredForDryRunRollbackStore(tmp_path / "state.db")
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec = Spec(files=[FileTarget(path=config, format="toml", data={"count": 2})])
+
+    applied = Orchestrator(store).run(spec)
+    dry_run = Orchestrator(store).rollback(config, dry_run=True)
+
+    assert applied[0].status == "applied"
+    assert dry_run.status == "dry-run"
 
 
 def test_completed_attempts_do_not_block_later_apply(tmp_path: Path, memory_state_store) -> None:

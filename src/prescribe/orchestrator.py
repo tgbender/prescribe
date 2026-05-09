@@ -53,7 +53,7 @@ from prescribe.fs_safety import (
     ensure_safe_asset_source_path,
     ensure_safe_managed_write_path,
 )
-from prescribe.lock_heartbeat import LockHeartbeat
+from prescribe.lock_heartbeat import LockHeartbeat, LockLostError
 from prescribe.rollback import ConflictResolver, perform_rollback
 from prescribe.shell import render_shell_block
 from prescribe.spec import AssetTarget, EnvTarget, FileTarget, ShellTarget, Spec
@@ -302,10 +302,11 @@ class Orchestrator:
                 token=lock.token,
                 ttl=self._lock_ttl,
                 interval=self._lock_heartbeat_interval,
-            ):
+            ) as heartbeat:
                 unfinished = self.state_store.unfinished_target_attempts()
                 if unfinished:
                     raise InterruptedWorkError(unfinished)
+                heartbeat.require_current()
                 claim_check = check_claim_conflicts(
                     self.state_store,
                     claims,
@@ -313,6 +314,7 @@ class Orchestrator:
                 )
                 if claim_check.conflicts:
                     return [_claim_conflict_result(claim_check.conflicts[0])]
+                heartbeat.require_current()
                 with self.state_store.transaction() as connection:
                     run = self.state_store.start_run(
                         spec_hash=spec_hash,
@@ -325,6 +327,7 @@ class Orchestrator:
                     )
                     self._reserve_claims(run.id, lock.token or lock_owner, claims, connection=connection)
                     self._record_target_attempts(run.id, claims, connection=connection)
+                heartbeat.require_current()
                 results = self._run_all(
                     run_id=run.id,
                     spec_hash=spec_hash,
@@ -336,6 +339,7 @@ class Orchestrator:
                     explain_skips=explain_skips,
                     file_skip_reasons=file_skip_reasons,
                 )
+                heartbeat.require_current()
                 with self.state_store.transaction() as connection:
                     successful_ids = _successful_target_ids(spec_obj, results)
                     successful_claims = [claim for claim in claims if claim.target_id in successful_ids]
@@ -373,6 +377,15 @@ class Orchestrator:
                     )
                     self.state_store.finish_run(run.id, status=status, connection=connection)
                 return results
+        except LockLostError as exc:
+            return [
+                OrchestrationResult(
+                    status="error",
+                    applied=False,
+                    changed=True,
+                    error=str(exc),
+                )
+            ]
         except _PostWriteStateError as exc:
             return [
                 OrchestrationResult(
@@ -1415,10 +1428,6 @@ class Orchestrator:
                 )
         if not dry_run:
             self.state_store.initialize()
-        else:
-            with self.state_store.dry_run_connection() as read_conn:
-                if read_conn is None:
-                    return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=True)
 
         try:
             if not dry_run:
@@ -1429,9 +1438,10 @@ class Orchestrator:
                     token=lock.token,
                     ttl=self._lock_ttl,
                     interval=self._lock_heartbeat_interval,
-                ):
+                ) as heartbeat:
+                    heartbeat.require_current()
                     with self.state_store.transaction() as connection:
-                        return perform_rollback(
+                        result = perform_rollback(
                             path,
                             self.state_store,
                             dry_run=False,
@@ -1439,7 +1449,21 @@ class Orchestrator:
                             resolver=conflict_resolver,
                             connection=connection,
                         )
-            return perform_rollback(path, self.state_store, dry_run=True, original=original, resolver=conflict_resolver)
+                    heartbeat.require_current()
+                    return result
+            with self.state_store.dry_run_connection() as read_conn:
+                if read_conn is None:
+                    return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=True)
+                return perform_rollback(
+                    path,
+                    self.state_store,
+                    dry_run=True,
+                    original=original,
+                    resolver=conflict_resolver,
+                    connection=read_conn,
+                )
+        except LockLostError as exc:
+            return OrchestrationResult(status="error", applied=False, changed=True, error=str(exc))
         finally:
             if not dry_run:
                 self.state_store.release_lock("global", owner=lock_owner, token=lock.token)

@@ -1322,7 +1322,21 @@ def _results_to_json(
     # env entries don't produce individual results (merged into shell results).
     # Only the synthetic env result (when no files, shell, or assets) consumes a slot.
     if spec_obj.env and not spec_obj.files and not spec_obj.shell and not spec_obj.assets:
-        idx += 1
+        if idx < len(results):
+            r = results[idx]
+            idx += 1
+            entry: dict[str, object] = {
+                "type": "env",
+                "status": _display_status(r.status, r.changed) if display_status else r.status,
+                "applied": r.applied,
+                "changed": r.changed,
+                "vars": r.env_vars,
+            }
+            if r.error:
+                entry["error"] = r.error
+            if r.materialize_errors:
+                entry["materialize_errors"] = r.materialize_errors
+            data.append(entry)
 
     for shell_target in spec_obj.shell:
         if idx >= len(results):

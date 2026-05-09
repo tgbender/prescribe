@@ -408,7 +408,15 @@ class StateStore:
             existing_any.acquired_at = current_time.isoformat()
             existing_any.heartbeat_at = current_time.isoformat()
             existing_any.expires_at = expires_at.isoformat()
-            session.flush()
+            try:
+                session.flush()
+            except IntegrityError:
+                session.rollback()
+                with self.orm_session() as retry_session:
+                    current = retry_session.get(RunLock, name)
+                    if current is None:
+                        raise
+                    return _run_lock_record(current, acquired=False)
             return _run_lock_record(existing, acquired=True)
 
     def active_lock(self, name: str) -> RunLockRecord | None:
