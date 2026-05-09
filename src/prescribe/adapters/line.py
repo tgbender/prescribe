@@ -9,8 +9,8 @@ from prescribe.encoding import read_utf8_text
 
 _CRLF_EXTENSIONS = frozenset({".bat", ".cmd"})
 
-_BEGIN_RE = re.compile(r"^# prescribe:begin (?P<block_id>\S+)\s*$")
-_END_RE = re.compile(r"^# prescribe:end (?P<block_id>\S+)\s*$")
+_BEGIN_RE = re.compile(r"^# prescribe:begin (?P<block_id>.*\S)\s*$")
+_END_RE = re.compile(r"^# prescribe:end (?P<block_id>.*\S)\s*$")
 
 
 @dataclass(slots=True)

@@ -103,6 +103,11 @@ def perform_rollback(
         return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
 
     original_exists = batches[0].original_exists
+    state_operations = _current_state_operations(
+        document,
+        batches,
+        skipped_keys=set(all_skipped),
+    )
     if original_exists or _document_has_content(document):
         _record_recovery_backup(
             state_store,
@@ -133,6 +138,15 @@ def perform_rollback(
             format=format_name,
             connection=connection,
         )
+        if state_operations:
+            state_store.record_change_batch(
+                run_id=batches[-1].run_id,
+                path=path,
+                operations=state_operations,
+                original_exists=original_exists,
+                format=format_name,
+                connection=connection,
+            )
     elif path.exists():
         _record_recovery_backup(
             state_store,
@@ -144,6 +158,15 @@ def perform_rollback(
         )
         ensure_safe_unlink_path(path, operation="rollback delete")
         path.unlink()
+        if state_operations:
+            state_store.record_change_batch(
+                run_id=batches[-1].run_id,
+                path=path,
+                operations=state_operations,
+                original_exists=original_exists,
+                format=format_name,
+                connection=connection,
+            )
 
     parts = [f"rolled back {len(batches)} change batch(es)"]
     if all_force_reverted:
@@ -519,6 +542,52 @@ def _document_has_content(document: Document) -> bool:
     if getattr(document, "format", None) == "line":
         return bool(document.root.render())
     return bool(document.root)
+
+
+def _current_state_operations(
+    document: Document,
+    batches: list[Any],
+    *,
+    skipped_keys: set[str],
+) -> list[dict[str, Any]]:
+    keys = _changed_operation_keys(batches) - skipped_keys
+    if not keys:
+        return []
+
+    if getattr(document, "format", None) == "line":
+        operations: list[dict[str, Any]] = []
+        for key in sorted(keys):
+            block = document.root.block(key)
+            if block is None:
+                operations.append({"kind": "delete_block", "key": key, "value": None})
+                continue
+            operations.append(
+                {
+                    "kind": "replace_block",
+                    "key": key,
+                    "value": [line.rstrip("\r\n") for line in block.lines],
+                }
+            )
+        return operations
+
+    operations = []
+    for key in sorted(keys):
+        value = mapping_value(document.root, key)
+        if value is _MISSING:
+            operations.append({"kind": "delete", "key": key, "value": None})
+            continue
+        operations.append({"kind": "update", "key": key, "value": value})
+    return operations
+
+
+def _changed_operation_keys(batches: list[Any]) -> set[str]:
+    keys: set[str] = set()
+    for batch in batches:
+        for operation in batch.operations:
+            key = operation.get("key")
+            if key is not None:
+                keys.add(str(key))
+    return keys
 
 
 def _parse_permissions(value: object) -> int | None:

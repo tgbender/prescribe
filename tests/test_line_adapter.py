@@ -45,6 +45,23 @@ def test_line_adapter_appends_missing_block(make_text_file, fake_root: Path) -> 
     )
 
 
+def test_line_adapter_parses_managed_block_id_with_spaces(make_text_file) -> None:
+    source = make_text_file(
+        ".ssh_config",
+        (
+            "# prescribe:begin wsl2-setup ssh\n"
+            "Host wsl-docker\n"
+            "# prescribe:end wsl2-setup ssh\n"
+        ),
+    )
+
+    document = LineAdapter().load(source)
+    block = document.root.block("wsl2-setup ssh")
+
+    assert block is not None
+    assert [line.rstrip("\r\n") for line in block.lines] == ["Host wsl-docker"]
+
+
 def test_line_adapter_removes_block(make_text_file, fake_root: Path) -> None:
     source = make_text_file(
         ".npmrc",
