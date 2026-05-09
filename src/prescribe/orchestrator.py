@@ -1440,15 +1440,13 @@ class Orchestrator:
                     interval=self._lock_heartbeat_interval,
                 ) as heartbeat:
                     heartbeat.require_current()
-                    with self.state_store.transaction() as connection:
-                        result = perform_rollback(
-                            path,
-                            self.state_store,
-                            dry_run=False,
-                            original=original,
-                            resolver=conflict_resolver,
-                            connection=connection,
-                        )
+                    result = perform_rollback(
+                        path,
+                        self.state_store,
+                        dry_run=False,
+                        original=original,
+                        resolver=conflict_resolver,
+                    )
                     heartbeat.require_current()
                     return result
             with self.state_store.dry_run_connection() as read_conn:

@@ -1496,10 +1496,14 @@ def _is_run_level_error(results: list[OrchestrationResult]) -> bool:
     result = results[0]
     if result.status != "error" or result.error is None:
         return False
+    if result.env_vars or result.materialize_errors:
+        return False
     run_level_prefixes = (
         "another prescribe write is active:",
         "claim conflict:",
         "claim reservation conflict:",
+        "global lock was lost",
+        "global lock heartbeat failed:",
         "interrupted prescribe operation",
         "materialize failed:",
         "portable path collision:",

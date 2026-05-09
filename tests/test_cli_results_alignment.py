@@ -78,6 +78,33 @@ def test_results_to_json_includes_env_only_result() -> None:
     ]
 
 
+def test_results_to_json_keeps_env_only_materialize_failure_as_env_result() -> None:
+    spec = Spec(env=[EnvTarget(name="EDITOR", value="nvim", materialize=True)])
+    results = [
+        OrchestrationResult(
+            status="error",
+            applied=False,
+            changed=True,
+            env_vars={"EDITOR": "nvim"},
+            error="materialize failed: boom",
+            materialize_errors=["boom"],
+        )
+    ]
+
+    data = _results_to_json(spec, results, display_status=False)
+
+    assert data[0] == {
+        "type": "env",
+        "status": "error",
+        "applied": False,
+        "changed": True,
+        "vars": {"EDITOR": "nvim"},
+        "error": "materialize failed: boom",
+        "materialize_errors": ["boom"],
+    }
+    assert data[1] == {"type": "materialize", "errors": ["boom"]}
+
+
 def test_print_results_counts_resolved_env_in_mixed_spec(capsys) -> None:
     spec = Spec(
         files=[FileTarget(path=Path("config.toml"), format="toml")],
@@ -174,6 +201,8 @@ def test_run_level_claim_conflict_json_is_not_attached_to_first_file() -> None:
     [
         "another prescribe write is active: other until 2026-01-01T00:00:00+00:00",
         "claim reservation conflict: file config.toml count is reserved by other-spec#files[0]",
+        "global lock was lost",
+        "global lock heartbeat failed: database is locked",
         "portable path collision: Config.toml and config.toml refer to the same case-insensitive path",
     ],
 )

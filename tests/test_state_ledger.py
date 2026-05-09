@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import sqlite3
 import threading
 import time
 from contextlib import contextmanager
@@ -419,33 +420,49 @@ class ConnectionRequiredForDryRunRollbackStore(StateStore):
         return super().change_batches(*args, **kwargs)
 
 
-class _RacingLockSession:
-    def __init__(self, session: Any, store: RacingCreateLockStore) -> None:
-        self._session = session
-        self._store = store
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._session, name)
-
-    def flush(self, *args: Any, **kwargs: Any) -> Any:
-        if not self._store.raced:
-            self._store.raced = True
-            self._store.inserted.append(
-                StateStore(self._store.path).acquire_lock("global", owner="one", ttl=timedelta(minutes=1))
-            )
-        return self._session.flush(*args, **kwargs)
-
-
-class RacingCreateLockStore(StateStore):
+class HeartbeatBlockedDuringTransactionStore(StateStore):
     def __init__(self, path: Path) -> None:
         super().__init__(path)
-        self.raced = False
-        self.inserted: list[Any] = []
+        self.in_write_transaction = threading.Event()
+        self.blocked_heartbeat = threading.Event()
 
     @contextmanager
-    def orm_session(self) -> Any:
-        with super().orm_session() as session:
-            yield _RacingLockSession(session, self)
+    def transaction(self) -> Any:
+        with super().transaction() as connection:
+            self.in_write_transaction.set()
+            try:
+                yield connection
+            finally:
+                self.in_write_transaction.clear()
+
+    def heartbeat_lock(self, *args: Any, **kwargs: Any) -> Any:
+        if self.in_write_transaction.is_set():
+            self.blocked_heartbeat.set()
+            return None
+        return super().heartbeat_lock(*args, **kwargs)
+
+
+class LockUpdateBarrierConnectionFactory:
+    def __init__(self) -> None:
+        self.enabled = threading.Event()
+        self.barrier = threading.Barrier(2, timeout=1)
+
+    def __call__(self, path: Path) -> sqlite3.Connection:
+        connection = sqlite3.connect(path, timeout=5, check_same_thread=False)
+        waited = False
+
+        def trace(statement: str) -> None:
+            nonlocal waited
+            normalized = " ".join(statement.upper().split())
+            if self.enabled.is_set() and not waited and normalized.startswith("UPDATE RUN_LOCKS SET"):
+                waited = True
+                try:
+                    self.barrier.wait()
+                except threading.BrokenBarrierError:
+                    pass
+
+        connection.set_trace_callback(trace)
+        return connection
 
 
 def test_post_write_state_failure_leaves_attempt_unfinished_for_recovery(tmp_path: Path) -> None:
@@ -485,15 +502,70 @@ def test_lost_lock_heartbeat_fails_apply_before_commit(tmp_path: Path) -> None:
     assert store.claims() == []
 
 
-def test_lock_create_race_returns_existing_lock(tmp_path: Path) -> None:
-    store = RacingCreateLockStore(tmp_path / "state.db")
+def test_expired_lock_race_allows_only_one_acquirer(tmp_path: Path) -> None:
+    factory = LockUpdateBarrierConnectionFactory()
+    state_path = tmp_path / "state.db"
+    store = StateStore(state_path, connection_factory=factory)
     store.initialize()
+    old_now = datetime.now(UTC) - timedelta(minutes=2)
+    race_now = datetime.now(UTC)
+    store.acquire_lock("global", owner="expired", ttl=timedelta(seconds=1), now=old_now)
+    factory.enabled.set()
 
-    lock = store.acquire_lock("global", owner="two", ttl=timedelta(minutes=1))
+    start = threading.Barrier(3, timeout=2)
+    results: list[Any] = []
+    errors: list[BaseException] = []
 
-    assert store.inserted[0].acquired is True
-    assert lock.acquired is False
-    assert lock.owner == "one"
+    def acquire(owner: str) -> None:
+        try:
+            start.wait()
+            results.append(
+                StateStore(state_path, connection_factory=factory).acquire_lock(
+                    "global",
+                    owner=owner,
+                    ttl=timedelta(minutes=1),
+                    now=race_now,
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=acquire, args=(owner,)) for owner in ("one", "two")]
+    for thread in threads:
+        thread.start()
+    start.wait()
+    for thread in threads:
+        thread.join(timeout=3)
+
+    assert not errors
+    assert len(results) == 2
+    assert sum(result.acquired for result in results) == 1
+    acquired = next(result for result in results if result.acquired)
+    blocked = next(result for result in results if not result.acquired)
+    assert blocked.owner == acquired.owner
+
+
+def test_rollback_does_not_block_its_own_heartbeat(tmp_path: Path) -> None:
+    store = HeartbeatBlockedDuringTransactionStore(tmp_path / "state.db")
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec = Spec(files=[FileTarget(path=config, format="toml", data={"count": 2})])
+    applied = Orchestrator(store).run(spec)
+    assert applied[0].status == "applied"
+    config.write_text("count = 3\n")
+
+    def slow_resolver(key: str) -> bool:
+        time.sleep(0.25)
+        return True
+
+    rolled_back = Orchestrator(
+        store,
+        lock_ttl=timedelta(milliseconds=500),
+        lock_heartbeat_interval=timedelta(milliseconds=100),
+    ).rollback(config, conflict_resolver=slow_resolver)
+
+    assert rolled_back.status == "rolled-back"
+    assert store.blocked_heartbeat.is_set() is False
 
 
 def test_rollback_dry_run_passes_read_connection(tmp_path: Path) -> None:
