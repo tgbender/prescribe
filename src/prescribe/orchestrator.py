@@ -338,6 +338,7 @@ class Orchestrator:
                     diff=diff,
                     explain_skips=explain_skips,
                     file_skip_reasons=file_skip_reasons,
+                    require_current=heartbeat.require_current,
                 )
                 heartbeat.require_current()
                 with self.state_store.transaction() as connection:
@@ -524,6 +525,7 @@ class Orchestrator:
         explain_skips: bool = False,
         file_skip_reasons: dict[int, str] | None = None,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> list[OrchestrationResult]:
         results: list[OrchestrationResult] = []
 
@@ -550,6 +552,8 @@ class Orchestrator:
                     )
                 )
                 continue
+            if not dry_run and require_current is not None:
+                require_current()
             results.append(
                 self._handle_file(
                     run_id,
@@ -561,8 +565,11 @@ class Orchestrator:
                     diff=diff,
                     explain_skips=explain_skips,
                     connection=connection,
+                    require_current=require_current,
                 )
             )
+            if not dry_run and require_current is not None:
+                require_current()
 
         # ── env ──
         resolved_env, materialize_names = self._resolve_env(spec.env, tags=tags, skip_tags=skip_tags)
@@ -570,8 +577,12 @@ class Orchestrator:
         # Materialize env vars to OS-level store
         materialize_errors: list[str] = []
         if not dry_run and materialize_names:
+            if require_current is not None:
+                require_current()
             mat_env = {k: v for k, v in resolved_env.items() if k in materialize_names}
             materialize_errors.extend(self._do_materialize(mat_env))
+            if require_current is not None:
+                require_current()
 
         # Produce an env result so callers can inspect resolved vars
         # even when there are no [[files]] or [[shell]] targets
@@ -608,12 +619,15 @@ class Orchestrator:
                 diff=diff,
                 explain_skips=explain_skips,
                 connection=connection,
+                require_current=require_current,
             )
             result.env_vars = shell_env
             results.append(result)
 
         # ── assets ──
         for asset_target in spec.assets:
+            if not dry_run and require_current is not None:
+                require_current()
             results.append(
                 self._handle_asset(
                     run_id,
@@ -625,8 +639,11 @@ class Orchestrator:
                     diff=diff,
                     explain_skips=explain_skips,
                     connection=connection,
+                    require_current=require_current,
                 )
             )
+            if not dry_run and require_current is not None:
+                require_current()
 
         # Attach env vars and materialize errors to all results for convenience
         for r in results:
@@ -663,6 +680,7 @@ class Orchestrator:
         diff: bool = False,
         explain_skips: bool = False,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> OrchestrationResult:
         if not condition_matches(target=target, tags=tags, skip_tags=skip_tags):
             return OrchestrationResult(
@@ -739,6 +757,8 @@ class Orchestrator:
                 if diff:
                     diffs.append(asset_diff(dest, current.text, source_text))
                 if not dry_run:
+                    if require_current is not None:
+                        require_current()
                     self._apply_asset(
                         run_id=run_id,
                         spec_hash=spec_hash,
@@ -747,6 +767,7 @@ class Orchestrator:
                         dest=dest,
                         original=current,
                         connection=connection,
+                        require_current=require_current,
                     )
 
             if target.replace and replace_extras:
@@ -755,11 +776,14 @@ class Orchestrator:
                     diffs.append(asset_replace_diff(replace_extras))
                 if not dry_run:
                     for extra in replace_extras:
+                        if require_current is not None:
+                            require_current()
                         self._displace_asset_extra(
                             run_id=run_id,
                             target=target,
                             path=extra,
                             connection=connection,
+                            require_current=require_current,
                         )
 
             if not changed:
@@ -777,6 +801,8 @@ class Orchestrator:
                 diff="".join(diffs) if diffs else None,
             )
         except _PostWriteStateError:
+            raise
+        except LockLostError:
             raise
         except Exception as exc:
             if run_id is not None:
@@ -820,6 +846,7 @@ class Orchestrator:
         dest: Path,
         original: AssetDestinationState,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> None:
         if run_id is None:
             raise RuntimeError("run_id is None in _apply_asset")
@@ -827,6 +854,8 @@ class Orchestrator:
         dest.parent.mkdir(parents=True, exist_ok=True)
         permissions = original.permissions if original.permissions is not None else source_permissions
         source_text = decode_utf8_bytes(source_bytes, path=dest)
+        if require_current is not None:
+            require_current()
         if original_exists and dest.exists():
             self._record_recovery_backup(
                 run_id=run_id,
@@ -907,12 +936,15 @@ class Orchestrator:
         target: AssetTarget,
         path: Path,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> None:
         if run_id is None:
             raise RuntimeError("run_id is None in _displace_asset_extra")
         backup_path: Path | None = None
         backup_id: int | None = None
         try:
+            if require_current is not None:
+                require_current()
             backup_path, content_hash, size, mtime_ns, file_type = move_to_backup(
                 state_store=self.state_store,
                 run_id=run_id,
@@ -976,6 +1008,7 @@ class Orchestrator:
         diff: bool = False,
         explain_skips: bool = False,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> OrchestrationResult:
         if not condition_matches(target=target, tags=tags, skip_tags=skip_tags):
             return OrchestrationResult(
@@ -1001,6 +1034,7 @@ class Orchestrator:
                     dry_run=dry_run,
                     diff=diff,
                     connection=connection,
+                    require_current=require_current,
                 )
             return self._process_existing_file(
                 run_id,
@@ -1010,8 +1044,11 @@ class Orchestrator:
                 dry_run=dry_run,
                 diff=diff,
                 connection=connection,
+                require_current=require_current,
             )
         except _PostWriteStateError:
+            raise
+        except LockLostError:
             raise
         except Exception as exc:
             if run_id is not None:
@@ -1036,6 +1073,7 @@ class Orchestrator:
         dry_run: bool = False,
         diff: bool = False,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> OrchestrationResult:
         document = _empty_document(target.path, target.format)
         plan = self.planner.plan(document, _file_desired(target))
@@ -1052,6 +1090,8 @@ class Orchestrator:
         if dry_run:
             return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True, diff=diff_text)
 
+        if require_current is not None:
+            require_current()
         if target.path.exists():
             if run_id is None:
                 raise RuntimeError("run_id is None in _process_new_file")
@@ -1077,6 +1117,7 @@ class Orchestrator:
             event_type="created",
             connection=connection,
             original_text=None,
+            require_current=require_current,
         )
 
     def _process_existing_file(
@@ -1089,6 +1130,7 @@ class Orchestrator:
         dry_run: bool = False,
         diff: bool = False,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> OrchestrationResult:
         before = _current_fingerprint(target.path)
         document = adapter.load(target.path)
@@ -1148,6 +1190,8 @@ class Orchestrator:
         if dry_run:
             return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True, diff=diff_text)
 
+        if require_current is not None:
+            require_current()
         original_text = read_utf8_text(target.path)
         return self._apply_and_record(
             run_id=run_id,
@@ -1160,6 +1204,7 @@ class Orchestrator:
             event_type="applied",
             connection=connection,
             original_text=original_text,
+            require_current=require_current,
         )
 
     # ── env resolution ────────────────────────────────
@@ -1277,6 +1322,7 @@ class Orchestrator:
         diff: bool = False,
         explain_skips: bool = False,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> OrchestrationResult:
         if not condition_matches(target=target, tags=tags, skip_tags=skip_tags):
             return OrchestrationResult(
@@ -1303,6 +1349,7 @@ class Orchestrator:
             dry_run=dry_run,
             diff=diff,
             connection=connection,
+            require_current=require_current,
         )
 
     def _apply_shell_block(
@@ -1315,6 +1362,7 @@ class Orchestrator:
         dry_run: bool = False,
         diff: bool = False,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> OrchestrationResult:
         """Apply a shell block using the LINE adapter + managed block pattern."""
         adapter = adapter_for_path(target.path, fmt="line")
@@ -1359,6 +1407,8 @@ class Orchestrator:
 
             if run_id is None:
                 raise RuntimeError("run_id is None in _apply_shell_block")
+            if require_current is not None:
+                require_current()
             original_text = read_utf8_text(target.path) if target.path.exists() else ""
             original_exists = target.path.exists()
 
@@ -1373,8 +1423,11 @@ class Orchestrator:
                 event_type="applied",
                 connection=connection,
                 original_text=original_text if original_exists else None,
+                require_current=require_current,
             )
         except _PostWriteStateError:
+            raise
+        except LockLostError:
             raise
         except Exception as exc:
             if run_id is not None:
@@ -1530,9 +1583,12 @@ class Orchestrator:
         event_type: str,
         connection: sqlite3.Connection | None = None,
         original_text: str | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> OrchestrationResult:
         if run_id is None:
             raise RuntimeError("run_id is None in _apply_and_record")
+        if require_current is not None:
+            require_current()
         if original_exists and target.path.exists():
             self._record_recovery_backup(
                 run_id=run_id,

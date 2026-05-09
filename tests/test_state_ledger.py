@@ -413,6 +413,23 @@ class LostHeartbeatStore(StateStore):
         return None
 
 
+class LockLostAfterFirstSnapshotStore(StateStore):
+    def __init__(self, path: Path, *, first_path: Path) -> None:
+        super().__init__(path)
+        self.first_path = first_path.resolve()
+        self.lost = False
+
+    def record_snapshot(self, *args: Any, **kwargs: Any) -> Any:
+        result = super().record_snapshot(*args, **kwargs)
+        path = kwargs.get("path")
+        if path is not None and Path(path).resolve() == self.first_path:
+            self.lost = True
+        return result
+
+    def lock_is_current(self, *args: Any, **kwargs: Any) -> bool:
+        return False if self.lost else super().lock_is_current(*args, **kwargs)
+
+
 class RollbackEventFailingStore(StateStore):
     def record_event(self, *args: Any, **kwargs: Any) -> Any:
         if kwargs.get("event_type") == "rollback":
@@ -598,6 +615,35 @@ def test_lost_lock_stops_rollback_before_file_write(tmp_path: Path) -> None:
     assert rolled_back.status == "error"
     assert "global lock was lost" in (rolled_back.error or "")
     assert "count = 3" in config.read_text()
+
+
+def test_lost_lock_stops_apply_before_later_target_writes(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.db"
+    first = tmp_path / "first.toml"
+    second = tmp_path / "second.toml"
+    first.write_text("count = 1\n")
+    second.write_text("count = 1\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text(
+        "[[files]]\n"
+        "path = 'first.toml'\n"
+        "format = 'toml'\n"
+        "[files.data]\n"
+        "count = 2\n"
+        "\n"
+        "[[files]]\n"
+        "path = 'second.toml'\n"
+        "format = 'toml'\n"
+        "[files.data]\n"
+        "count = 2\n"
+    )
+
+    results = Orchestrator(LockLostAfterFirstSnapshotStore(state_path, first_path=first)).run(spec_path)
+
+    assert results[0].status == "error"
+    assert "global lock was lost" in (results[0].error or "")
+    assert "count = 2" in first.read_text()
+    assert "count = 1" in second.read_text()
 
 
 def test_rollback_state_failure_returns_error_without_partial_ledger(tmp_path: Path) -> None:

@@ -475,6 +475,12 @@ def _rollback_asset(
     changed = False
     skipped = False
     backup_records: list[tuple[int, Path, RecoveryBackupData]] = []
+    state_operations: list[dict[str, Any]] = []
+    final_text: str | None = None
+    final_hash: bytes | None = None
+    final_size: int | None = None
+    final_mtime_ns: int | None = None
+    final_exists = False
     for batch in reversed(batches):
         for operation in reversed(batch.operations):
             if operation.get("kind") != "replace_file":
@@ -504,6 +510,7 @@ def _rollback_asset(
                 )
             _require_current(require_current)
             backup_data: RecoveryBackupData | None = None
+            current_exists = path.exists() or path.is_symlink()
             if path.exists() or path.is_symlink():
                 if path.exists() and not path.is_symlink():
                     backup_data = _copy_recovery_backup(state_store, run_id=batch.run_id, path=path)
@@ -516,6 +523,34 @@ def _rollback_asset(
                 if before_permissions is not None:
                     with contextlib.suppress(OSError):
                         path.chmod(before_permissions)
+                final_text = decode_utf8_bytes(path.read_bytes(), path=path)
+                stat = path.stat()
+                final_hash = sha256_bytes(path.read_bytes())
+                final_size = stat.st_size
+                final_mtime_ns = stat.st_mtime_ns
+                final_exists = True
+                state_operations.append(
+                    {
+                        "kind": "replace_file",
+                        "key": "file",
+                        "value": final_text,
+                        "before_value": current_text,
+                        "before_exists": current_exists,
+                        "reason": "asset rollback",
+                    }
+                )
+            else:
+                final_exists = False
+                state_operations.append(
+                    {
+                        "kind": "replace_file",
+                        "key": "file",
+                        "value": None,
+                        "before_value": current_text,
+                        "before_exists": current_exists,
+                        "reason": "asset rollback removed created asset",
+                    }
+                )
             if backup_data is not None:
                 backup_records.append((batch.run_id, path, backup_data))
             changed = True
@@ -532,6 +567,35 @@ def _rollback_asset(
                 target_kind="asset",
                 operation="asset-rollback",
                 backup_data=backup_data,
+                connection=write_conn,
+            )
+        if final_exists:
+            if final_text is None or final_hash is None or final_size is None or final_mtime_ns is None:
+                raise RuntimeError(f"asset rollback did not capture new snapshot state for {path}")
+            state_store.record_checkpoint(
+                run_id=batches[-1].run_id,
+                path=path,
+                content_text=final_text,
+                format="asset",
+                original_exists=batches[0].original_exists,
+                connection=write_conn,
+            )
+            state_store.record_snapshot(
+                run_id=batches[-1].run_id,
+                path=path,
+                content_hash=final_hash,
+                size=final_size,
+                mtime_ns=final_mtime_ns,
+                format="asset",
+                connection=write_conn,
+            )
+        if state_operations:
+            state_store.record_change_batch(
+                run_id=batches[-1].run_id,
+                path=path,
+                operations=state_operations,
+                original_exists=batches[0].original_exists,
+                format="asset",
                 connection=write_conn,
             )
         state_store.record_event(
@@ -556,7 +620,11 @@ def _restore_asset_backups(
 ) -> OrchestrationResult:
     if not backups:
         return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
+    backup_groups: dict[Path, list[Any]] = {}
     for backup in backups:
+        backup_groups.setdefault(backup.original_path, []).append(backup)
+    selected_backups = [group[-1] for group in backup_groups.values()]
+    for backup in selected_backups:
         if backup.original_path.exists() or backup.original_path.is_symlink():
             return OrchestrationResult(
                 status="conflict",
@@ -567,22 +635,25 @@ def _restore_asset_backups(
             )
     if dry_run:
         return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
-    _require_current(require_current)
+    changed = False
     try:
-        for backup in reversed(backups):
+        for backup in reversed(selected_backups):
+            _require_current(require_current)
             ensure_safe_managed_write_path(backup.original_path, operation="asset backup restore")
             restore_backup(backup_path=backup.backup_path, original_path=backup.original_path)
+            changed = True
             with _state_write_connection(state_store, connection) as write_conn:
-                state_store.mark_asset_backup_restored(backup.id, connection=write_conn)
+                for grouped_backup in backup_groups[backup.original_path]:
+                    state_store.mark_asset_backup_restored(grouped_backup.id, connection=write_conn)
     except (OSError, UnsafePathError) as exc:
-        return OrchestrationResult(status="error", applied=False, changed=False, error=f"{backup.backup_path}: {exc}")
+        return OrchestrationResult(status="error", applied=False, changed=changed, error=f"{backup.backup_path}: {exc}")
     with _state_write_connection(state_store, connection) as write_conn:
         state_store.record_event(
-            run_id=backups[-1].run_id,
+            run_id=selected_backups[-1].run_id,
             event_type="restore",
             path=path,
             changed=True,
-            summary=f"restored {len(backups)} displaced asset backup(s)",
+            summary=f"restored {len(selected_backups)} displaced asset backup(s)",
             connection=write_conn,
         )
     return OrchestrationResult(status="restored", applied=True, changed=True)
