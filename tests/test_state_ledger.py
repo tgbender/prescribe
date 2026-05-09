@@ -37,6 +37,17 @@ def test_run_lock_refuses_fresh_owner_and_allows_expired(memory_state_store) -> 
     assert expired.token != first.token
 
 
+def test_run_lock_refuses_same_owner_without_current_token(memory_state_store) -> None:
+    now = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
+    first = memory_state_store.acquire_lock("global", owner="same", ttl=timedelta(minutes=1), now=now)
+    second = memory_state_store.acquire_lock("global", owner="same", ttl=timedelta(minutes=1), now=now)
+
+    assert first.owner == "same"
+    assert second.owner == "same"
+    assert second.token == first.token
+    assert second.acquired is False
+
+
 def test_run_lock_release_and_heartbeat_require_current_token(memory_state_store) -> None:
     now = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
     first = memory_state_store.acquire_lock("global", owner="one", ttl=timedelta(minutes=1), now=now)
@@ -96,8 +107,72 @@ def test_long_apply_heartbeats_global_lock(tmp_path: Path) -> None:
     worker.join(timeout=2)
 
     assert not worker.is_alive()
-    assert competing.owner != "other"
+    assert competing.acquired is False
     assert result_holder["results"][0].status == "applied"
+
+
+def test_same_process_concurrent_apply_is_rejected(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.db"
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_materialize(*, env_vars, dry_run=False) -> None:
+        started.set()
+        assert release.wait(timeout=2)
+
+    slow_spec = tmp_path / "slow.toml"
+    slow_spec.write_text("[[env]]\nname = 'EDITOR'\nvalue = 'nvim'\nmaterialize = true\n")
+    fast_spec = tmp_path / "fast.toml"
+    fast_spec.write_text("[[env]]\nname = 'PAGER'\nvalue = 'less'\n")
+    slow = Orchestrator(StateStore(state_path), _materialize_fn=slow_materialize)
+    fast = Orchestrator(StateStore(state_path))
+    slow_results: dict[str, list[Any]] = {}
+
+    worker = threading.Thread(target=lambda: slow_results.setdefault("results", slow.run(slow_spec)))
+    worker.start()
+    assert started.wait(timeout=2)
+
+    rejected = fast.run(fast_spec)
+
+    release.set()
+    worker.join(timeout=2)
+
+    assert rejected[0].status == "error"
+    assert "another prescribe write is active" in (rejected[0].error or "")
+    assert slow_results["results"][0].status == "applied"
+
+
+def test_rollback_release_uses_lock_token(memory_state_store) -> None:
+    first = memory_state_store.acquire_lock("global", owner="same", token="first", ttl=timedelta(minutes=1))
+    second = memory_state_store.acquire_lock("global", owner="same", token="second", ttl=timedelta(minutes=1))
+
+    memory_state_store.release_lock("global", owner="same", token="second")
+
+    assert first.acquired is True
+    assert second.acquired is False
+    assert memory_state_store.active_lock("global") is not None
+
+
+def test_rollback_dry_run_works_with_uri_state_store(tmp_path: Path) -> None:
+    import sqlite3
+    import uuid
+
+    uri = f"file:prescribe-{uuid.uuid4().hex}?mode=memory&cache=shared"
+    keeper = sqlite3.connect(uri, uri=True)
+    try:
+        store = StateStore(uri, connection_factory=lambda _: sqlite3.connect(uri, uri=True))
+        config = tmp_path / "config.toml"
+        config.write_text("count = 1\n")
+        spec = Spec(files=[FileTarget(path=config, format="toml", data={"count": 2})])
+
+        applied = Orchestrator(store).run(spec)
+        dry_run = Orchestrator(store).rollback(config, dry_run=True)
+
+        assert applied[0].status == "applied"
+        assert dry_run.status == "dry-run"
+        assert dry_run.changed is True
+    finally:
+        keeper.close()
 
 
 def test_managed_claim_requires_take_for_new_owner(memory_state_store) -> None:

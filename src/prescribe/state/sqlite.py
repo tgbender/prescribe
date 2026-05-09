@@ -144,6 +144,7 @@ class RunLockRecord:
     acquired_at: datetime
     heartbeat_at: datetime | None
     expires_at: datetime
+    acquired: bool = False
 
 
 @dataclass(slots=True)
@@ -396,7 +397,7 @@ class StateStore:
         with self.orm_session() as session:
             existing = session.get(RunLock, name)
             if existing is not None and _parse_datetime(str(existing.expires_at)) > current_time:
-                return _run_lock_record(existing)
+                return _run_lock_record(existing, acquired=False)
             if existing is None:
                 existing = RunLock(name=name)
                 session.add(existing)
@@ -408,7 +409,7 @@ class StateStore:
             existing_any.heartbeat_at = current_time.isoformat()
             existing_any.expires_at = expires_at.isoformat()
             session.flush()
-            return _run_lock_record(existing)
+            return _run_lock_record(existing, acquired=True)
 
     def active_lock(self, name: str) -> RunLockRecord | None:
         now = _utcnow()
@@ -1693,7 +1694,7 @@ def _recovery_backup_from_row(row: sqlite3.Row | tuple[Any, ...]) -> RecoveryBac
     )
 
 
-def _run_lock_record(row: RunLock) -> RunLockRecord:
+def _run_lock_record(row: RunLock, *, acquired: bool = False) -> RunLockRecord:
     return RunLockRecord(
         name=str(row.name),
         owner=str(row.owner),
@@ -1702,6 +1703,7 @@ def _run_lock_record(row: RunLock) -> RunLockRecord:
         acquired_at=_parse_datetime(str(row.acquired_at)),
         heartbeat_at=None if row.heartbeat_at is None else _parse_datetime(str(row.heartbeat_at)),
         expires_at=_parse_datetime(str(row.expires_at)),
+        acquired=acquired,
     )
 
 

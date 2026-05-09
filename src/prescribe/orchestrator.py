@@ -285,7 +285,7 @@ class Orchestrator:
         self.state_store.initialize()
         lock_owner = _lock_owner()
         lock = self.state_store.acquire_lock("global", owner=lock_owner, ttl=self._lock_ttl)
-        if lock.owner != lock_owner:
+        if not lock.acquired:
             return [
                 OrchestrationResult(
                     status="error",
@@ -1406,7 +1406,7 @@ class Orchestrator:
         lock_owner = _lock_owner()
         if not dry_run:
             lock = self.state_store.acquire_lock("global", owner=lock_owner, ttl=self._lock_ttl)
-            if lock.owner != lock_owner:
+            if not lock.acquired:
                 return OrchestrationResult(
                     status="error",
                     applied=False,
@@ -1415,8 +1415,10 @@ class Orchestrator:
                 )
         if not dry_run:
             self.state_store.initialize()
-        elif not self.state_store.path.exists():
-            return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=True)
+        else:
+            with self.state_store.dry_run_connection() as read_conn:
+                if read_conn is None:
+                    return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=True)
 
         try:
             if not dry_run:
@@ -1440,7 +1442,7 @@ class Orchestrator:
             return perform_rollback(path, self.state_store, dry_run=True, original=original, resolver=conflict_resolver)
         finally:
             if not dry_run:
-                self.state_store.release_lock("global", owner=lock_owner)
+                self.state_store.release_lock("global", owner=lock_owner, token=lock.token)
 
     # ── conflict helpers ──────────────────────────────
 
