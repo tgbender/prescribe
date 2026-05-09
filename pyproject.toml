@@ -41,7 +41,10 @@ dev = ["mypy>=1.0,<2.0", "pytest>=9.0.3,<10.0.0", "pyfakefs>=6.2,<7.0.0"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-markers = ["cli: tests that invoke the installed prescribe CLI"]
+markers = [
+  "cli: tests that invoke the installed prescribe CLI",
+  "stress_lock: opt-in multi-process lock contention tests; run with --stress-locks",
+]
 
 [tool.ruff]
 target-version = "py312"

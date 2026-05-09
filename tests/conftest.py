@@ -32,6 +32,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="Skip CLI integration tests even when `prescribe` is on PATH.",
     )
+    parser.addoption(
+        "--stress-locks",
+        action="store_true",
+        default=False,
+        help="Run opt-in multi-process lock contention stress tests.",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -39,9 +45,19 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "cli: CLI integration tests — run by default when `prescribe` is on PATH, skip with --no-cli.",
     )
+    config.addinivalue_line(
+        "markers",
+        "stress_lock: opt-in multi-process lock contention tests; run with --stress-locks.",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
+    if not config.getoption("--stress-locks"):
+        skip_stress_locks = pytest.mark.skip(reason="run with --stress-locks")
+        for item in items:
+            if item.get_closest_marker("stress_lock") is not None:
+                item.add_marker(skip_stress_locks)
+
     # --file-db: skip pyfakefs tests that are incompatible with real SQLite
     if config.getoption("--file-db"):
         skip = pytest.mark.skip(reason="pyfakefs incompatible with --file-db real SQLite")

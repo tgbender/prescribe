@@ -413,6 +413,13 @@ class LostHeartbeatStore(StateStore):
         return None
 
 
+class RollbackEventFailingStore(StateStore):
+    def record_event(self, *args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("event_type") == "rollback":
+            raise RuntimeError("rollback event failed")
+        return super().record_event(*args, **kwargs)
+
+
 class ConnectionRequiredForDryRunRollbackStore(StateStore):
     def change_batches(self, *args: Any, **kwargs: Any) -> Any:
         if kwargs.get("connection") is None:
@@ -566,6 +573,49 @@ def test_rollback_does_not_block_its_own_heartbeat(tmp_path: Path) -> None:
 
     assert rolled_back.status == "rolled-back"
     assert store.blocked_heartbeat.is_set() is False
+
+
+def test_lost_lock_stops_rollback_before_file_write(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.db"
+    store = StateStore(state_path)
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec = Spec(files=[FileTarget(path=config, format="toml", data={"count": 2})])
+    applied = Orchestrator(store).run(spec)
+    assert applied[0].status == "applied"
+    config.write_text("count = 3\n")
+
+    def slow_resolver(key: str) -> bool:
+        time.sleep(0.25)
+        return True
+
+    rolled_back = Orchestrator(
+        LostHeartbeatStore(state_path),
+        lock_ttl=timedelta(milliseconds=500),
+        lock_heartbeat_interval=timedelta(milliseconds=100),
+    ).rollback(config, conflict_resolver=slow_resolver)
+
+    assert rolled_back.status == "error"
+    assert "global lock was lost" in (rolled_back.error or "")
+    assert "count = 3" in config.read_text()
+
+
+def test_rollback_state_failure_returns_error_without_partial_ledger(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.db"
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec = Spec(files=[FileTarget(path=config, format="toml", data={"count": 2})])
+    applied = Orchestrator(StateStore(state_path)).run(spec)
+    assert applied[0].status == "applied"
+    before_batches = StateStore(state_path).change_batches(config)
+
+    rolled_back = Orchestrator(RollbackEventFailingStore(state_path)).rollback(config)
+
+    assert rolled_back.status == "error"
+    assert "rollback event failed" in (rolled_back.error or "")
+    assert "count = 1" in config.read_text()
+    after_batches = StateStore(state_path).change_batches(config)
+    assert len(after_batches) == len(before_batches)
 
 
 def test_rollback_dry_run_passes_read_connection(tmp_path: Path) -> None:

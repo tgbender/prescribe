@@ -1446,6 +1446,7 @@ class Orchestrator:
                         dry_run=False,
                         original=original,
                         resolver=conflict_resolver,
+                        require_current=heartbeat.require_current,
                     )
                     heartbeat.require_current()
                     return result
@@ -1461,6 +1462,8 @@ class Orchestrator:
                     connection=read_conn,
                 )
         except LockLostError as exc:
+            return OrchestrationResult(status="error", applied=False, changed=True, error=str(exc))
+        except Exception as exc:
             return OrchestrationResult(status="error", applied=False, changed=True, error=str(exc))
         finally:
             if not dry_run:

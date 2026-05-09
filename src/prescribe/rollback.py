@@ -1,7 +1,7 @@
 import contextlib
 import json
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,25 @@ from prescribe.fs_safety import UnsafePathError, ensure_safe_managed_write_path,
 from prescribe.state import StateStore
 
 ConflictResolver = Callable[[str], bool] | None
+CurrentLockGuard = Callable[[], None] | None
+RecoveryBackupData = tuple[Path, bytes, int, int | None, str | None]
+
+
+def _require_current(require_current: CurrentLockGuard) -> None:
+    if require_current is not None:
+        require_current()
+
+
+@contextlib.contextmanager
+def _state_write_connection(
+    state_store: StateStore,
+    connection: sqlite3.Connection | None,
+) -> Iterator[sqlite3.Connection]:
+    if connection is not None:
+        yield connection
+        return
+    with state_store.transaction() as write_conn:
+        yield write_conn
 
 
 def perform_rollback(
@@ -32,6 +51,7 @@ def perform_rollback(
     original: bool = False,
     resolver: ConflictResolver = None,
     connection: sqlite3.Connection | None = None,
+    require_current: CurrentLockGuard = None,
 ) -> OrchestrationResult:
     if path.is_symlink():
         return OrchestrationResult(
@@ -43,7 +63,14 @@ def perform_rollback(
         )
 
     if original:
-        return perform_rollback_original(path, state_store, dry_run=dry_run, resolver=resolver, connection=connection)
+        return perform_rollback_original(
+            path,
+            state_store,
+            dry_run=dry_run,
+            resolver=resolver,
+            connection=connection,
+            require_current=require_current,
+        )
 
     batches = state_store.change_batches(path, connection=connection)
     if not batches:
@@ -66,12 +93,27 @@ def perform_rollback(
         )
 
     if format_name == "asset":
-        return _rollback_asset(path, state_store, batches, dry_run=dry_run, resolver=resolver, connection=connection)
+        return _rollback_asset(
+            path,
+            state_store,
+            batches,
+            dry_run=dry_run,
+            resolver=resolver,
+            connection=connection,
+            require_current=require_current,
+        )
     if format_name == "asset-displaced":
         backups = [
             backup for backup in state_store.asset_backups(path, connection=connection) if backup.restored_at is None
         ]
-        return _restore_asset_backups(path, state_store, backups, dry_run=dry_run, connection=connection)
+        return _restore_asset_backups(
+            path,
+            state_store,
+            backups,
+            dry_run=dry_run,
+            connection=connection,
+            require_current=require_current,
+        )
 
     checkpoint = state_store.latest_checkpoint(path, connection=connection)
     if not path.exists():
@@ -79,6 +121,7 @@ def perform_rollback(
             return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
         if dry_run:
             return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
+        _require_current(require_current)
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(path, checkpoint.content_text, newline="")
 
@@ -108,65 +151,30 @@ def perform_rollback(
         batches,
         skipped_keys=set(all_skipped),
     )
+    _require_current(require_current)
+    backup_data: RecoveryBackupData | None = None
+    backup_operation = "rollback"
+    wrote_document = False
+    deleted_document = False
+    written_text: str | None = None
+    new_size: int | None = None
+    new_mtime_ns: int | None = None
+    new_hash: bytes | None = None
     if original_exists or _document_has_content(document):
-        _record_recovery_backup(
-            state_store,
-            run_id=batches[-1].run_id,
-            path=path,
-            target_kind=format_name,
-            operation="rollback",
-            connection=connection,
-        )
+        backup_data = _copy_recovery_backup(state_store, run_id=batches[-1].run_id, path=path)
         adapter.dump(document, path)
         written_text = decode_utf8_bytes(path.read_bytes(), path=path)
         new_stat = path.stat()
+        new_size = new_stat.st_size
+        new_mtime_ns = new_stat.st_mtime_ns
         new_hash = sha256_bytes(path.read_bytes())
-        state_store.record_checkpoint(
-            run_id=batches[-1].run_id,
-            path=path,
-            content_text=written_text,
-            format=format_name,
-            original_exists=original_exists,
-            connection=connection,
-        )
-        state_store.record_snapshot(
-            run_id=batches[-1].run_id,
-            path=path,
-            content_hash=new_hash,
-            size=new_stat.st_size,
-            mtime_ns=new_stat.st_mtime_ns,
-            format=format_name,
-            connection=connection,
-        )
-        if state_operations:
-            state_store.record_change_batch(
-                run_id=batches[-1].run_id,
-                path=path,
-                operations=state_operations,
-                original_exists=original_exists,
-                format=format_name,
-                connection=connection,
-            )
+        wrote_document = True
     elif path.exists():
-        _record_recovery_backup(
-            state_store,
-            run_id=batches[-1].run_id,
-            path=path,
-            target_kind=format_name,
-            operation="rollback-delete",
-            connection=connection,
-        )
+        backup_operation = "rollback-delete"
+        backup_data = _copy_recovery_backup(state_store, run_id=batches[-1].run_id, path=path)
         ensure_safe_unlink_path(path, operation="rollback delete")
         path.unlink()
-        if state_operations:
-            state_store.record_change_batch(
-                run_id=batches[-1].run_id,
-                path=path,
-                operations=state_operations,
-                original_exists=original_exists,
-                format=format_name,
-                connection=connection,
-            )
+        deleted_document = True
 
     parts = [f"rolled back {len(batches)} change batch(es)"]
     if all_force_reverted:
@@ -178,15 +186,64 @@ def perform_rollback(
         if all_skipped or all_force_reverted
         else None
     )
-    state_store.record_event(
-        run_id=batches[-1].run_id,
-        event_type="rollback",
-        path=path,
-        changed=True,
-        summary="; ".join(parts),
-        details=conflict_details,
-        connection=connection,
-    )
+    with _state_write_connection(state_store, connection) as write_conn:
+        if backup_data is not None:
+            _record_recovery_backup_data(
+                state_store,
+                run_id=batches[-1].run_id,
+                path=path,
+                target_kind=format_name,
+                operation=backup_operation,
+                backup_data=backup_data,
+                connection=write_conn,
+            )
+        if wrote_document:
+            if written_text is None or new_hash is None or new_size is None or new_mtime_ns is None:
+                raise RuntimeError(f"rollback did not capture new snapshot state for {path}")
+            state_store.record_checkpoint(
+                run_id=batches[-1].run_id,
+                path=path,
+                content_text=written_text,
+                format=format_name,
+                original_exists=original_exists,
+                connection=write_conn,
+            )
+            state_store.record_snapshot(
+                run_id=batches[-1].run_id,
+                path=path,
+                content_hash=new_hash,
+                size=new_size,
+                mtime_ns=new_mtime_ns,
+                format=format_name,
+                connection=write_conn,
+            )
+            if state_operations:
+                state_store.record_change_batch(
+                    run_id=batches[-1].run_id,
+                    path=path,
+                    operations=state_operations,
+                    original_exists=original_exists,
+                    format=format_name,
+                    connection=write_conn,
+                )
+        elif deleted_document and state_operations:
+            state_store.record_change_batch(
+                run_id=batches[-1].run_id,
+                path=path,
+                operations=state_operations,
+                original_exists=original_exists,
+                format=format_name,
+                connection=write_conn,
+            )
+        state_store.record_event(
+            run_id=batches[-1].run_id,
+            event_type="rollback",
+            path=path,
+            changed=True,
+            summary="; ".join(parts),
+            details=conflict_details,
+            connection=write_conn,
+        )
     return OrchestrationResult(status="rolled-back", applied=True, changed=True)
 
 
@@ -197,6 +254,7 @@ def perform_rollback_original(
     dry_run: bool = False,
     resolver: ConflictResolver = None,
     connection: sqlite3.Connection | None = None,
+    require_current: CurrentLockGuard = None,
 ) -> OrchestrationResult:
     baseline = state_store.original_baseline(path, connection=connection)
     if baseline is None:
@@ -213,26 +271,38 @@ def perform_rollback_original(
             return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
         if dry_run:
             return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
-        _record_recovery_backup(
-            state_store,
-            run_id=baseline.run_id,
-            path=path,
-            target_kind=baseline.format or "file",
-            operation="rollback-original-delete",
-            connection=connection,
-        )
+        _require_current(require_current)
+        backup_data = _copy_recovery_backup(state_store, run_id=baseline.run_id, path=path)
         ensure_safe_unlink_path(path, operation="rollback-original delete")
         path.unlink()
-        _record_rollback_event(
-            state_store,
-            path,
-            "rollback-original",
-            "restored to pre-prescribe state (file deleted)",
-            connection=connection,
-        )
+        with _state_write_connection(state_store, connection) as write_conn:
+            if backup_data is not None:
+                _record_recovery_backup_data(
+                    state_store,
+                    run_id=baseline.run_id,
+                    path=path,
+                    target_kind=baseline.format or "file",
+                    operation="rollback-original-delete",
+                    backup_data=backup_data,
+                    connection=write_conn,
+                )
+            _record_rollback_event(
+                state_store,
+                path,
+                "rollback-original",
+                "restored to pre-prescribe state (file deleted)",
+                connection=write_conn,
+            )
         return OrchestrationResult(status="rolled-back", applied=True, changed=True)
 
-    return perform_rollback(path, state_store, dry_run=dry_run, resolver=resolver, connection=connection)
+    return perform_rollback(
+        path,
+        state_store,
+        dry_run=dry_run,
+        resolver=resolver,
+        connection=connection,
+        require_current=require_current,
+    )
 
 
 def perform_restore(
@@ -241,6 +311,7 @@ def perform_restore(
     *,
     dry_run: bool = False,
     connection: sqlite3.Connection | None = None,
+    require_current: CurrentLockGuard = None,
 ) -> OrchestrationResult:
     checkpoint = state_store.latest_checkpoint(path, connection=connection)
     if checkpoint is None:
@@ -252,27 +323,31 @@ def perform_restore(
     if not checkpoint.original_exists:
         if not path.exists():
             return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
+        _require_current(require_current)
         ensure_safe_unlink_path(path, operation="restore delete")
         path.unlink()
+        with _state_write_connection(state_store, connection) as write_conn:
+            _record_rollback_event(
+                state_store,
+                path,
+                "restore",
+                "restored to last checkpoint (file deleted)",
+                connection=write_conn,
+            )
+        return OrchestrationResult(status="restored", applied=True, changed=True)
+
+    _require_current(require_current)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_safe_managed_write_path(path, operation="restore write")
+    atomic_write_text(path, checkpoint.content_text, newline="")
+    with _state_write_connection(state_store, connection) as write_conn:
         _record_rollback_event(
             state_store,
             path,
             "restore",
-            "restored to last checkpoint (file deleted)",
-            connection=connection,
+            "restored to last checkpoint",
+            connection=write_conn,
         )
-        return OrchestrationResult(status="restored", applied=True, changed=True)
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    ensure_safe_managed_write_path(path, operation="restore write")
-    atomic_write_text(path, checkpoint.content_text, newline="")
-    _record_rollback_event(
-        state_store,
-        path,
-        "restore",
-        "restored to last checkpoint",
-        connection=connection,
-    )
     return OrchestrationResult(status="restored", applied=True, changed=True)
 
 
@@ -293,6 +368,46 @@ def _record_rollback_event(
         path=path,
         changed=True,
         summary=summary,
+        connection=connection,
+    )
+
+
+def _copy_recovery_backup(
+    state_store: StateStore,
+    *,
+    run_id: int,
+    path: Path,
+) -> RecoveryBackupData | None:
+    if not path.exists() or path.is_symlink():
+        return None
+    return copy_to_recovery_backup(
+        state_store=state_store,
+        run_id=run_id,
+        path=path,
+    )
+
+
+def _record_recovery_backup_data(
+    state_store: StateStore,
+    *,
+    run_id: int,
+    path: Path,
+    target_kind: str,
+    operation: str,
+    backup_data: RecoveryBackupData,
+    connection: sqlite3.Connection | None = None,
+) -> None:
+    backup_path, content_hash, size, mtime_ns, content_text = backup_data
+    state_store.record_recovery_backup(
+        run_id=run_id,
+        target_path=path,
+        target_kind=target_kind,
+        operation=operation,
+        backup_path=backup_path,
+        content_hash=content_hash,
+        size=size,
+        mtime_ns=mtime_ns,
+        content_text=content_text,
         connection=connection,
     )
 
@@ -346,9 +461,11 @@ def _rollback_asset(
     dry_run: bool,
     resolver: ConflictResolver,
     connection: sqlite3.Connection | None,
+    require_current: CurrentLockGuard = None,
 ) -> OrchestrationResult:
     changed = False
     skipped = False
+    backup_records: list[tuple[int, Path, RecoveryBackupData]] = []
     for batch in reversed(batches):
         for operation in reversed(batch.operations):
             if operation.get("kind") != "replace_file":
@@ -370,16 +487,11 @@ def _rollback_asset(
             before_permissions = _parse_permissions(operation.get("before_permissions"))
             if dry_run:
                 return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
+            _require_current(require_current)
+            backup_data: RecoveryBackupData | None = None
             if path.exists() or path.is_symlink():
                 if path.exists() and not path.is_symlink():
-                    _record_recovery_backup(
-                        state_store,
-                        run_id=batch.run_id,
-                        path=path,
-                        target_kind="asset",
-                        operation="asset-rollback",
-                        connection=connection,
-                    )
+                    backup_data = _copy_recovery_backup(state_store, run_id=batch.run_id, path=path)
                 ensure_safe_unlink_path(path, operation="asset rollback delete")
                 path.unlink()
             if before_exists:
@@ -396,19 +508,32 @@ def _rollback_asset(
                 if before_permissions is not None:
                     with contextlib.suppress(OSError):
                         path.chmod(before_permissions)
+            if backup_data is not None:
+                backup_records.append((batch.run_id, path, backup_data))
             changed = True
 
     if not changed:
         return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
 
-    state_store.record_event(
-        run_id=batches[-1].run_id,
-        event_type="rollback",
-        path=path,
-        changed=True,
-        summary="rolled back asset" + ("; skipped externally modified version" if skipped else ""),
-        connection=connection,
-    )
+    with _state_write_connection(state_store, connection) as write_conn:
+        for run_id, backup_path, backup_data in backup_records:
+            _record_recovery_backup_data(
+                state_store,
+                run_id=run_id,
+                path=backup_path,
+                target_kind="asset",
+                operation="asset-rollback",
+                backup_data=backup_data,
+                connection=write_conn,
+            )
+        state_store.record_event(
+            run_id=batches[-1].run_id,
+            event_type="rollback",
+            path=path,
+            changed=True,
+            summary="rolled back asset" + ("; skipped externally modified version" if skipped else ""),
+            connection=write_conn,
+        )
     return OrchestrationResult(status="rolled-back", applied=True, changed=True)
 
 
@@ -419,6 +544,7 @@ def _restore_asset_backups(
     *,
     dry_run: bool,
     connection: sqlite3.Connection | None,
+    require_current: CurrentLockGuard = None,
 ) -> OrchestrationResult:
     if not backups:
         return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
@@ -433,21 +559,26 @@ def _restore_asset_backups(
             )
     if dry_run:
         return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
+    _require_current(require_current)
+    restored_ids = []
     try:
         for backup in reversed(backups):
             ensure_safe_managed_write_path(backup.original_path, operation="asset backup restore")
             restore_backup(backup_path=backup.backup_path, original_path=backup.original_path)
-            state_store.mark_asset_backup_restored(backup.id, connection=connection)
+            restored_ids.append(backup.id)
     except UnsafePathError as exc:
         return OrchestrationResult(status="error", applied=False, changed=False, error=str(exc))
-    state_store.record_event(
-        run_id=backups[-1].run_id,
-        event_type="restore",
-        path=path,
-        changed=True,
-        summary=f"restored {len(backups)} displaced asset backup(s)",
-        connection=connection,
-    )
+    with _state_write_connection(state_store, connection) as write_conn:
+        for backup_id in restored_ids:
+            state_store.mark_asset_backup_restored(backup_id, connection=write_conn)
+        state_store.record_event(
+            run_id=backups[-1].run_id,
+            event_type="restore",
+            path=path,
+            changed=True,
+            summary=f"restored {len(backups)} displaced asset backup(s)",
+            connection=write_conn,
+        )
     return OrchestrationResult(status="restored", applied=True, changed=True)
 
 
