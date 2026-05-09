@@ -430,6 +430,20 @@ class LockLostAfterFirstSnapshotStore(StateStore):
         return False if self.lost else super().lock_is_current(*args, **kwargs)
 
 
+class LockLostAfterRecoveryBackupStore(StateStore):
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self.lost = False
+
+    def record_recovery_backup(self, *args: Any, **kwargs: Any) -> Any:
+        result = super().record_recovery_backup(*args, **kwargs)
+        self.lost = True
+        return result
+
+    def lock_is_current(self, *args: Any, **kwargs: Any) -> bool:
+        return False if self.lost else super().lock_is_current(*args, **kwargs)
+
+
 class RollbackEventFailingStore(StateStore):
     def record_event(self, *args: Any, **kwargs: Any) -> Any:
         if kwargs.get("event_type") == "rollback":
@@ -644,6 +658,20 @@ def test_lost_lock_stops_apply_before_later_target_writes(tmp_path: Path) -> Non
     assert "global lock was lost" in (results[0].error or "")
     assert "count = 2" in first.read_text()
     assert "count = 1" in second.read_text()
+
+
+def test_lost_lock_after_recovery_backup_stops_apply_before_write(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.db"
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    results = Orchestrator(LockLostAfterRecoveryBackupStore(state_path)).run(spec_path)
+
+    assert results[0].status == "error"
+    assert "global lock was lost" in (results[0].error or "")
+    assert "count = 1" in config.read_text()
 
 
 def test_rollback_state_failure_returns_error_without_partial_ledger(tmp_path: Path) -> None:

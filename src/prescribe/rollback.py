@@ -13,7 +13,8 @@ from prescribe._util import (
     sha256_bytes,
 )
 from prescribe.adapters import adapter_for_path
-from prescribe.atomic import atomic_write_text
+from prescribe.asset_helpers import format_permissions
+from prescribe.atomic import atomic_write_text, permission_bits
 from prescribe.backups import copy_to_recovery_backup, restore_backup
 from prescribe.core.result import OrchestrationResult
 from prescribe.document import Document
@@ -171,6 +172,7 @@ def perform_rollback(
     if original_exists or _document_has_content(document):
         ensure_safe_managed_write_path(path, operation="rollback write")
         backup_data = _copy_recovery_backup(state_store, run_id=batches[-1].run_id, path=path)
+        _require_current(require_current)
         adapter.dump(document, path)
         written_text = decode_utf8_bytes(path.read_bytes(), path=path)
         new_stat = path.stat()
@@ -181,6 +183,7 @@ def perform_rollback(
     elif path.exists():
         backup_operation = "rollback-delete"
         backup_data = _copy_recovery_backup(state_store, run_id=batches[-1].run_id, path=path)
+        _require_current(require_current)
         ensure_safe_unlink_path(path, operation="rollback delete")
         path.unlink()
         deleted_document = True
@@ -282,6 +285,7 @@ def perform_rollback_original(
             return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True)
         _require_current(require_current)
         backup_data = _copy_recovery_backup(state_store, run_id=baseline.run_id, path=path)
+        _require_current(require_current)
         ensure_safe_unlink_path(path, operation="rollback-original delete")
         path.unlink()
         with _state_write_connection(state_store, connection) as write_conn:
@@ -511,9 +515,11 @@ def _rollback_asset(
             _require_current(require_current)
             backup_data: RecoveryBackupData | None = None
             current_exists = path.exists() or path.is_symlink()
+            current_permissions = permission_bits(path) if path.exists() and not path.is_symlink() else None
             if path.exists() or path.is_symlink():
                 if path.exists() and not path.is_symlink():
                     backup_data = _copy_recovery_backup(state_store, run_id=batch.run_id, path=path)
+                _require_current(require_current)
                 ensure_safe_unlink_path(path, operation="asset rollback delete")
                 path.unlink()
             if before_exists:
@@ -536,6 +542,8 @@ def _rollback_asset(
                         "value": final_text,
                         "before_value": current_text,
                         "before_exists": current_exists,
+                        "before_permissions": format_permissions(current_permissions),
+                        "after_permissions": format_permissions(permission_bits(path)),
                         "reason": "asset rollback",
                     }
                 )
@@ -548,6 +556,7 @@ def _rollback_asset(
                         "value": None,
                         "before_value": current_text,
                         "before_exists": current_exists,
+                        "before_permissions": format_permissions(current_permissions),
                         "reason": "asset rollback removed created asset",
                     }
                 )
@@ -639,6 +648,14 @@ def _restore_asset_backups(
     try:
         for backup in reversed(selected_backups):
             _require_current(require_current)
+            if backup.original_path.exists() or backup.original_path.is_symlink():
+                return OrchestrationResult(
+                    status="conflict",
+                    applied=False,
+                    changed=True,
+                    error=f"cannot restore displaced asset because path exists: {backup.original_path}",
+                    dry_run=dry_run,
+                )
             ensure_safe_managed_write_path(backup.original_path, operation="asset backup restore")
             restore_backup(backup_path=backup.backup_path, original_path=backup.original_path)
             changed = True

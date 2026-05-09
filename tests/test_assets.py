@@ -714,6 +714,52 @@ def test_asset_backup_restore_uses_latest_backup_per_original_path(tmp_path: Pat
     assert not newer.exists()
 
 
+def test_asset_backup_restore_conflicts_if_file_appears_after_preflight(tmp_path: Path, state_store) -> None:
+    target = tmp_path / "system"
+    extra_a = target / "extra-a.txt"
+    extra_b = target / "extra-b.txt"
+    backup_a = tmp_path / "backups" / "extra-a.txt"
+    backup_b = tmp_path / "backups" / "extra-b.txt"
+    backup_a.parent.mkdir()
+    backup_a.write_text("old a\n")
+    backup_b.write_text("old b\n")
+    run = state_store.start_run(command="seed")
+    state_store.record_asset_backup(
+        run_id=run.id,
+        target_dest=target,
+        original_path=extra_a,
+        backup_path=backup_a,
+        content_hash=sha256_bytes(backup_a.read_bytes()),
+        size=backup_a.stat().st_size,
+        file_type="file",
+    )
+    state_store.record_asset_backup(
+        run_id=run.id,
+        target_dest=target,
+        original_path=extra_b,
+        backup_path=backup_b,
+        content_hash=sha256_bytes(backup_b.read_bytes()),
+        size=backup_b.stat().st_size,
+        file_type="file",
+    )
+    calls = 0
+
+    def create_manual_file_after_first_restore() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            extra_a.write_text("manual\n")
+
+    restored = perform_rollback(target, state_store, require_current=create_manual_file_after_first_restore)
+
+    assert restored.status == "conflict"
+    assert restored.changed is True
+    assert extra_a.read_text() == "manual\n"
+    assert extra_b.read_text() == "old b\n"
+    assert state_store.asset_backups(extra_a)[0].restored_at is None
+    assert state_store.asset_backups(extra_b)[0].restored_at is not None
+
+
 def test_asset_backup_fallback_restore_checks_current_lock(tmp_path: Path, state_store) -> None:
     target = tmp_path / "system"
     extra = target / "extra.txt"
@@ -818,6 +864,24 @@ def test_asset_rollback_refuses_symlink_baseline_before_deleting_current_file(
     assert "symlink" in (rolled_back.error or "")
     assert dest.read_bytes() == b"managed\n"
     assert state_store.recovery_backups(dest) == []
+
+
+def test_asset_rollback_records_permissions_for_rollback_of_rollback(tmp_path: Path, state_store) -> None:
+    source = tmp_path / "repo" / "tool.sh"
+    source.parent.mkdir()
+    source.write_text("#!/bin/sh\n")
+    source.chmod(0o755)
+    dest = tmp_path / "system" / "tool.sh"
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[assets]]\nsource = 'repo/tool.sh'\ndest = 'system/tool.sh'\n")
+    orchestrator = Orchestrator(state_store)
+    assert orchestrator.run(spec_path)[0].status == "applied"
+
+    rolled_back = orchestrator.rollback(dest)
+
+    assert rolled_back.status == "rolled-back"
+    latest = state_store.change_batches(dest)[-1]
+    assert latest.operations[0].get("before_permissions") is not None
 
 
 def test_orchestrator_asset_displacement_restores_extra_if_state_recording_fails(

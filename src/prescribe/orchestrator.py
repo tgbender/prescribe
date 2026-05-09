@@ -864,6 +864,8 @@ class Orchestrator:
                 operation="asset-write",
                 connection=connection,
             )
+            if require_current is not None:
+                require_current()
         atomic_write_bytes(dest, source_bytes, permissions=permissions)
         stat = dest.stat()
         content_hash = sha256_bytes(dest.read_bytes())
@@ -1597,6 +1599,8 @@ class Orchestrator:
                 operation=event_type,
                 connection=connection,
             )
+            if require_current is not None:
+                require_current()
         apply_operations(document, operations)
         adapter.dump(document, target.path)
         new_bytes = target.path.read_bytes()
