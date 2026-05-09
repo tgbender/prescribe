@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ntpath
+import sqlite3
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -31,6 +32,13 @@ class ClaimConflict:
 
 
 ClaimResolver = Callable[[ClaimConflict], bool]
+ClaimKey = tuple[str, str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimCheckResult:
+    conflicts: list[ClaimConflict]
+    take_keys: set[ClaimKey]
 
 
 def compute_claims(spec: Spec, *, include: Callable[[object], bool] | None = None) -> list[Claim]:
@@ -141,6 +149,7 @@ def persist_claims(
     claims: list[Claim],
     *,
     resolver: Any = None,
+    connection: sqlite3.Connection | None = None,
 ) -> list[ClaimConflict]:
     conflicts: list[ClaimConflict] = []
     for claim in claims:
@@ -151,6 +160,7 @@ def persist_claims(
             owner_id=claim.owner_id,
             spec_path=claim.spec_path,
             target_id=claim.target_id,
+            connection=connection,
         )
         if existing.owner_id == claim.owner_id:
             continue
@@ -165,10 +175,37 @@ def persist_claims(
                 spec_path=claim.spec_path,
                 target_id=claim.target_id,
                 take=True,
+                connection=connection,
             )
             continue
         conflicts.append(conflict)
     return conflicts
+
+
+def check_claim_conflicts(
+    store: StateStore,
+    claims: list[Claim],
+    *,
+    resolver: ClaimResolver | None,
+) -> ClaimCheckResult:
+    existing = {claim_key(claim): claim for claim in store.claims()}
+    conflicts: list[ClaimConflict] = []
+    take_keys: set[ClaimKey] = set()
+    for claim in claims:
+        key = claim_key(claim)
+        current = existing.get(key)
+        if current is None or current.owner_id == claim.owner_id:
+            continue
+        conflict = ClaimConflict(claim=claim, existing_owner=current.owner_id, existing=current)
+        if resolver is not None and resolver(conflict):
+            take_keys.add(key)
+            continue
+        conflicts.append(conflict)
+    return ClaimCheckResult(conflicts=conflicts, take_keys=take_keys)
+
+
+def claim_key(claim: Claim | ManagedClaimRecord) -> ClaimKey:
+    return (claim.target_type, claim.subject, claim.address)
 
 
 def _owner_id(spec_path: str | None, section: str, index: int) -> str:

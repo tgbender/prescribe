@@ -606,6 +606,27 @@ def _status_line(status: str, changed: bool, path: str, detail: str | None = Non
     return line
 
 
+def _should_prompt_recovery(*, output_json: bool) -> bool:
+    return not output_json and sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _prompt_recover_interrupted(orchestrator: Orchestrator, *, output_json: bool) -> bool:
+    if not _should_prompt_recovery(output_json=output_json):
+        return True
+
+    inspection = orchestrator.recover_interrupted(dry_run=True)
+    if inspection.status == "noop":
+        return True
+
+    typer.echo(_status_line(inspection.status, inspection.changed, "interrupted state", inspection.error), err=True)
+    if not typer.confirm("Run recovery now?"):
+        return False
+
+    recovered = orchestrator.recover_interrupted(force=True)
+    typer.echo(_status_line(recovered.status, recovered.changed, "interrupted state", recovered.error), err=True)
+    return recovered.status != "error"
+
+
 @app.command()
 def apply(
     spec: Path = typer.Argument(..., metavar="SPEC_PATH", help="Path to the spec TOML file."),
@@ -640,6 +661,8 @@ def apply(
     skip_set = _parse_tags(skip_tags)
     explain = _option_bool(explain_skips)
     orchestrator = Orchestrator(_make_store(state, allow_network_state=allow_network_state))
+    if not dry_run and not _prompt_recover_interrupted(orchestrator, output_json=output_json):
+        raise typer.Exit(1)
     claim_resolver = _make_claim_resolver(on_claim_conflict)
     if explain:
         if claim_resolver is None:
@@ -1073,6 +1096,49 @@ def list_backups(
         typer.echo(f"{kind}  {date}  {r.operation:<24}  {size:<12}  {r.target_path}")
 
 
+@app.command("recover")
+def recover(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show interrupted work without changing recovery state."),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Mark interrupted attempts as operator-cleared and expire their claim reservations.",
+    ),
+    output_json: bool = typer.Option(False, "--json", help="Output result as JSON."),
+    state: Path | None = typer.Option(None, "--state", envvar="PRESCRIBE_STATE", help=STATE_HELP),
+    allow_network_state: bool = typer.Option(
+        False,
+        "--allow-network-state",
+        help="Allow the SQLite state database on a network filesystem.",
+    ),
+) -> None:
+    """Inspect or clear interrupted apply attempts before running new writes."""
+    orchestrator = Orchestrator(_make_store(state, allow_network_state=allow_network_state))
+    if force or dry_run or output_json or not _should_prompt_recovery(output_json=output_json):
+        result = orchestrator.recover_interrupted(dry_run=dry_run, force=force)
+    else:
+        result = orchestrator.recover_interrupted(dry_run=True)
+        if result.status != "noop":
+            typer.echo(_status_line(result.status, result.changed, "interrupted state", result.error))
+            if not typer.confirm("Clear interrupted recovery state now?"):
+                raise typer.Exit(1)
+            result = orchestrator.recover_interrupted(force=True)
+    if output_json:
+        data: dict[str, object] = {
+            "status": result.status,
+            "applied": result.applied,
+            "changed": result.changed,
+            "dry_run": result.dry_run,
+        }
+        if result.error:
+            data["error"] = result.error
+        typer.echo(json.dumps(data, indent=2))
+    else:
+        typer.echo(_status_line(result.status, result.changed, "interrupted state", result.error))
+    if result.status == "error":
+        raise typer.Exit(1)
+
+
 @app.command("docs")
 def docs(
     topic: str | None = typer.Argument(None, metavar="TOPIC", help=DOCS_TOPIC_HELP),
@@ -1183,7 +1249,10 @@ def rollback(
     ),
 ) -> None:
     """Undo managed changes for TARGET while preserving unrelated edits where possible."""
-    result = Orchestrator(_make_store(state, allow_network_state=allow_network_state)).rollback(
+    orchestrator = Orchestrator(_make_store(state, allow_network_state=allow_network_state))
+    if not dry_run and not _prompt_recover_interrupted(orchestrator, output_json=output_json):
+        raise typer.Exit(1)
+    result = orchestrator.rollback(
         target, dry_run=dry_run, original=original, conflict_resolver=_make_conflict_resolver(on_conflict)
     )
 
@@ -1480,6 +1549,8 @@ def _run_spec_directory(
     skip_set = _parse_tags(skip_tags)
     explain = _option_bool(explain_skips)
     store = _make_store(state, allow_network_state=allow_network_state)
+    if not dry_run and not _prompt_recover_interrupted(Orchestrator(store), output_json=output_json):
+        raise typer.Exit(1)
     loader = SpecLoader()
     specs = Presets(state_store=store, loader=loader).list_specs(directory)
     payload: list[dict[str, object]] = []

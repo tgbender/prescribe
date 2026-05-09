@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from prescribe.claims import compute_claims, detect_internal_claim_conflicts
+from prescribe.adapters.toml import TomlAdapter
 from prescribe.orchestrator import Orchestrator
-from prescribe.spec import AssetTarget, FileTarget, ShellTarget, Spec, SpecLoader
+from prescribe.spec import AssetTarget, EnvTarget, FileTarget, ShellTarget, Spec, SpecLoader
 
 
 def test_run_lock_refuses_fresh_owner_and_allows_expired(memory_state_store) -> None:
@@ -23,8 +25,37 @@ def test_run_lock_refuses_fresh_owner_and_allows_expired(memory_state_store) -> 
     )
 
     assert first.owner == "one"
+    assert first.token is not None
     assert fresh.owner == "one"
+    assert fresh.token == first.token
     assert expired.owner == "two"
+    assert expired.token is not None
+    assert expired.token != first.token
+
+
+def test_run_lock_release_and_heartbeat_require_current_token(memory_state_store) -> None:
+    now = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
+    first = memory_state_store.acquire_lock("global", owner="one", ttl=timedelta(minutes=1), now=now)
+    assert first.token is not None
+
+    assert memory_state_store.lock_is_current("global", owner="one", token=first.token, now=now)
+    assert not memory_state_store.lock_is_current("global", owner="one", token="wrong", now=now)
+    assert memory_state_store.heartbeat_lock("global", owner="one", token="wrong", now=now) is None
+    memory_state_store.release_lock("global", owner="one", token="wrong")
+    assert memory_state_store.lock_is_current("global", owner="one", token=first.token, now=now)
+
+    refreshed = memory_state_store.heartbeat_lock(
+        "global",
+        owner="one",
+        token=first.token,
+        ttl=timedelta(minutes=5),
+        now=now + timedelta(seconds=30),
+    )
+    assert refreshed is not None
+    assert refreshed.expires_at == now + timedelta(minutes=5, seconds=30)
+
+    memory_state_store.release_lock("global", owner="one", token=first.token)
+    assert memory_state_store.active_lock("global") is None
 
 
 def test_managed_claim_requires_take_for_new_owner(memory_state_store) -> None:
@@ -53,6 +84,47 @@ def test_managed_claim_requires_take_for_new_owner(memory_state_store) -> None:
     assert taken.owner_id == "spec-b#files[0]"
 
 
+def test_claim_reservation_blocks_until_ttl_expires(memory_state_store) -> None:
+    now = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
+
+    first = memory_state_store.reserve_claim(
+        target_type="file",
+        subject="config.toml",
+        address="count",
+        owner_id="spec-a#files[0]",
+        run_id=None,
+        token="token-a",
+        ttl=timedelta(minutes=1),
+        now=now,
+    )
+    blocked = memory_state_store.reserve_claim(
+        target_type="file",
+        subject="config.toml",
+        address="count",
+        owner_id="spec-b#files[0]",
+        run_id=None,
+        token="token-b",
+        ttl=timedelta(minutes=1),
+        now=now + timedelta(seconds=30),
+    )
+    stolen = memory_state_store.reserve_claim(
+        target_type="file",
+        subject="config.toml",
+        address="count",
+        owner_id="spec-b#files[0]",
+        run_id=None,
+        token="token-b",
+        ttl=timedelta(minutes=1),
+        now=now + timedelta(minutes=2),
+    )
+
+    assert first.token == "token-a"
+    assert blocked.token == "token-a"
+    assert blocked.owner_id == "spec-a#files[0]"
+    assert stolen.token == "token-b"
+    assert stolen.owner_id == "spec-b#files[0]"
+
+
 def test_apply_records_run_and_target_ledger(tmp_path: Path, memory_state_store) -> None:
     config = tmp_path / "config.toml"
     config.write_text("count = 1\n")
@@ -68,6 +140,9 @@ def test_apply_records_run_and_target_ledger(tmp_path: Path, memory_state_store)
     assert len(targets) == 1
     assert targets[0].target_type == "file"
     assert targets[0].status == "applied"
+    attempts = memory_state_store.target_attempts(run_id)
+    assert len(attempts) == 1
+    assert attempts[0].phase == "succeeded"
 
 
 def test_claims_follow_active_tag_filter(tmp_path: Path, memory_state_store) -> None:
@@ -96,6 +171,231 @@ def test_claims_follow_active_tag_filter(tmp_path: Path, memory_state_store) -> 
     claims = memory_state_store.claims()
     assert len(claims) == 1
     assert claims[0].owner_id.endswith("#files[0]")
+
+
+def test_failed_target_does_not_leave_durable_claim(tmp_path: Path, memory_state_store) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("count = [\n")
+    failing_spec = tmp_path / "failing.toml"
+    failing_spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    orchestrator = Orchestrator(memory_state_store)
+    failed = orchestrator.run(failing_spec)
+
+    assert failed[0].status == "error"
+    assert memory_state_store.claims() == []
+    run_id = memory_state_store.latest_run_id()
+    assert run_id is not None
+    attempts = memory_state_store.target_attempts(run_id)
+    assert len(attempts) == 1
+    assert attempts[0].phase == "failed"
+    assert memory_state_store.claim_reservations()[0].status == "failed"
+
+    config.write_text("count = 1\n")
+    valid_spec = tmp_path / "valid.toml"
+    valid_spec.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 3\n")
+
+    applied = orchestrator.run(valid_spec)
+
+    assert applied[0].status == "applied"
+    claims = memory_state_store.claims()
+    assert len(claims) == 1
+    assert claims[0].owner_id.endswith("valid.toml#files[0]")
+
+
+def test_unexpired_claim_reservation_blocks_apply(tmp_path: Path, memory_state_store) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+    spec = SpecLoader().load(spec_path)
+    claim = compute_claims(spec)[0]
+    memory_state_store.reserve_claim(
+        target_type=claim.target_type,
+        subject=claim.subject,
+        address=claim.address,
+        owner_id="other-spec#files[0]",
+        run_id=None,
+        token="other-token",
+        ttl=timedelta(minutes=5),
+    )
+
+    result = Orchestrator(memory_state_store).run(spec_path)
+
+    assert result[0].status == "error"
+    assert "claim reservation conflict" in (result[0].error or "")
+    assert memory_state_store.claims() == []
+    assert TomlAdapter().load(config).root["count"] == 1
+
+
+def test_durable_claim_blocks_even_without_active_reservation(tmp_path: Path, memory_state_store) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+    spec = SpecLoader().load(spec_path)
+    claim = compute_claims(spec)[0]
+    memory_state_store.upsert_claim(
+        target_type=claim.target_type,
+        subject=claim.subject,
+        address=claim.address,
+        owner_id="other-spec#files[0]",
+    )
+
+    result = Orchestrator(memory_state_store).run(spec_path)
+
+    assert result[0].status == "error"
+    assert "claim conflict" in (result[0].error or "")
+    assert TomlAdapter().load(config).root["count"] == 1
+
+
+def test_completed_attempts_do_not_block_later_apply(tmp_path: Path, memory_state_store) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    orchestrator = Orchestrator(memory_state_store)
+    first = orchestrator.run(spec_path)
+    second = orchestrator.run(spec_path)
+
+    assert first[0].status == "applied"
+    assert second[0].status == "noop"
+    attempts = memory_state_store.target_attempts()
+    assert attempts
+    assert {attempt.phase for attempt in attempts} == {"succeeded"}
+
+
+def test_recover_interrupted_is_noop_when_state_is_clean(memory_state_store) -> None:
+    result = Orchestrator(memory_state_store).recover_interrupted()
+
+    assert result.status == "noop"
+    assert result.applied is False
+    assert result.changed is False
+
+
+def test_env_claim_is_recorded_when_env_shares_run_with_file(tmp_path: Path, memory_state_store) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec = Spec(
+        path=tmp_path / "spec.toml",
+        env=[EnvTarget(name="EDITOR", value="nvim")],
+        files=[FileTarget(path=config, format="toml", data={"count": 2})],
+    )
+
+    result = Orchestrator(memory_state_store).run(spec)
+
+    assert result[0].status == "applied"
+    claims = memory_state_store.claims()
+    assert {(claim.target_type, claim.address) for claim in claims} == {("env", "value"), ("file", "count")}
+
+
+def test_apply_metadata_failure_leaves_recoverable_attempt_without_claim(
+    tmp_path: Path, memory_state_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    def fail_record_target_run(*args, **kwargs):
+        raise RuntimeError("simulated ledger failure")
+
+    monkeypatch.setattr(memory_state_store, "record_target_run", fail_record_target_run)
+
+    with pytest.raises(RuntimeError, match="simulated ledger failure"):
+        Orchestrator(memory_state_store).run(spec_path)
+
+    run_id = memory_state_store.latest_run_id()
+    assert run_id is not None
+    assert memory_state_store.claims() == []
+    assert memory_state_store.list_managed() == []
+    attempts = memory_state_store.target_attempts(run_id)
+    assert len(attempts) == 1
+    assert attempts[0].phase == "attempting"
+    reservations = memory_state_store.claim_reservations()
+    assert len(reservations) == 1
+    assert reservations[0].status == "reserved"
+    monkeypatch.undo()
+
+    blocked = Orchestrator(memory_state_store).run(spec_path)
+    assert blocked[0].status == "error"
+    assert "interrupted prescribe operation detected" in (blocked[0].error or "")
+
+    dry_recovery = Orchestrator(memory_state_store).recover_interrupted(dry_run=True)
+    assert dry_recovery.status == "dry-run"
+    assert "interrupted prescribe operation detected" in (dry_recovery.error or "")
+    assert memory_state_store.target_attempts(run_id)[0].phase == "attempting"
+
+    refused_recovery = Orchestrator(memory_state_store).recover_interrupted()
+    assert refused_recovery.status == "error"
+    assert memory_state_store.target_attempts(run_id)[0].phase == "attempting"
+
+    recovered = Orchestrator(memory_state_store).recover_interrupted(force=True)
+    assert recovered.status == "applied"
+    assert memory_state_store.target_attempts(run_id)[0].phase == "interrupted"
+    assert memory_state_store.claim_reservations()[0].status == "expired"
+
+    reapplied = Orchestrator(memory_state_store).run(spec_path)
+    assert reapplied[0].status in {"applied", "noop"}
+    assert len(memory_state_store.claims()) == 1
+
+
+def test_cli_recovery_prompt_can_clear_interrupted_state(
+    tmp_path: Path, memory_state_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    def fail_record_target_run(*args, **kwargs):
+        raise RuntimeError("simulated ledger failure")
+
+    monkeypatch.setattr(memory_state_store, "record_target_run", fail_record_target_run)
+    with pytest.raises(RuntimeError, match="simulated ledger failure"):
+        Orchestrator(memory_state_store).run(spec_path)
+    monkeypatch.undo()
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("typer.confirm", lambda _prompt: True)
+
+    from prescribe.cli import _prompt_recover_interrupted
+
+    assert _prompt_recover_interrupted(Orchestrator(memory_state_store), output_json=False)
+    assert {attempt.phase for attempt in memory_state_store.target_attempts()} == {"interrupted"}
+    assert {reservation.status for reservation in memory_state_store.claim_reservations()} == {"expired"}
+
+    reapplied = Orchestrator(memory_state_store).run(spec_path)
+    assert reapplied[0].status in {"applied", "noop"}
+
+
+def test_cli_recovery_prompt_decline_leaves_interrupted_state(
+    tmp_path: Path, memory_state_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    def fail_record_target_run(*args, **kwargs):
+        raise RuntimeError("simulated ledger failure")
+
+    monkeypatch.setattr(memory_state_store, "record_target_run", fail_record_target_run)
+    with pytest.raises(RuntimeError, match="simulated ledger failure"):
+        Orchestrator(memory_state_store).run(spec_path)
+    monkeypatch.undo()
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr("typer.confirm", lambda _prompt: False)
+
+    from prescribe.cli import _prompt_recover_interrupted
+
+    assert not _prompt_recover_interrupted(Orchestrator(memory_state_store), output_json=False)
+    assert {attempt.phase for attempt in memory_state_store.target_attempts()} == {"attempting"}
+    assert {reservation.status for reservation in memory_state_store.claim_reservations()} == {"reserved"}
 
 
 def test_windows_file_claim_subjects_are_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:

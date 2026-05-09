@@ -4,6 +4,7 @@ from prescribe.state.models import (
     AssetBackup,
     Base,
     ChangeBatch,
+    ClaimReservation,
     Event,
     FileBaseline,
     FileCheckpoint,
@@ -14,12 +15,14 @@ from prescribe.state.models import (
     RunLock,
     SpecRun,
     TargetRun,
+    TargetAttempt,
 )
 from prescribe.state.sqlite import (
     AssetBackupRecord,
     BaselineRecord,
     ChangeBatchRecord,
     CheckpointRecord,
+    ClaimReservationRecord,
     EventRecord,
     ManagedClaimRecord,
     ManagedRecord,
@@ -29,6 +32,7 @@ from prescribe.state.sqlite import (
     SnapshotRecord,
     SpecRunRecord,
     StateStore,
+    TargetAttemptRecord,
     TargetRunRecord,
 )
 
@@ -39,6 +43,8 @@ __all__ = [
     "BaselineRecord",
     "ChangeBatch",
     "ChangeBatchRecord",
+    "ClaimReservation",
+    "ClaimReservationRecord",
     "CheckpointRecord",
     "Event",
     "EventRecord",
@@ -60,6 +66,8 @@ __all__ = [
     "SpecRunRecord",
     "StateStore",
     "TargetRun",
+    "TargetAttempt",
+    "TargetAttemptRecord",
     "TargetRunRecord",
     "is_network_filesystem_path",
     "migrate",

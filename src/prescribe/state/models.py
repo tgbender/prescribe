@@ -63,8 +63,10 @@ class RunLock(Base):
 
     name = Column(Text, primary_key=True)
     owner = Column(Text, nullable=False)
+    token = Column(Text)
     run_id = Column(Integer, ForeignKey("runs.id", ondelete="SET NULL"))
     acquired_at = Column(Text, nullable=False)
+    heartbeat_at = Column(Text)
     expires_at = Column(Text, nullable=False)
 
 
@@ -84,6 +86,47 @@ class ManagedClaim(Base):
     __table_args__ = (
         Index("uq_managed_claims_target_subject_address", "target_type", "subject", "address", unique=True),
         Index("idx_managed_claims_owner", "owner_id"),
+    )
+
+
+class ClaimReservation(Base):
+    __tablename__ = "claim_reservations"
+
+    id = Column(Integer, primary_key=True, default=snowflake_id)
+    target_type = Column(Text, nullable=False)
+    subject = Column(Text, nullable=False)
+    address = Column(Text, nullable=False)
+    owner_id = Column(Text, nullable=False)
+    run_id = Column(Integer, ForeignKey("runs.id", ondelete="CASCADE"))
+    token = Column(Text, nullable=False)
+    status = Column(Text, nullable=False)
+    created_at = Column(Text, nullable=False)
+    expires_at = Column(Text, nullable=False)
+
+    __table_args__ = (
+        Index("uq_claim_reservations_target_subject_address", "target_type", "subject", "address", unique=True),
+        Index("idx_claim_reservations_run_id", "run_id"),
+    )
+
+
+class TargetAttempt(Base):
+    __tablename__ = "target_attempts"
+
+    id = Column(Integer, primary_key=True, default=snowflake_id)
+    run_id = Column(Integer, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False)
+    target_type = Column(Text, nullable=False)
+    target_id = Column(Text)
+    subject = Column(Text, nullable=False)
+    address = Column(Text, nullable=False)
+    owner_id = Column(Text, nullable=False)
+    phase = Column(Text, nullable=False)
+    started_at = Column(Text, nullable=False)
+    updated_at = Column(Text, nullable=False)
+    error = Column(Text)
+
+    __table_args__ = (
+        Index("idx_target_attempts_run_id", "run_id"),
+        Index("idx_target_attempts_claim_key", "target_type", "subject", "address"),
     )
 
 

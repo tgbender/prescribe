@@ -9,7 +9,7 @@ import shutil
 import socket
 import sqlite3
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +22,8 @@ from prescribe.claims import (
     Claim,
     ClaimConflict,
     ClaimResolver,
+    check_claim_conflicts,
+    claim_key,
     compute_claims,
     detect_internal_claim_conflicts,
     persist_claims,
@@ -58,6 +60,25 @@ class _AssetDestinationState:
     symlink_target: str | None = None
     hardlink_count: int = 0
     permissions: int | None = None
+
+
+class _DeferredClaimConflict(Exception):
+    def __init__(self, conflict: ClaimConflict) -> None:
+        super().__init__("claim conflict while committing state")
+        self.conflict = conflict
+
+
+class _ReservationConflict(Exception):
+    def __init__(self, claim: Claim, existing_owner: str) -> None:
+        super().__init__("claim reservation conflict")
+        self.claim = claim
+        self.existing_owner = existing_owner
+
+
+class InterruptedWorkError(Exception):
+    def __init__(self, attempts: list[Any]) -> None:
+        super().__init__("interrupted prescribe operation detected")
+        self.attempts = attempts
 
 
 PLATFORM_MATCHERS: dict[str, Callable[[], bool]] = {
@@ -261,9 +282,16 @@ class Orchestrator:
                 )
             ]
         try:
-            claim_conflicts = persist_claims(self.state_store, claims, resolver=claim_resolver)
-            if claim_conflicts:
-                return [_claim_conflict_result(claim_conflicts[0])]
+            unfinished = self.state_store.unfinished_target_attempts()
+            if unfinished:
+                raise InterruptedWorkError(unfinished)
+            claim_check = check_claim_conflicts(
+                self.state_store,
+                claims,
+                resolver=claim_resolver,
+            )
+            if claim_check.conflicts:
+                return [_claim_conflict_result(claim_check.conflicts[0])]
             with self.state_store.transaction() as connection:
                 run = self.state_store.start_run(
                     spec_hash=spec_hash,
@@ -274,6 +302,9 @@ class Orchestrator:
                     cwd=Path.cwd(),
                     connection=connection,
                 )
+                self._reserve_claims(run.id, lock.token or lock_owner, claims, connection=connection)
+                self._record_target_attempts(run.id, claims, connection=connection)
+            with self.state_store.transaction() as connection:
                 results = self._run_all(
                     run_id=run.id,
                     spec_hash=spec_hash,
@@ -286,20 +317,143 @@ class Orchestrator:
                     file_skip_reasons=file_skip_reasons,
                     connection=connection,
                 )
-            self._record_target_runs(run.id, spec_obj, results)
-            status = "failed" if any(result.status in {"error", "conflict"} for result in results) else "completed"
-            self.state_store.finish_run(run.id, status=status)
+                successful_ids = _successful_target_ids(spec_obj, results)
+                successful_claims = [claim for claim in claims if claim.target_id in successful_ids]
+                failed_ids = {claim.target_id for claim in claims if claim.target_id is not None} - successful_ids
+                self.state_store.update_target_attempts(
+                    run_id=run.id,
+                    target_ids=successful_ids,
+                    phase="succeeded",
+                    connection=connection,
+                )
+                self.state_store.update_target_attempts(
+                    run_id=run.id,
+                    target_ids=failed_ids,
+                    phase="failed",
+                    connection=connection,
+                )
+                claim_conflicts = persist_claims(
+                    self.state_store,
+                    successful_claims,
+                    resolver=lambda conflict: claim_key(conflict.claim) in claim_check.take_keys,
+                    connection=connection,
+                )
+                if claim_conflicts:
+                    raise _DeferredClaimConflict(claim_conflicts[0])
+                self._record_target_runs(run.id, spec_obj, results, connection=connection)
+                status = "failed" if any(result.status in {"error", "conflict"} for result in results) else "completed"
+                reservation_status = "promoted" if status == "completed" else "failed"
+                self.state_store.release_claim_reservations(
+                    run_id=run.id,
+                    token=lock.token or lock_owner,
+                    status=reservation_status,
+                    connection=connection,
+                )
+                self.state_store.finish_run(run.id, status=status, connection=connection)
             return results
+        except _DeferredClaimConflict as exc:
+            return [_claim_conflict_result(exc.conflict)]
+        except _ReservationConflict as exc:
+            return [
+                OrchestrationResult(
+                    status="error",
+                    applied=False,
+                    changed=False,
+                    error=(
+                        "claim reservation conflict: "
+                        f"{exc.claim.target_type} {exc.claim.subject} {exc.claim.address} "
+                        f"is reserved by {exc.existing_owner}"
+                    ),
+                )
+            ]
+        except InterruptedWorkError as exc:
+            return [_interrupted_work_result(exc.attempts)]
         finally:
-            self.state_store.release_lock("global", owner=lock_owner)
+            self.state_store.release_lock("global", owner=lock_owner, token=lock.token)
 
-    def _record_target_runs(self, run_id: int, spec: Spec, results: list[OrchestrationResult]) -> None:
+    def recover_interrupted(
+        self,
+        *,
+        dry_run: bool = False,
+        force: bool = False,
+    ) -> OrchestrationResult:
+        self.state_store.initialize()
+        attempts = self.state_store.unfinished_target_attempts()
+        if not attempts:
+            return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=dry_run)
+        if dry_run or not force:
+            return OrchestrationResult(
+                status="dry-run" if dry_run else "error",
+                applied=False,
+                changed=True,
+                dry_run=dry_run,
+                error=_interrupted_work_message(attempts),
+            )
+        with self.state_store.transaction() as connection:
+            self.state_store.update_target_attempt_ids(
+                {attempt.id for attempt in attempts},
+                phase="interrupted",
+                error="force-cleared by recover_interrupted",
+                connection=connection,
+            )
+            self.state_store.expire_claim_reservations_for_attempts(attempts, connection=connection)
+        return OrchestrationResult(status="applied", applied=True, changed=True)
+
+    def _reserve_claims(
+        self,
+        run_id: int,
+        token: str,
+        claims: list[Claim],
+        *,
+        connection: sqlite3.Connection,
+    ) -> None:
+        for claim in claims:
+            reservation = self.state_store.reserve_claim(
+                target_type=claim.target_type,
+                subject=claim.subject,
+                address=claim.address,
+                owner_id=claim.owner_id,
+                run_id=run_id,
+                token=token,
+                connection=connection,
+            )
+            if reservation.token != token or reservation.owner_id != claim.owner_id:
+                raise _ReservationConflict(claim, reservation.owner_id)
+
+    def _record_target_attempts(
+        self,
+        run_id: int,
+        claims: list[Claim],
+        *,
+        connection: sqlite3.Connection,
+    ) -> None:
+        for claim in claims:
+            self.state_store.record_target_attempt(
+                run_id=run_id,
+                target_type=claim.target_type,
+                target_id=claim.target_id,
+                subject=claim.subject,
+                address=claim.address,
+                owner_id=claim.owner_id,
+                phase="attempting",
+                connection=connection,
+            )
+
+    def _record_target_runs(
+        self,
+        run_id: int,
+        spec: Spec,
+        results: list[OrchestrationResult],
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
         spec_run = self.state_store.record_spec_run(
             run_id=run_id,
             spec_path=spec.path,
             spec_hash=None,
             order_index=0,
             valid=True,
+            connection=connection,
         )
         for result, (target_type, target) in zip(results, _iter_targets_for_ledger(spec), strict=False):
             self.state_store.record_target_run(
@@ -310,6 +464,7 @@ class Orchestrator:
                 status=result.status,
                 changed=result.changed,
                 skip_reason=result.skip_reason,
+                connection=connection,
             )
 
     def _run_all(
@@ -1612,6 +1767,64 @@ def _claim_conflict_result(conflict: ClaimConflict) -> OrchestrationResult:
             f"{claim.target_type} {claim.subject} {claim.address} is managed by {conflict.existing_owner}"
         ),
     )
+
+
+def _interrupted_work_result(attempts: list[Any]) -> OrchestrationResult:
+    return OrchestrationResult(
+        status="error",
+        applied=False,
+        changed=False,
+        error=_interrupted_work_message(attempts),
+    )
+
+
+def _interrupted_work_message(attempts: list[Any]) -> str:
+    preview = "; ".join(
+        f"run={attempt.run_id} target={attempt.target_type} {attempt.subject} {attempt.address} "
+        f"phase={attempt.phase}"
+        for attempt in attempts[:3]
+    )
+    suffix = "" if len(attempts) <= 3 else f"; +{len(attempts) - 3} more"
+    return (
+        "interrupted prescribe operation detected; normal writes are blocked until recovery is resolved. "
+        f"{preview}{suffix}"
+    )
+
+
+def _successful_target_ids(
+    spec: Spec,
+    results: list[OrchestrationResult],
+) -> set[str]:
+    successful_ids: set[str] = set()
+    if spec.env and not any(result.materialize_errors for result in results):
+        successful_ids.update(f"env[{index}]" for index, _target in enumerate(spec.env))
+    targets = _iter_targets_for_ledger(spec)
+    for result, (target_type, target) in zip(results, targets, strict=False):
+        if result.status in {"error", "conflict", "skipped", "dry-run"}:
+            continue
+        target_id = _target_id_for_claim(target_type, target, spec)
+        if target_id is not None:
+            successful_ids.add(target_id)
+    return successful_ids
+
+
+def _target_id_for_claim(target_type: str, target: object, spec: Spec) -> str | None:
+    if isinstance(target, FileTarget):
+        return _indexed_target_id("files", target, spec.files)
+    if isinstance(target, ShellTarget):
+        return _indexed_target_id("shell", target, spec.shell)
+    if isinstance(target, AssetTarget):
+        return _indexed_target_id("assets", target, spec.assets)
+    if isinstance(target, EnvTarget):
+        return _indexed_target_id("env", target, spec.env)
+    return None
+
+
+def _indexed_target_id(section: str, target: object, targets: Sequence[object]) -> str | None:
+    for index, candidate in enumerate(targets):
+        if candidate is target:
+            return f"{section}[{index}]"
+    return None
 
 
 def _iter_targets_for_ledger(spec: Spec) -> list[tuple[str, object]]:

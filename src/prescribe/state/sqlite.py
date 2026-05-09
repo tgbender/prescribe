@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -138,8 +139,10 @@ class RecoveryBackupRecord:
 class RunLockRecord:
     name: str
     owner: str
+    token: str | None
     run_id: int | None
     acquired_at: datetime
+    heartbeat_at: datetime | None
     expires_at: datetime
 
 
@@ -154,6 +157,35 @@ class ManagedClaimRecord:
     target_id: str | None
     created_at: datetime
     last_seen_at: datetime
+
+
+@dataclass(slots=True)
+class ClaimReservationRecord:
+    id: int
+    target_type: str
+    subject: str
+    address: str
+    owner_id: str
+    run_id: int | None
+    token: str
+    status: str
+    created_at: datetime
+    expires_at: datetime
+
+
+@dataclass(slots=True)
+class TargetAttemptRecord:
+    id: int
+    run_id: int
+    target_type: str
+    target_id: str | None
+    subject: str
+    address: str
+    owner_id: str
+    phase: str
+    started_at: datetime
+    updated_at: datetime
+    error: str | None
 
 
 @dataclass(slots=True)
@@ -320,10 +352,12 @@ class StateStore:
         owner: str,
         run_id: int | None = None,
         ttl: timedelta = timedelta(minutes=15),
+        token: str | None = None,
         now: datetime | None = None,
     ) -> RunLockRecord:
         current_time = _utcnow(now)
         expires_at = current_time + ttl
+        lock_token = token or uuid.uuid4().hex
         with self.orm_session() as session:
             existing = session.get(RunLock, name)
             if existing is not None and _parse_datetime(str(existing.expires_at)) > current_time:
@@ -333,8 +367,10 @@ class StateStore:
                 session.add(existing)
             existing_any: Any = existing
             existing_any.owner = owner
+            existing_any.token = lock_token
             existing_any.run_id = run_id
             existing_any.acquired_at = current_time.isoformat()
+            existing_any.heartbeat_at = current_time.isoformat()
             existing_any.expires_at = expires_at.isoformat()
             session.flush()
             return _run_lock_record(existing)
@@ -348,12 +384,45 @@ class StateStore:
             record = _run_lock_record(existing)
             return record if record.expires_at > now else None
 
-    def release_lock(self, name: str, *, owner: str | None = None) -> None:
+    def heartbeat_lock(
+        self,
+        name: str,
+        *,
+        owner: str,
+        token: str,
+        ttl: timedelta = timedelta(minutes=15),
+        now: datetime | None = None,
+    ) -> RunLockRecord | None:
+        current_time = _utcnow(now)
+        expires_at = current_time + ttl
+        with self.orm_session() as session:
+            existing = session.get(RunLock, name)
+            if existing is None or existing.owner != owner or existing.token != token:
+                return None
+            if _parse_datetime(str(existing.expires_at)) <= current_time:
+                return None
+            existing_any: Any = existing
+            existing_any.heartbeat_at = current_time.isoformat()
+            existing_any.expires_at = expires_at.isoformat()
+            session.flush()
+            return _run_lock_record(existing)
+
+    def lock_is_current(self, name: str, *, owner: str, token: str, now: datetime | None = None) -> bool:
+        current_time = _utcnow(now)
+        with self.orm_session() as session:
+            existing = session.get(RunLock, name)
+            if existing is None or existing.owner != owner or existing.token != token:
+                return False
+            return _parse_datetime(str(existing.expires_at)) > current_time
+
+    def release_lock(self, name: str, *, owner: str | None = None, token: str | None = None) -> None:
         with self.orm_session() as session:
             existing = session.get(RunLock, name)
             if existing is None:
                 return
             if owner is not None and existing.owner != owner:
+                return
+            if token is not None and existing.token != token:
                 return
             session.delete(existing)
 
@@ -365,7 +434,26 @@ class StateStore:
         spec_hash: bytes | None,
         order_index: int,
         valid: bool,
+        connection: sqlite3.Connection | None = None,
     ) -> SpecRunRecord:
+        if connection is not None:
+            cursor = connection.execute(
+                """
+                INSERT INTO spec_runs (run_id, spec_path, spec_hash, order_index, valid)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (run_id, str(spec_path), spec_hash, order_index, int(valid)),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("INSERT into spec_runs did not produce a rowid")
+            return SpecRunRecord(
+                id=cursor.lastrowid,
+                run_id=run_id,
+                spec_path=Path(str(spec_path)),
+                spec_hash=spec_hash,
+                order_index=order_index,
+                valid=valid,
+            )
         with self.orm_session() as session:
             row = SpecRun(
                 run_id=run_id,
@@ -389,7 +477,39 @@ class StateStore:
         spec_run_id: int | None = None,
         target_id: str | None = None,
         skip_reason: str | None = None,
+        connection: sqlite3.Connection | None = None,
     ) -> TargetRunRecord:
+        if connection is not None:
+            cursor = connection.execute(
+                """
+                INSERT INTO target_runs (
+                    run_id, spec_run_id, target_type, target_id, path_or_name, status, skip_reason, changed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    spec_run_id,
+                    target_type,
+                    target_id,
+                    path_or_name,
+                    status,
+                    skip_reason,
+                    int(changed),
+                ),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("INSERT into target_runs did not produce a rowid")
+            return TargetRunRecord(
+                id=cursor.lastrowid,
+                run_id=run_id,
+                spec_run_id=spec_run_id,
+                target_type=target_type,
+                target_id=target_id,
+                path_or_name=path_or_name,
+                status=status,
+                skip_reason=skip_reason,
+                changed=changed,
+            )
         with self.orm_session() as session:
             row = TargetRun(
                 run_id=run_id,
@@ -421,8 +541,70 @@ class StateStore:
         target_id: str | None = None,
         take: bool = False,
         now: datetime | None = None,
+        connection: sqlite3.Connection | None = None,
     ) -> ManagedClaimRecord:
         seen = _utcnow(now)
+        if connection is not None:
+            row = connection.execute(
+                """
+                SELECT id, target_type, subject, address, owner_id, spec_path, target_id, created_at, last_seen_at
+                FROM managed_claims
+                WHERE target_type = ? AND subject = ? AND address = ?
+                """,
+                (target_type, subject, address),
+            ).fetchone()
+            if row is not None:
+                if row[4] != owner_id and not take:
+                    return _managed_claim_record_from_row(row)
+                connection.execute(
+                    """
+                    UPDATE managed_claims
+                    SET owner_id = ?, spec_path = ?, target_id = ?, last_seen_at = ?
+                    WHERE id = ?
+                    """,
+                    (owner_id, spec_path, target_id, seen.isoformat(), row[0]),
+                )
+                updated = connection.execute(
+                    """
+                    SELECT id, target_type, subject, address, owner_id, spec_path, target_id, created_at, last_seen_at
+                    FROM managed_claims
+                    WHERE id = ?
+                    """,
+                    (row[0],),
+                ).fetchone()
+                if updated is None:
+                    raise RuntimeError("managed_claims row disappeared after UPDATE")
+                return _managed_claim_record_from_row(updated)
+            cursor = connection.execute(
+                """
+                INSERT INTO managed_claims (
+                    target_type, subject, address, owner_id, spec_path, target_id, created_at, last_seen_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    target_type,
+                    subject,
+                    address,
+                    owner_id,
+                    spec_path,
+                    target_id,
+                    seen.isoformat(),
+                    seen.isoformat(),
+                ),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("INSERT into managed_claims did not produce a rowid")
+            return ManagedClaimRecord(
+                id=cursor.lastrowid,
+                target_type=target_type,
+                subject=subject,
+                address=address,
+                owner_id=owner_id,
+                spec_path=spec_path,
+                target_id=target_id,
+                created_at=seen,
+                last_seen_at=seen,
+            )
         with self.orm_session() as session:
             row = session.scalar(
                 select(ManagedClaim).where(
@@ -473,6 +655,284 @@ class StateStore:
         with self.orm_session() as session:
             rows = session.scalars(select(ManagedClaim).order_by(ManagedClaim.subject, ManagedClaim.address)).all()
             return [_managed_claim_record(row) for row in rows]
+
+    def reserve_claim(
+        self,
+        *,
+        target_type: str,
+        subject: str,
+        address: str,
+        owner_id: str,
+        run_id: int | None,
+        token: str,
+        ttl: timedelta = timedelta(minutes=1),
+        now: datetime | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> ClaimReservationRecord:
+        current_time = _utcnow(now)
+        expires_at = current_time + ttl
+        with self._connection(connection) as conn:
+            row = conn.execute(
+                """
+                SELECT id, target_type, subject, address, owner_id, run_id, token, status, created_at, expires_at
+                FROM claim_reservations
+                WHERE target_type = ? AND subject = ? AND address = ?
+                """,
+                (target_type, subject, address),
+            ).fetchone()
+            if row is not None:
+                record = _claim_reservation_from_row(row)
+                if record.expires_at > current_time and record.status == "reserved" and record.token != token:
+                    return record
+                conn.execute(
+                    """
+                    UPDATE claim_reservations
+                    SET owner_id = ?, run_id = ?, token = ?, status = ?, created_at = ?, expires_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        owner_id,
+                        run_id,
+                        token,
+                        "reserved",
+                        current_time.isoformat(),
+                        expires_at.isoformat(),
+                        record.id,
+                    ),
+                )
+                return ClaimReservationRecord(
+                    id=record.id,
+                    target_type=target_type,
+                    subject=subject,
+                    address=address,
+                    owner_id=owner_id,
+                    run_id=run_id,
+                    token=token,
+                    status="reserved",
+                    created_at=current_time,
+                    expires_at=expires_at,
+                )
+            cursor = conn.execute(
+                """
+                INSERT INTO claim_reservations (
+                    target_type, subject, address, owner_id, run_id, token, status, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    target_type,
+                    subject,
+                    address,
+                    owner_id,
+                    run_id,
+                    token,
+                    "reserved",
+                    current_time.isoformat(),
+                    expires_at.isoformat(),
+                ),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("INSERT into claim_reservations did not produce a rowid")
+            return ClaimReservationRecord(
+                id=cursor.lastrowid,
+                target_type=target_type,
+                subject=subject,
+                address=address,
+                owner_id=owner_id,
+                run_id=run_id,
+                token=token,
+                status="reserved",
+                created_at=current_time,
+                expires_at=expires_at,
+            )
+
+    def release_claim_reservations(
+        self,
+        *,
+        run_id: int,
+        token: str,
+        status: str,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        with self._connection(connection) as conn:
+            conn.execute(
+                """
+                UPDATE claim_reservations
+                SET status = ?
+                WHERE run_id = ? AND token = ?
+                """,
+                (status, run_id, token),
+            )
+
+    def claim_reservations(
+        self,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[ClaimReservationRecord]:
+        with self._connection(connection) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, target_type, subject, address, owner_id, run_id, token, status, created_at, expires_at
+                FROM claim_reservations
+                ORDER BY target_type, subject, address
+                """
+            ).fetchall()
+        return [_claim_reservation_from_row(row) for row in rows]
+
+    def record_target_attempt(
+        self,
+        *,
+        run_id: int,
+        target_type: str,
+        subject: str,
+        address: str,
+        owner_id: str,
+        phase: str,
+        target_id: str | None = None,
+        error: str | None = None,
+        now: datetime | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> TargetAttemptRecord:
+        timestamp = _utcnow(now)
+        with self._connection(connection) as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO target_attempts (
+                    run_id, target_type, target_id, subject, address, owner_id, phase, started_at, updated_at, error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    target_type,
+                    target_id,
+                    subject,
+                    address,
+                    owner_id,
+                    phase,
+                    timestamp.isoformat(),
+                    timestamp.isoformat(),
+                    error,
+                ),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("INSERT into target_attempts did not produce a rowid")
+            return TargetAttemptRecord(
+                id=cursor.lastrowid,
+                run_id=run_id,
+                target_type=target_type,
+                target_id=target_id,
+                subject=subject,
+                address=address,
+                owner_id=owner_id,
+                phase=phase,
+                started_at=timestamp,
+                updated_at=timestamp,
+                error=error,
+            )
+
+    def update_target_attempts(
+        self,
+        *,
+        run_id: int,
+        target_ids: set[str],
+        phase: str,
+        error: str | None = None,
+        now: datetime | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        if not target_ids:
+            return
+        timestamp = _utcnow(now)
+        placeholders = ", ".join("?" for _ in target_ids)
+        params: list[object] = [phase, timestamp.isoformat(), error, run_id, *sorted(target_ids)]
+        with self._connection(connection) as conn:
+            conn.execute(
+                f"""
+                UPDATE target_attempts
+                SET phase = ?, updated_at = ?, error = ?
+                WHERE run_id = ? AND target_id IN ({placeholders})
+                """,
+                params,
+            )
+
+    def update_target_attempt_ids(
+        self,
+        attempt_ids: set[int],
+        *,
+        phase: str,
+        error: str | None = None,
+        now: datetime | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        if not attempt_ids:
+            return
+        timestamp = _utcnow(now)
+        placeholders = ", ".join("?" for _ in attempt_ids)
+        params: list[object] = [phase, timestamp.isoformat(), error, *sorted(attempt_ids)]
+        with self._connection(connection) as conn:
+            conn.execute(
+                f"""
+                UPDATE target_attempts
+                SET phase = ?, updated_at = ?, error = ?
+                WHERE id IN ({placeholders})
+                """,
+                params,
+            )
+
+    def expire_claim_reservations_for_attempts(
+        self,
+        attempts: list[TargetAttemptRecord],
+        *,
+        status: str = "expired",
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        if not attempts:
+            return
+        with self._connection(connection) as conn:
+            for attempt in attempts:
+                conn.execute(
+                    """
+                    UPDATE claim_reservations
+                    SET status = ?
+                    WHERE target_type = ? AND subject = ? AND address = ? AND status = 'reserved'
+                    """,
+                    (status, attempt.target_type, attempt.subject, attempt.address),
+                )
+
+    def target_attempts(
+        self,
+        run_id: int | None = None,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[TargetAttemptRecord]:
+        query = """
+            SELECT id, run_id, target_type, target_id, subject, address, owner_id, phase, started_at, updated_at, error
+            FROM target_attempts
+        """
+        params: tuple[int, ...] = ()
+        if run_id is not None:
+            query += " WHERE run_id = ?"
+            params = (run_id,)
+        query += " ORDER BY id"
+        with self._connection(connection) as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [_target_attempt_from_row(row) for row in rows]
+
+    def unfinished_target_attempts(
+        self,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[TargetAttemptRecord]:
+        with self._connection(connection) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, run_id, target_type, target_id, subject, address, owner_id, phase,
+                       started_at, updated_at, error
+                FROM target_attempts
+                WHERE phase IN ('attempting', 'rolling_back')
+                ORDER BY id
+                """
+            ).fetchall()
+        return [_target_attempt_from_row(row) for row in rows]
 
     def record_snapshot(
         self,
@@ -1202,8 +1662,10 @@ def _run_lock_record(row: RunLock) -> RunLockRecord:
     return RunLockRecord(
         name=str(row.name),
         owner=str(row.owner),
+        token=None if row.token is None else str(row.token),
         run_id=None if row.run_id is None else int(row.run_id),
         acquired_at=_parse_datetime(str(row.acquired_at)),
+        heartbeat_at=None if row.heartbeat_at is None else _parse_datetime(str(row.heartbeat_at)),
         expires_at=_parse_datetime(str(row.expires_at)),
     )
 
@@ -1219,6 +1681,51 @@ def _managed_claim_record(row: ManagedClaim) -> ManagedClaimRecord:
         target_id=None if row.target_id is None else str(row.target_id),
         created_at=_parse_datetime(str(row.created_at)),
         last_seen_at=_parse_datetime(str(row.last_seen_at)),
+    )
+
+
+def _managed_claim_record_from_row(row: sqlite3.Row | tuple[Any, ...]) -> ManagedClaimRecord:
+    return ManagedClaimRecord(
+        id=row[0],
+        target_type=row[1],
+        subject=row[2],
+        address=row[3],
+        owner_id=row[4],
+        spec_path=row[5],
+        target_id=row[6],
+        created_at=_parse_datetime(row[7]),
+        last_seen_at=_parse_datetime(row[8]),
+    )
+
+
+def _claim_reservation_from_row(row: sqlite3.Row | tuple[Any, ...]) -> ClaimReservationRecord:
+    return ClaimReservationRecord(
+        id=row[0],
+        target_type=row[1],
+        subject=row[2],
+        address=row[3],
+        owner_id=row[4],
+        run_id=row[5],
+        token=row[6],
+        status=row[7],
+        created_at=_parse_datetime(row[8]),
+        expires_at=_parse_datetime(row[9]),
+    )
+
+
+def _target_attempt_from_row(row: sqlite3.Row | tuple[Any, ...]) -> TargetAttemptRecord:
+    return TargetAttemptRecord(
+        id=row[0],
+        run_id=row[1],
+        target_type=row[2],
+        target_id=row[3],
+        subject=row[4],
+        address=row[5],
+        owner_id=row[6],
+        phase=row[7],
+        started_at=_parse_datetime(row[8]),
+        updated_at=_parse_datetime(row[9]),
+        error=row[10],
     )
 
 
