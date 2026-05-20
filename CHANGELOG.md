@@ -1,6 +1,36 @@
 # Changelog
 
-## 0.3.2 (Unreleased)
+## 0.5.0
+
+### Features
+
+- Prescribe now depends on the published `safe-fs-ops` package instead of carrying
+  the side-by-side package implementation in this repository.
+- Added durable interrupted-work recovery, including `prescribe recover` and
+  automatic interactive recovery prompts before mutating commands.
+- Added recoverable claim reservations and target attempt records to the state
+  ledger so interrupted runs can be inspected and reconciled more safely.
+- Added lock heartbeats and token-based lock freshness checks around state
+  mutation, rollback, and recovery work.
+
+### Bug Fixes
+
+- Hardened asset recovery and rollback paths against race windows, stale locks,
+  inconsistent state transitions, and post-mutation failures.
+- Improved run-level error reporting and JSON result alignment for interrupted
+  work, materialize failures, and state database lock failures.
+- Fixed spaced managed line block IDs after rollback.
+- Tightened state migrations to preserve new ledger records and added stress
+  coverage for lock contention.
+
+### Development
+
+- Removed the vendored `safe-fs-ops/` source and tests from this repository.
+- Added `safe-fs-ops>=0.1.0,<0.2.0` as a normal package dependency.
+- Updated local agent guidance to treat `safe-fs-ops` as an external published
+  package.
+
+## 0.3.2
 
 ### Features
 

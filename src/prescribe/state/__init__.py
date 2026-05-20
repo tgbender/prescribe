@@ -14,8 +14,8 @@ from prescribe.state.models import (
     Run,
     RunLock,
     SpecRun,
-    TargetRun,
     TargetAttempt,
+    TargetRun,
 )
 from prescribe.state.sqlite import (
     AssetBackupRecord,

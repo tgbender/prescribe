@@ -1,8 +1,10 @@
 import json
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 import typer
@@ -1280,6 +1282,18 @@ def _results_to_json(
     display_status: bool = False,
     explain_skips: bool = False,
 ) -> list[dict[str, object]]:
+    if _is_run_level_error(results):
+        result = results[0]
+        return [
+            {
+                "type": "error",
+                "status": result.status,
+                "applied": result.applied,
+                "changed": result.changed,
+                "error": result.error or "",
+            }
+        ]
+
     data: list[dict[str, object]] = []
     idx = 0
 
@@ -1307,8 +1321,21 @@ def _results_to_json(
 
     # env entries don't produce individual results (merged into shell results).
     # Only the synthetic env result (when no files, shell, or assets) consumes a slot.
-    if spec_obj.env and not spec_obj.files and not spec_obj.shell and not spec_obj.assets:
+    if spec_obj.env and not spec_obj.files and not spec_obj.shell and not spec_obj.assets and idx < len(results):
+        r = results[idx]
         idx += 1
+        env_entry: dict[str, object] = {
+            "type": "env",
+            "status": _display_status(r.status, r.changed) if display_status else r.status,
+            "applied": r.applied,
+            "changed": r.changed,
+            "vars": r.env_vars,
+        }
+        if r.error:
+            env_entry["error"] = r.error
+        if r.materialize_errors:
+            env_entry["materialize_errors"] = r.materialize_errors
+        data.append(env_entry)
 
     for shell_target in spec_obj.shell:
         if idx >= len(results):
@@ -1378,6 +1405,11 @@ def _results_to_json(
 
 
 def _print_results(spec_obj: Spec, results: list[OrchestrationResult], *, explain_skips: bool = False) -> None:
+    if _is_run_level_error(results):
+        result = results[0]
+        typer.echo(_status_line(result.status, result.changed, "run", result.error))
+        return
+
     idx = 0
 
     for file_target in spec_obj.files:
@@ -1394,7 +1426,7 @@ def _print_results(spec_obj: Spec, results: list[OrchestrationResult], *, explai
 
     # Env entries are merged — show them as a summary.
     # Only the synthetic env result (when no files, shell, or assets) consumes a slot.
-    active_env = 0
+    active_env = _resolved_env_count(results)
     skipped_env = 0
     if spec_obj.env and not spec_obj.files and not spec_obj.shell and not spec_obj.assets:
         r = results[idx] if idx < len(results) else None
@@ -1402,8 +1434,6 @@ def _print_results(spec_obj: Spec, results: list[OrchestrationResult], *, explai
             idx += 1
             if r.skipped:
                 skipped_env += 1
-            else:
-                active_env += 1
 
     if spec_obj.env:
         parts: list[str] = []
@@ -1450,6 +1480,34 @@ def _print_results(spec_obj: Spec, results: list[OrchestrationResult], *, explai
             typer.style("materialize      ", fg=typer.colors.YELLOW) + err,
             err=True,
         )
+
+
+def _resolved_env_count(results: list[OrchestrationResult]) -> int:
+    for result in results:
+        if result.env_vars:
+            return len(result.env_vars)
+    return 0
+
+
+def _is_run_level_error(results: list[OrchestrationResult]) -> bool:
+    if len(results) != 1:
+        return False
+    result = results[0]
+    if result.status != "error" or result.error is None:
+        return False
+    if result.env_vars or result.materialize_errors:
+        return False
+    run_level_prefixes = (
+        "another prescribe write is active:",
+        "claim conflict:",
+        "claim reservation conflict:",
+        "global lock was lost",
+        "global lock heartbeat failed:",
+        "interrupted prescribe operation",
+        "materialize failed:",
+        "portable path collision:",
+    )
+    return result.error.startswith(run_level_prefixes)
 
 
 def _resolve_doc_topic(topic: str | None) -> str | None:
@@ -1521,7 +1579,18 @@ def _render_doc_topic(topic: str, payload: dict[str, object]) -> str:
 
 
 def main() -> None:
-    app()
+    _run_app(app)
+
+
+def _run_app(app_callable: Callable[[], None]) -> None:
+    try:
+        app_callable()
+    except sqlite3.OperationalError as exc:
+        message = str(exc)
+        if "database is locked" in message.lower():
+            typer.echo(f"error: state database is locked: {message}", err=True)
+            raise typer.Exit(1) from None
+        raise
 
 
 def _parse_tags(raw: str | None) -> set[str] | None:
@@ -1600,6 +1669,7 @@ def _run_spec_directory(
                 skip_tags=skip_set,
                 diff=diff,
                 explain_skips=explain,
+                claim_resolver=claim_resolver,
                 file_skip_reasons=file_skip_reasons,
             )
             preflight_items.append((spec_path, spec_obj, results))
@@ -1735,7 +1805,14 @@ def _validation_targets(
     file_skip_reasons: dict[int, str] | None = None,
 ) -> list[dict[str, object]]:
     plan_results = (
-        _validation_plan_results(spec_obj, tags=tags, skip_tags=skip_tags, diff=diff, explain_skips=explain_skips)
+        _validation_plan_results(
+            spec_obj,
+            tags=tags,
+            skip_tags=skip_tags,
+            diff=diff,
+            explain_skips=explain_skips,
+            file_skip_reasons=file_skip_reasons,
+        )
         if plan
         else []
     )
@@ -1837,11 +1914,18 @@ def _validation_plan_results(
     skip_tags: set[str] | None,
     diff: bool,
     explain_skips: bool,
+    file_skip_reasons: dict[int, str] | None = None,
 ) -> list[OrchestrationResult]:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         store = StateStore(Path(tmpdir) / "state.db")
         return Orchestrator(store).run(
-            spec_obj, dry_run=True, tags=tags, skip_tags=skip_tags, diff=diff, explain_skips=explain_skips
+            spec_obj,
+            dry_run=True,
+            tags=tags,
+            skip_tags=skip_tags,
+            diff=diff,
+            explain_skips=explain_skips,
+            file_skip_reasons=file_skip_reasons,
         )
 
 

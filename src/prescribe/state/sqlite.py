@@ -144,6 +144,7 @@ class RunLockRecord:
     acquired_at: datetime
     heartbeat_at: datetime | None
     expires_at: datetime
+    acquired: bool = False
 
 
 @dataclass(slots=True)
@@ -249,6 +250,41 @@ class StateStore:
 
     def connect(self) -> sqlite3.Connection:
         return self._open()
+
+    @contextmanager
+    def dry_run_connection(self) -> Iterator[sqlite3.Connection | None]:
+        if str(self.path) == ":memory:" or "file:" in str(self.path):
+            conn = self._open()
+            try:
+                yield conn
+            finally:
+                conn.close()
+            return
+        if not self.path.exists():
+            yield None
+            return
+        uri = f"file:{self.path.as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            yield conn
+        finally:
+            conn.close()
+
+    def claims_for_dry_run(self) -> list[ManagedClaimRecord]:
+        with self.dry_run_connection() as conn:
+            if conn is None:
+                return []
+            if not _table_exists(conn, "managed_claims"):
+                return []
+            rows = conn.execute(
+                """
+                SELECT id, target_type, subject, address, owner_id, spec_path, target_id, created_at, last_seen_at
+                FROM managed_claims
+                ORDER BY subject, address
+                """
+            ).fetchall()
+        return [_managed_claim_record_from_row(row) for row in rows]
 
     @contextmanager
     def _connection(self, connection: sqlite3.Connection | None = None) -> Iterator[sqlite3.Connection]:
@@ -358,22 +394,79 @@ class StateStore:
         current_time = _utcnow(now)
         expires_at = current_time + ttl
         lock_token = token or uuid.uuid4().hex
-        with self.orm_session() as session:
-            existing = session.get(RunLock, name)
-            if existing is not None and _parse_datetime(str(existing.expires_at)) > current_time:
-                return _run_lock_record(existing)
-            if existing is None:
-                existing = RunLock(name=name)
-                session.add(existing)
-            existing_any: Any = existing
-            existing_any.owner = owner
-            existing_any.token = lock_token
-            existing_any.run_id = run_id
-            existing_any.acquired_at = current_time.isoformat()
-            existing_any.heartbeat_at = current_time.isoformat()
-            existing_any.expires_at = expires_at.isoformat()
-            session.flush()
-            return _run_lock_record(existing)
+        current_text = current_time.isoformat()
+        expires_text = expires_at.isoformat()
+        self.initialize()
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT name, owner, token, run_id, acquired_at, heartbeat_at, expires_at
+                FROM run_locks
+                WHERE name = ?
+                """,
+                (name,),
+            ).fetchone()
+            if row is not None and _parse_datetime(str(row[6])) > current_time:
+                return _run_lock_record_from_row(row, acquired=False)
+            if row is None:
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO run_locks
+                            (name, owner, token, run_id, acquired_at, heartbeat_at, expires_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (name, owner, lock_token, run_id, current_text, current_text, expires_text),
+                    )
+                except sqlite3.IntegrityError:
+                    current = conn.execute(
+                        """
+                        SELECT name, owner, token, run_id, acquired_at, heartbeat_at, expires_at
+                        FROM run_locks
+                        WHERE name = ?
+                        """,
+                        (name,),
+                    ).fetchone()
+                    if current is None:
+                        raise
+                    return _run_lock_record_from_row(current, acquired=False)
+            else:
+                updated = conn.execute(
+                    """
+                    UPDATE run_locks
+                    SET owner = ?,
+                        token = ?,
+                        run_id = ?,
+                        acquired_at = ?,
+                        heartbeat_at = ?,
+                        expires_at = ?
+                    WHERE name = ? AND expires_at <= ?
+                    """,
+                    (owner, lock_token, run_id, current_text, current_text, expires_text, name, current_text),
+                )
+                if updated.rowcount != 1:
+                    current = conn.execute(
+                        """
+                        SELECT name, owner, token, run_id, acquired_at, heartbeat_at, expires_at
+                        FROM run_locks
+                        WHERE name = ?
+                        """,
+                        (name,),
+                    ).fetchone()
+                    if current is None:
+                        raise RuntimeError("run lock disappeared during acquisition")
+                    return _run_lock_record_from_row(current, acquired=False)
+            acquired = conn.execute(
+                """
+                SELECT name, owner, token, run_id, acquired_at, heartbeat_at, expires_at
+                FROM run_locks
+                WHERE name = ?
+                """,
+                (name,),
+            ).fetchone()
+            if acquired is None:
+                raise RuntimeError("run lock acquisition did not produce a row")
+            return _run_lock_record_from_row(acquired, acquired=True)
 
     def active_lock(self, name: str) -> RunLockRecord | None:
         now = _utcnow()
@@ -1658,7 +1751,7 @@ def _recovery_backup_from_row(row: sqlite3.Row | tuple[Any, ...]) -> RecoveryBac
     )
 
 
-def _run_lock_record(row: RunLock) -> RunLockRecord:
+def _run_lock_record(row: RunLock, *, acquired: bool = False) -> RunLockRecord:
     return RunLockRecord(
         name=str(row.name),
         owner=str(row.owner),
@@ -1667,6 +1760,20 @@ def _run_lock_record(row: RunLock) -> RunLockRecord:
         acquired_at=_parse_datetime(str(row.acquired_at)),
         heartbeat_at=None if row.heartbeat_at is None else _parse_datetime(str(row.heartbeat_at)),
         expires_at=_parse_datetime(str(row.expires_at)),
+        acquired=acquired,
+    )
+
+
+def _run_lock_record_from_row(row: sqlite3.Row | tuple[Any, ...], *, acquired: bool = False) -> RunLockRecord:
+    return RunLockRecord(
+        name=str(row[0]),
+        owner=str(row[1]),
+        token=None if row[2] is None else str(row[2]),
+        run_id=None if row[3] is None else int(row[3]),
+        acquired_at=_parse_datetime(str(row[4])),
+        heartbeat_at=None if row[5] is None else _parse_datetime(str(row[5])),
+        expires_at=_parse_datetime(str(row[6])),
+        acquired=acquired,
     )
 
 
@@ -1696,6 +1803,14 @@ def _managed_claim_record_from_row(row: sqlite3.Row | tuple[Any, ...]) -> Manage
         created_at=_parse_datetime(row[7]),
         last_seen_at=_parse_datetime(row[8]),
     )
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        (table_name,),
+    ).fetchone()
+    return row is not None
 
 
 def _claim_reservation_from_row(row: sqlite3.Row | tuple[Any, ...]) -> ClaimReservationRecord:

@@ -41,7 +41,7 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
-def pytest_collection_modifyitems(config, items):
+def pytest_collection_modifyitems(config: pytest.Config, items):
     # --file-db: skip pyfakefs tests that are incompatible with real SQLite
     if config.getoption("--file-db"):
         skip = pytest.mark.skip(reason="pyfakefs incompatible with --file-db real SQLite")

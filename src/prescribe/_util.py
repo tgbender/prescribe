@@ -1,4 +1,5 @@
 import hashlib
+from collections.abc import Iterable
 from typing import Any
 
 _MISSING = object()
@@ -80,9 +81,19 @@ def set_mapping_value(root: Any, dotted_key: str, value: Any) -> None:
     parent[leaf] = value
 
 
-def delete_mapping_value(root: Any, dotted_key: str) -> None:
+def delete_mapping_value(root: Any, dotted_key: str, *, prune_empty_parents: Iterable[str] = ()) -> None:
     if mapping_value(root, dotted_key) is _MISSING:
         return
     parent, leaf = resolve_parent(root, dotted_key)
     if leaf in parent:
+        del parent[leaf]
+    for parent_key in sorted(prune_empty_parents, key=lambda key: key.count("."), reverse=True):
+        _delete_if_empty_dict(root, parent_key)
+
+
+def _delete_if_empty_dict(root: Any, dotted_key: str) -> None:
+    if mapping_value(root, dotted_key) != {}:
+        return
+    parent, leaf = resolve_parent(root, dotted_key)
+    if parent.get(leaf) == {}:
         del parent[leaf]

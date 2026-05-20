@@ -1,6 +1,4 @@
 import contextlib
-import difflib
-import glob
 import json
 import os
 import platform
@@ -10,12 +8,22 @@ import socket
 import sqlite3
 import sys
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from prescribe._util import _MISSING, mapping_value, sha256_bytes
 from prescribe.adapters import adapter_for_path
+from prescribe.asset_helpers import (
+    AssetDestinationState,
+    asset_destination_state,
+    asset_diff,
+    asset_entries,
+    asset_extra_paths,
+    asset_replace_diff,
+    format_permissions,
+    unsafe_asset_replace_reason,
+)
 from prescribe.atomic import atomic_write_bytes, permission_bits
 from prescribe.backups import copy_to_recovery_backup, move_to_backup, restore_backup
 from prescribe.claims import (
@@ -23,6 +31,7 @@ from prescribe.claims import (
     ClaimConflict,
     ClaimResolver,
     check_claim_conflicts,
+    check_claim_conflicts_against,
     claim_key,
     compute_claims,
     detect_internal_claim_conflicts,
@@ -40,26 +49,15 @@ from prescribe.core.result import OrchestrationResult
 from prescribe.document import Adapter, Document
 from prescribe.encoding import decode_utf8_bytes, read_utf8_text
 from prescribe.fs_safety import (
-    UnsafePathError,
     ensure_safe_asset_source_path,
-    ensure_safe_displace_regular_file,
     ensure_safe_managed_write_path,
 )
+from prescribe.lock_heartbeat import LockHeartbeat, LockLostError
 from prescribe.rollback import ConflictResolver, perform_rollback
 from prescribe.shell import render_shell_block
 from prescribe.spec import AssetTarget, EnvTarget, FileTarget, ShellTarget, Spec
 from prescribe.state import StateStore
 from prescribe.state.sqlite import ChangeBatchRecord
-
-
-@dataclass(slots=True)
-class _AssetDestinationState:
-    exists: bool
-    text: str | None = None
-    is_symlink: bool = False
-    symlink_target: str | None = None
-    hardlink_count: int = 0
-    permissions: int | None = None
 
 
 class _DeferredClaimConflict(Exception):
@@ -73,6 +71,10 @@ class _ReservationConflict(Exception):
         super().__init__("claim reservation conflict")
         self.claim = claim
         self.existing_owner = existing_owner
+
+
+class _PostWriteStateError(Exception):
+    pass
 
 
 class InterruptedWorkError(Exception):
@@ -222,10 +224,14 @@ class Orchestrator:
         state_store: StateStore,
         *,
         _materialize_fn: Callable[..., None] | None = None,
+        lock_ttl: timedelta = timedelta(seconds=30),
+        lock_heartbeat_interval: timedelta = timedelta(seconds=10),
     ) -> None:
         self.state_store = state_store
         self.planner = Planner()
         self._materialize_fn = _materialize_fn
+        self._lock_ttl = lock_ttl
+        self._lock_heartbeat_interval = lock_heartbeat_interval
 
     def run(
         self,
@@ -256,7 +262,13 @@ class Orchestrator:
             return [_claim_conflict_result(claim_conflicts[0])]
 
         if dry_run:
-            self.state_store.initialize()
+            claim_check = check_claim_conflicts_against(
+                self.state_store.claims_for_dry_run(),
+                claims,
+                resolver=claim_resolver,
+            )
+            if claim_check.conflicts:
+                return [_claim_conflict_result(claim_check.conflicts[0])]
             return self._run_all(
                 run_id=None,
                 spec_hash=spec_hash,
@@ -271,8 +283,8 @@ class Orchestrator:
 
         self.state_store.initialize()
         lock_owner = _lock_owner()
-        lock = self.state_store.acquire_lock("global", owner=lock_owner)
-        if lock.owner != lock_owner:
+        lock = self.state_store.acquire_lock("global", owner=lock_owner, ttl=self._lock_ttl)
+        if not lock.acquired:
             return [
                 OrchestrationResult(
                     status="error",
@@ -282,29 +294,39 @@ class Orchestrator:
                 )
             ]
         try:
-            unfinished = self.state_store.unfinished_target_attempts()
-            if unfinished:
-                raise InterruptedWorkError(unfinished)
-            claim_check = check_claim_conflicts(
+            with LockHeartbeat(
                 self.state_store,
-                claims,
-                resolver=claim_resolver,
-            )
-            if claim_check.conflicts:
-                return [_claim_conflict_result(claim_check.conflicts[0])]
-            with self.state_store.transaction() as connection:
-                run = self.state_store.start_run(
-                    spec_hash=spec_hash,
-                    tool_version=tool_version,
-                    platform=sys.platform,
-                    host=current_machine(),
-                    command="apply",
-                    cwd=Path.cwd(),
-                    connection=connection,
+                name="global",
+                owner=lock_owner,
+                token=lock.token,
+                ttl=self._lock_ttl,
+                interval=self._lock_heartbeat_interval,
+            ) as heartbeat:
+                unfinished = self.state_store.unfinished_target_attempts()
+                if unfinished:
+                    raise InterruptedWorkError(unfinished)
+                heartbeat.require_current()
+                claim_check = check_claim_conflicts(
+                    self.state_store,
+                    claims,
+                    resolver=claim_resolver,
                 )
-                self._reserve_claims(run.id, lock.token or lock_owner, claims, connection=connection)
-                self._record_target_attempts(run.id, claims, connection=connection)
-            with self.state_store.transaction() as connection:
+                if claim_check.conflicts:
+                    return [_claim_conflict_result(claim_check.conflicts[0])]
+                heartbeat.require_current()
+                with self.state_store.transaction() as connection:
+                    run = self.state_store.start_run(
+                        spec_hash=spec_hash,
+                        tool_version=tool_version,
+                        platform=sys.platform,
+                        host=current_machine(),
+                        command="apply",
+                        cwd=Path.cwd(),
+                        connection=connection,
+                    )
+                    self._reserve_claims(run.id, lock.token or lock_owner, claims, connection=connection)
+                    self._record_target_attempts(run.id, claims, connection=connection)
+                heartbeat.require_current()
                 results = self._run_all(
                     run_id=run.id,
                     spec_hash=spec_hash,
@@ -315,42 +337,64 @@ class Orchestrator:
                     diff=diff,
                     explain_skips=explain_skips,
                     file_skip_reasons=file_skip_reasons,
-                    connection=connection,
+                    require_current=heartbeat.require_current,
                 )
-                successful_ids = _successful_target_ids(spec_obj, results)
-                successful_claims = [claim for claim in claims if claim.target_id in successful_ids]
-                failed_ids = {claim.target_id for claim in claims if claim.target_id is not None} - successful_ids
-                self.state_store.update_target_attempts(
-                    run_id=run.id,
-                    target_ids=successful_ids,
-                    phase="succeeded",
-                    connection=connection,
+                heartbeat.require_current()
+                with self.state_store.transaction() as connection:
+                    successful_ids = _successful_target_ids(spec_obj, results)
+                    successful_claims = [claim for claim in claims if claim.target_id in successful_ids]
+                    failed_ids = {claim.target_id for claim in claims if claim.target_id is not None} - successful_ids
+                    self.state_store.update_target_attempts(
+                        run_id=run.id,
+                        target_ids=successful_ids,
+                        phase="succeeded",
+                        connection=connection,
+                    )
+                    self.state_store.update_target_attempts(
+                        run_id=run.id,
+                        target_ids=failed_ids,
+                        phase="failed",
+                        connection=connection,
+                    )
+                    claim_conflicts = persist_claims(
+                        self.state_store,
+                        successful_claims,
+                        resolver=lambda conflict: claim_key(conflict.claim) in claim_check.take_keys,
+                        connection=connection,
+                    )
+                    if claim_conflicts:
+                        raise _DeferredClaimConflict(claim_conflicts[0])
+                    self._record_target_runs(run.id, spec_obj, results, connection=connection)
+                    status = (
+                        "failed" if any(result.status in {"error", "conflict"} for result in results) else "completed"
+                    )
+                    reservation_status = "promoted" if status == "completed" else "failed"
+                    self.state_store.release_claim_reservations(
+                        run_id=run.id,
+                        token=lock.token or lock_owner,
+                        status=reservation_status,
+                        connection=connection,
+                    )
+                    self.state_store.finish_run(run.id, status=status, connection=connection)
+                return results
+        except LockLostError as exc:
+            return [
+                OrchestrationResult(
+                    status="error",
+                    applied=False,
+                    changed=True,
+                    error=str(exc),
                 )
-                self.state_store.update_target_attempts(
-                    run_id=run.id,
-                    target_ids=failed_ids,
-                    phase="failed",
-                    connection=connection,
+            ]
+        except _PostWriteStateError as exc:
+            return [
+                OrchestrationResult(
+                    status="error",
+                    applied=False,
+                    changed=True,
+                    error=str(exc),
                 )
-                claim_conflicts = persist_claims(
-                    self.state_store,
-                    successful_claims,
-                    resolver=lambda conflict: claim_key(conflict.claim) in claim_check.take_keys,
-                    connection=connection,
-                )
-                if claim_conflicts:
-                    raise _DeferredClaimConflict(claim_conflicts[0])
-                self._record_target_runs(run.id, spec_obj, results, connection=connection)
-                status = "failed" if any(result.status in {"error", "conflict"} for result in results) else "completed"
-                reservation_status = "promoted" if status == "completed" else "failed"
-                self.state_store.release_claim_reservations(
-                    run_id=run.id,
-                    token=lock.token or lock_owner,
-                    status=reservation_status,
-                    connection=connection,
-                )
-                self.state_store.finish_run(run.id, status=status, connection=connection)
-            return results
+            ]
         except _DeferredClaimConflict as exc:
             return [_claim_conflict_result(exc.conflict)]
         except _ReservationConflict as exc:
@@ -480,6 +524,7 @@ class Orchestrator:
         explain_skips: bool = False,
         file_skip_reasons: dict[int, str] | None = None,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> list[OrchestrationResult]:
         results: list[OrchestrationResult] = []
 
@@ -506,6 +551,8 @@ class Orchestrator:
                     )
                 )
                 continue
+            if not dry_run and require_current is not None:
+                require_current()
             results.append(
                 self._handle_file(
                     run_id,
@@ -517,8 +564,11 @@ class Orchestrator:
                     diff=diff,
                     explain_skips=explain_skips,
                     connection=connection,
+                    require_current=require_current,
                 )
             )
+            if not dry_run and require_current is not None:
+                require_current()
 
         # ── env ──
         resolved_env, materialize_names = self._resolve_env(spec.env, tags=tags, skip_tags=skip_tags)
@@ -526,19 +576,24 @@ class Orchestrator:
         # Materialize env vars to OS-level store
         materialize_errors: list[str] = []
         if not dry_run and materialize_names:
+            if require_current is not None:
+                require_current()
             mat_env = {k: v for k, v in resolved_env.items() if k in materialize_names}
             materialize_errors.extend(self._do_materialize(mat_env))
+            if require_current is not None:
+                require_current()
 
         # Produce an env result so callers can inspect resolved vars
         # even when there are no [[files]] or [[shell]] targets
         if spec.env and not spec.files and not spec.shell and not spec.assets:
             results.append(
                 OrchestrationResult(
-                    status="applied" if not dry_run else "dry-run",
-                    applied=not dry_run,
+                    status="error" if materialize_errors else ("applied" if not dry_run else "dry-run"),
+                    applied=not dry_run and not materialize_errors,
                     changed=bool(resolved_env),
                     env_vars=resolved_env,
                     dry_run=dry_run,
+                    error=_materialize_error_message(materialize_errors) if materialize_errors else None,
                 )
             )
 
@@ -563,12 +618,15 @@ class Orchestrator:
                 diff=diff,
                 explain_skips=explain_skips,
                 connection=connection,
+                require_current=require_current,
             )
             result.env_vars = shell_env
             results.append(result)
 
         # ── assets ──
         for asset_target in spec.assets:
+            if not dry_run and require_current is not None:
+                require_current()
             results.append(
                 self._handle_asset(
                     run_id,
@@ -580,8 +638,11 @@ class Orchestrator:
                     diff=diff,
                     explain_skips=explain_skips,
                     connection=connection,
+                    require_current=require_current,
                 )
             )
+            if not dry_run and require_current is not None:
+                require_current()
 
         # Attach env vars and materialize errors to all results for convenience
         for r in results:
@@ -589,6 +650,18 @@ class Orchestrator:
                 r.env_vars = resolved_env
             if materialize_errors:
                 r.materialize_errors = materialize_errors
+
+        if materialize_errors and not (spec.env and not spec.files and not spec.shell and not spec.assets):
+            results.append(
+                OrchestrationResult(
+                    status="error",
+                    applied=False,
+                    changed=False,
+                    error=_materialize_error_message(materialize_errors),
+                    env_vars=resolved_env,
+                    materialize_errors=materialize_errors,
+                )
+            )
 
         return results
 
@@ -606,6 +679,7 @@ class Orchestrator:
         diff: bool = False,
         explain_skips: bool = False,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> OrchestrationResult:
         if not condition_matches(target=target, tags=tags, skip_tags=skip_tags):
             return OrchestrationResult(
@@ -619,7 +693,7 @@ class Orchestrator:
             )
 
         try:
-            entries = _asset_entries(target)
+            entries = asset_entries(target)
             if not entries:
                 return OrchestrationResult(
                     status="error",
@@ -630,8 +704,8 @@ class Orchestrator:
 
             replace_extras: list[Path] = []
             if target.replace:
-                replace_extras = _asset_extra_paths(target, entries)
-                unsafe = _unsafe_asset_replace_reason(target, replace_extras)
+                replace_extras = asset_extra_paths(target, entries)
+                unsafe = unsafe_asset_replace_reason(target, replace_extras)
                 if unsafe is not None:
                     return OrchestrationResult(status="error", applied=False, changed=False, error=unsafe)
             for source, dest in entries:
@@ -643,7 +717,7 @@ class Orchestrator:
             for source, dest in entries:
                 source_bytes = source.read_bytes()
                 source_text = decode_utf8_bytes(source_bytes, path=source)
-                current = _asset_destination_state(dest)
+                current = asset_destination_state(dest)
                 if current.text == source_text and not current.is_symlink and current.hardlink_count <= 1:
                     if run_id is not None and not dry_run:
                         stat = dest.stat()
@@ -660,7 +734,13 @@ class Orchestrator:
                         )
                     continue
 
-                conflict = self._asset_conflict(dest, connection=connection)
+                conflict = None
+                if dry_run and run_id is None:
+                    with self.state_store.dry_run_connection() as read_conn:
+                        if read_conn is not None:
+                            conflict = self._asset_conflict(dest, connection=read_conn)
+                else:
+                    conflict = self._asset_conflict(dest, connection=connection)
                 if conflict is not None:
                     if run_id is not None and not dry_run:
                         self._record_conflict(run_id, conflict, connection=connection)
@@ -674,8 +754,10 @@ class Orchestrator:
 
                 changed = True
                 if diff:
-                    diffs.append(_asset_diff(dest, current.text, source_text))
+                    diffs.append(asset_diff(dest, current.text, source_text))
                 if not dry_run:
+                    if require_current is not None:
+                        require_current()
                     self._apply_asset(
                         run_id=run_id,
                         spec_hash=spec_hash,
@@ -684,19 +766,23 @@ class Orchestrator:
                         dest=dest,
                         original=current,
                         connection=connection,
+                        require_current=require_current,
                     )
 
             if target.replace and replace_extras:
                 changed = True
                 if diff:
-                    diffs.append(_asset_replace_diff(replace_extras))
+                    diffs.append(asset_replace_diff(replace_extras))
                 if not dry_run:
                     for extra in replace_extras:
+                        if require_current is not None:
+                            require_current()
                         self._displace_asset_extra(
                             run_id=run_id,
                             target=target,
                             path=extra,
                             connection=connection,
+                            require_current=require_current,
                         )
 
             if not changed:
@@ -713,6 +799,10 @@ class Orchestrator:
                 dry_run=dry_run,
                 diff="".join(diffs) if diffs else None,
             )
+        except _PostWriteStateError:
+            raise
+        except LockLostError:
+            raise
         except Exception as exc:
             if run_id is not None:
                 self.state_store.record_event(
@@ -753,8 +843,9 @@ class Orchestrator:
         source_bytes: bytes,
         source_permissions: int,
         dest: Path,
-        original: _AssetDestinationState,
+        original: AssetDestinationState,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> None:
         if run_id is None:
             raise RuntimeError("run_id is None in _apply_asset")
@@ -762,6 +853,8 @@ class Orchestrator:
         dest.parent.mkdir(parents=True, exist_ok=True)
         permissions = original.permissions if original.permissions is not None else source_permissions
         source_text = decode_utf8_bytes(source_bytes, path=dest)
+        if require_current is not None:
+            require_current()
         if original_exists and dest.exists():
             self._record_recovery_backup(
                 run_id=run_id,
@@ -770,67 +863,72 @@ class Orchestrator:
                 operation="asset-write",
                 connection=connection,
             )
+            if require_current is not None:
+                require_current()
         atomic_write_bytes(dest, source_bytes, permissions=permissions)
         stat = dest.stat()
         content_hash = sha256_bytes(dest.read_bytes())
-        existing_baseline = self.state_store.original_baseline(dest, connection=connection)
-        if existing_baseline is None:
-            self.state_store.record_baseline(
+        try:
+            existing_baseline = self.state_store.original_baseline(dest, connection=connection)
+            if existing_baseline is None:
+                self.state_store.record_baseline(
+                    run_id=run_id,
+                    path=dest,
+                    content_text=original.text or "",
+                    format="asset",
+                    original_exists=original_exists,
+                    connection=connection,
+                )
+            self.state_store.record_checkpoint(
                 run_id=run_id,
                 path=dest,
-                content_text=original.text or "",
+                content_text=source_text,
                 format="asset",
                 original_exists=original_exists,
                 connection=connection,
             )
-        self.state_store.record_checkpoint(
-            run_id=run_id,
-            path=dest,
-            content_text=source_text,
-            format="asset",
-            original_exists=original_exists,
-            connection=connection,
-        )
-        self.state_store.record_snapshot(
-            run_id=run_id,
-            path=dest,
-            content_hash=content_hash,
-            size=stat.st_size,
-            mtime_ns=stat.st_mtime_ns,
-            format="asset",
-            spec_hash=spec_hash,
-            connection=connection,
-        )
-        self.state_store.record_change_batch(
-            run_id=run_id,
-            path=dest,
-            operations=[
-                {
-                    "kind": "replace_file",
-                    "key": "file",
-                    "value": source_text,
-                    "before_value": original.text,
-                    "before_exists": original_exists,
-                    "before_is_symlink": original.is_symlink,
-                    "before_symlink_target": original.symlink_target,
-                    "before_hardlink_count": original.hardlink_count,
-                    "before_permissions": _format_permissions(original.permissions),
-                    "after_permissions": _format_permissions(permission_bits(dest)),
-                    "reason": "asset materialized",
-                }
-            ],
-            original_exists=original_exists,
-            format="asset",
-            connection=connection,
-        )
-        self.state_store.record_event(
-            run_id=run_id,
-            event_type="applied",
-            path=dest,
-            changed=True,
-            summary="materialized asset",
-            connection=connection,
-        )
+            self.state_store.record_snapshot(
+                run_id=run_id,
+                path=dest,
+                content_hash=content_hash,
+                size=stat.st_size,
+                mtime_ns=stat.st_mtime_ns,
+                format="asset",
+                spec_hash=spec_hash,
+                connection=connection,
+            )
+            self.state_store.record_change_batch(
+                run_id=run_id,
+                path=dest,
+                operations=[
+                    {
+                        "kind": "replace_file",
+                        "key": "file",
+                        "value": source_text,
+                        "before_value": original.text,
+                        "before_exists": original_exists,
+                        "before_is_symlink": original.is_symlink,
+                        "before_symlink_target": original.symlink_target,
+                        "before_hardlink_count": original.hardlink_count,
+                        "before_permissions": format_permissions(original.permissions),
+                        "after_permissions": format_permissions(permission_bits(dest)),
+                        "reason": "asset materialized",
+                    }
+                ],
+                original_exists=original_exists,
+                format="asset",
+                connection=connection,
+            )
+            self.state_store.record_event(
+                run_id=run_id,
+                event_type="applied",
+                path=dest,
+                changed=True,
+                summary="materialized asset",
+                connection=connection,
+            )
+        except Exception as exc:
+            raise _PostWriteStateError(f"state recording failed after writing {dest}: {exc}") from exc
 
     def _displace_asset_extra(
         self,
@@ -839,12 +937,15 @@ class Orchestrator:
         target: AssetTarget,
         path: Path,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> None:
         if run_id is None:
             raise RuntimeError("run_id is None in _displace_asset_extra")
         backup_path: Path | None = None
         backup_id: int | None = None
         try:
+            if require_current is not None:
+                require_current()
             backup_path, content_hash, size, mtime_ns, file_type = move_to_backup(
                 state_store=self.state_store,
                 run_id=run_id,
@@ -908,6 +1009,7 @@ class Orchestrator:
         diff: bool = False,
         explain_skips: bool = False,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> OrchestrationResult:
         if not condition_matches(target=target, tags=tags, skip_tags=skip_tags):
             return OrchestrationResult(
@@ -933,6 +1035,7 @@ class Orchestrator:
                     dry_run=dry_run,
                     diff=diff,
                     connection=connection,
+                    require_current=require_current,
                 )
             return self._process_existing_file(
                 run_id,
@@ -942,7 +1045,12 @@ class Orchestrator:
                 dry_run=dry_run,
                 diff=diff,
                 connection=connection,
+                require_current=require_current,
             )
+        except _PostWriteStateError:
+            raise
+        except LockLostError:
+            raise
         except Exception as exc:
             if run_id is not None:
                 self.state_store.record_event(
@@ -966,6 +1074,7 @@ class Orchestrator:
         dry_run: bool = False,
         diff: bool = False,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> OrchestrationResult:
         document = _empty_document(target.path, target.format)
         plan = self.planner.plan(document, _file_desired(target))
@@ -982,6 +1091,8 @@ class Orchestrator:
         if dry_run:
             return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True, diff=diff_text)
 
+        if require_current is not None:
+            require_current()
         if target.path.exists():
             if run_id is None:
                 raise RuntimeError("run_id is None in _process_new_file")
@@ -1007,6 +1118,7 @@ class Orchestrator:
             event_type="created",
             connection=connection,
             original_text=None,
+            require_current=require_current,
         )
 
     def _process_existing_file(
@@ -1019,26 +1131,31 @@ class Orchestrator:
         dry_run: bool = False,
         diff: bool = False,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> OrchestrationResult:
         before = _current_fingerprint(target.path)
         document = adapter.load(target.path)
         plan = self.planner.plan(document, _file_desired(target))
         managed_conflict: ConflictResult | None = None
-        if run_id is not None or dry_run:
+        if run_id is not None:
             ctx = self.state_store.connect() if connection is None else contextlib.nullcontext(connection)
             with ctx as read_conn:
                 managed_conflict = self._check_managed_conflict(document, plan, target, before, read_conn)
+        elif dry_run:
+            with self.state_store.dry_run_connection() as read_conn:
+                if read_conn is not None:
+                    managed_conflict = self._check_managed_conflict(document, plan, target, before, read_conn)
 
-            if managed_conflict is not None:
-                if run_id is not None and not dry_run:
-                    self._record_conflict(run_id, managed_conflict, connection=connection)
-                return OrchestrationResult(
-                    status="conflict",
-                    applied=False,
-                    changed=True,
-                    conflict=managed_conflict,
-                    dry_run=dry_run,
-                )
+        if managed_conflict is not None:
+            if run_id is not None and not dry_run:
+                self._record_conflict(run_id, managed_conflict, connection=connection)
+            return OrchestrationResult(
+                status="conflict",
+                applied=False,
+                changed=True,
+                conflict=managed_conflict,
+                dry_run=dry_run,
+            )
 
         if not plan.changed:
             if run_id is not None and not dry_run:
@@ -1074,6 +1191,8 @@ class Orchestrator:
         if dry_run:
             return OrchestrationResult(status="dry-run", applied=False, changed=True, dry_run=True, diff=diff_text)
 
+        if require_current is not None:
+            require_current()
         original_text = read_utf8_text(target.path)
         return self._apply_and_record(
             run_id=run_id,
@@ -1086,6 +1205,7 @@ class Orchestrator:
             event_type="applied",
             connection=connection,
             original_text=original_text,
+            require_current=require_current,
         )
 
     # ── env resolution ────────────────────────────────
@@ -1203,6 +1323,7 @@ class Orchestrator:
         diff: bool = False,
         explain_skips: bool = False,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> OrchestrationResult:
         if not condition_matches(target=target, tags=tags, skip_tags=skip_tags):
             return OrchestrationResult(
@@ -1229,6 +1350,7 @@ class Orchestrator:
             dry_run=dry_run,
             diff=diff,
             connection=connection,
+            require_current=require_current,
         )
 
     def _apply_shell_block(
@@ -1241,6 +1363,7 @@ class Orchestrator:
         dry_run: bool = False,
         diff: bool = False,
         connection: sqlite3.Connection | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> OrchestrationResult:
         """Apply a shell block using the LINE adapter + managed block pattern."""
         adapter = adapter_for_path(target.path, fmt="line")
@@ -1285,6 +1408,8 @@ class Orchestrator:
 
             if run_id is None:
                 raise RuntimeError("run_id is None in _apply_shell_block")
+            if require_current is not None:
+                require_current()
             original_text = read_utf8_text(target.path) if target.path.exists() else ""
             original_exists = target.path.exists()
 
@@ -1299,7 +1424,12 @@ class Orchestrator:
                 event_type="applied",
                 connection=connection,
                 original_text=original_text if original_exists else None,
+                require_current=require_current,
             )
+        except _PostWriteStateError:
+            raise
+        except LockLostError:
+            raise
         except Exception as exc:
             if run_id is not None:
                 self.state_store.record_event(
@@ -1342,8 +1472,8 @@ class Orchestrator:
         path = Path(target_path)
         lock_owner = _lock_owner()
         if not dry_run:
-            lock = self.state_store.acquire_lock("global", owner=lock_owner)
-            if lock.owner != lock_owner:
+            lock = self.state_store.acquire_lock("global", owner=lock_owner, ttl=self._lock_ttl)
+            if not lock.acquired:
                 return OrchestrationResult(
                     status="error",
                     applied=False,
@@ -1352,24 +1482,46 @@ class Orchestrator:
                 )
         if not dry_run:
             self.state_store.initialize()
-        elif not self.state_store.path.exists():
-            return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=True)
 
         try:
             if not dry_run:
-                with self.state_store.transaction() as connection:
-                    return perform_rollback(
+                with LockHeartbeat(
+                    self.state_store,
+                    name="global",
+                    owner=lock_owner,
+                    token=lock.token,
+                    ttl=self._lock_ttl,
+                    interval=self._lock_heartbeat_interval,
+                ) as heartbeat:
+                    heartbeat.require_current()
+                    result = perform_rollback(
                         path,
                         self.state_store,
                         dry_run=False,
                         original=original,
                         resolver=conflict_resolver,
-                        connection=connection,
+                        require_current=heartbeat.require_current,
                     )
-            return perform_rollback(path, self.state_store, dry_run=True, original=original, resolver=conflict_resolver)
+                    heartbeat.require_current()
+                    return result
+            with self.state_store.dry_run_connection() as read_conn:
+                if read_conn is None:
+                    return OrchestrationResult(status="noop", applied=False, changed=False, dry_run=True)
+                return perform_rollback(
+                    path,
+                    self.state_store,
+                    dry_run=True,
+                    original=original,
+                    resolver=conflict_resolver,
+                    connection=read_conn,
+                )
+        except LockLostError as exc:
+            return OrchestrationResult(status="error", applied=False, changed=True, error=str(exc))
+        except Exception as exc:
+            return OrchestrationResult(status="error", applied=False, changed=True, error=str(exc))
         finally:
             if not dry_run:
-                self.state_store.release_lock("global", owner=lock_owner)
+                self.state_store.release_lock("global", owner=lock_owner, token=lock.token)
 
     # ── conflict helpers ──────────────────────────────
 
@@ -1432,9 +1584,12 @@ class Orchestrator:
         event_type: str,
         connection: sqlite3.Connection | None = None,
         original_text: str | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> OrchestrationResult:
         if run_id is None:
             raise RuntimeError("run_id is None in _apply_and_record")
+        if require_current is not None:
+            require_current()
         if original_exists and target.path.exists():
             self._record_recovery_backup(
                 run_id=run_id,
@@ -1443,56 +1598,61 @@ class Orchestrator:
                 operation=event_type,
                 connection=connection,
             )
+            if require_current is not None:
+                require_current()
         apply_operations(document, operations)
         adapter.dump(document, target.path)
         new_bytes = target.path.read_bytes()
         written_text = decode_utf8_bytes(new_bytes, path=target.path)
         new_stat = target.path.stat()
         new_hash = sha256_bytes(new_bytes)
-        existing_baseline = self.state_store.original_baseline(target.path, connection=connection)
-        if existing_baseline is None:
-            self.state_store.record_baseline(
+        try:
+            existing_baseline = self.state_store.original_baseline(target.path, connection=connection)
+            if existing_baseline is None:
+                self.state_store.record_baseline(
+                    run_id=run_id,
+                    path=target.path,
+                    content_text=original_text or "",
+                    format=getattr(target, "format", "line"),
+                    original_exists=original_exists,
+                    connection=connection,
+                )
+            self.state_store.record_checkpoint(
                 run_id=run_id,
                 path=target.path,
-                content_text=original_text or "",
+                content_text=written_text,
                 format=getattr(target, "format", "line"),
                 original_exists=original_exists,
                 connection=connection,
             )
-        self.state_store.record_checkpoint(
-            run_id=run_id,
-            path=target.path,
-            content_text=written_text,
-            format=getattr(target, "format", "line"),
-            original_exists=original_exists,
-            connection=connection,
-        )
-        self.state_store.record_snapshot(
-            run_id=run_id,
-            path=target.path,
-            content_hash=new_hash,
-            size=new_stat.st_size,
-            mtime_ns=new_stat.st_mtime_ns,
-            format=getattr(target, "format", "line"),
-            spec_hash=spec_hash,
-            connection=connection,
-        )
-        self.state_store.record_change_batch(
-            run_id=run_id,
-            path=target.path,
-            operations=[_operation_to_data(op) for op in operations],
-            original_exists=original_exists,
-            format=getattr(target, "format", "line"),
-            connection=connection,
-        )
-        self.state_store.record_event(
-            run_id=run_id,
-            event_type=event_type,
-            path=target.path,
-            changed=True,
-            summary=f"{event_type} with {len(operations)} ops",
-            connection=connection,
-        )
+            self.state_store.record_snapshot(
+                run_id=run_id,
+                path=target.path,
+                content_hash=new_hash,
+                size=new_stat.st_size,
+                mtime_ns=new_stat.st_mtime_ns,
+                format=getattr(target, "format", "line"),
+                spec_hash=spec_hash,
+                connection=connection,
+            )
+            self.state_store.record_change_batch(
+                run_id=run_id,
+                path=target.path,
+                operations=[_operation_to_data(op) for op in operations],
+                original_exists=original_exists,
+                format=getattr(target, "format", "line"),
+                connection=connection,
+            )
+            self.state_store.record_event(
+                run_id=run_id,
+                event_type=event_type,
+                path=target.path,
+                changed=True,
+                summary=f"{event_type} with {len(operations)} ops",
+                connection=connection,
+            )
+        except Exception as exc:
+            raise _PostWriteStateError(f"state recording failed after writing {target.path}: {exc}") from exc
         return OrchestrationResult(status="applied", applied=True, changed=True)
 
     def _record_recovery_backup(
@@ -1641,6 +1801,7 @@ def _operation_to_data(operation: PlannedOperation) -> dict[str, Any]:
         "value": _jsonable(operation.value),
         "before_value": _jsonable(operation.before_value),
         "before_exists": operation.before_exists,
+        "created_parent_keys": list(operation.created_parent_keys),
         "reason": operation.reason,
     }
 
@@ -1791,6 +1952,10 @@ def _interrupted_work_message(attempts: list[Any]) -> str:
     )
 
 
+def _materialize_error_message(errors: list[str]) -> str:
+    return "materialize failed: " + "; ".join(errors)
+
+
 def _successful_target_ids(
     spec: Spec,
     results: list[OrchestrationResult],
@@ -1844,138 +2009,6 @@ def _target_label(target_type: str, target: object) -> str:
     if isinstance(target, (FileTarget, ShellTarget)):
         return str(target.path)
     return ""
-
-
-def _asset_entries(target: AssetTarget) -> list[tuple[Path, Path]]:
-    if target.mode == "file":
-        source = Path(target.source)
-        if not source.exists() or not source.is_file():
-            return []
-        return [(source, target.dest)]
-
-    matches = sorted(Path(match).resolve() for match in glob.glob(target.source, recursive=True))
-    files = [match for match in matches if match.is_file()]
-    base = _asset_source_base(target.source)
-    entries: list[tuple[Path, Path]] = []
-    for source in files:
-        rel = source.relative_to(base)
-        entries.append((source, target.dest / rel))
-    return entries
-
-
-def _asset_destination_state(path: Path) -> _AssetDestinationState:
-    is_symlink = path.is_symlink()
-    exists = path.exists() or is_symlink
-    if not exists:
-        return _AssetDestinationState(exists=False)
-    symlink_target = os.readlink(path) if is_symlink else None
-    text = read_utf8_text(path) if path.exists() else None
-    hardlink_count = 0
-    permissions: int | None = None
-    if path.exists() and not is_symlink:
-        with contextlib.suppress(OSError):
-            hardlink_count = path.stat().st_nlink
-            permissions = permission_bits(path)
-    return _AssetDestinationState(
-        exists=True,
-        text=text,
-        is_symlink=is_symlink,
-        symlink_target=symlink_target,
-        hardlink_count=hardlink_count,
-        permissions=permissions,
-    )
-
-
-def _asset_extra_paths(target: AssetTarget, entries: list[tuple[Path, Path]]) -> list[Path]:
-    if not target.dest.exists() or not target.dest.is_dir():
-        return []
-    desired = {dest.absolute() for _, dest in entries}
-    extras: list[Path] = []
-    for path in sorted(target.dest.rglob("*")):
-        resolved = path.absolute()
-        if resolved in desired:
-            continue
-        if path.is_dir() and any(_is_relative_to(dest, resolved) for dest in desired):
-            continue
-        if path.is_symlink() or path.is_file() or path.is_dir():
-            extras.append(path)
-    return extras
-
-
-def _unsafe_asset_replace_reason(target: AssetTarget, extras: list[Path]) -> str | None:
-    if not extras:
-        return None
-    if not _safe_asset_replace_root(target.dest):
-        return f"asset replace destination is too broad: {target.dest}"
-    for path in extras:
-        try:
-            ensure_safe_displace_regular_file(
-                path,
-                operation="asset replace",
-                max_bytes=target.max_displace_bytes,
-                allow_binary=target.allow_binary,
-            )
-        except UnsafePathError as exc:
-            return str(exc)
-    return None
-
-
-def _safe_asset_replace_root(path: Path) -> bool:
-    resolved = path.resolve()
-    home = Path(os.environ.get("HOME") or Path.home()).resolve()
-    if resolved == home:
-        return False
-    if resolved.parent == resolved:
-        return False
-    anchor = Path(resolved.anchor)
-    return resolved != anchor
-
-
-def _asset_source_base(source_pattern: str) -> Path:
-    parts = Path(source_pattern).parts
-    base_parts: list[str] = []
-    for part in parts:
-        if any(char in part for char in "*?["):
-            break
-        base_parts.append(part)
-    if not base_parts:
-        return Path(".").resolve()
-    base = Path(*base_parts)
-    if base.is_file():
-        return base.parent
-    return base.resolve()
-
-
-def _is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-    except ValueError:
-        return False
-    return True
-
-
-def _asset_diff(dest: Path, current_text: str | None, desired_text: str) -> str:
-    before = [] if current_text is None else current_text.splitlines(keepends=True)
-    after = desired_text.splitlines(keepends=True)
-    tofile_suffix = " (new)" if current_text is None else " (desired)"
-    return "".join(
-        difflib.unified_diff(
-            before,
-            after,
-            fromfile=str(dest),
-            tofile=str(dest) + tofile_suffix,
-        )
-    )
-
-
-def _asset_replace_diff(extras: list[Path]) -> str:
-    lines = ["# asset replace would move extra files to backup:\n"]
-    lines.extend(f"# - {path}\n" for path in extras)
-    return "".join(lines)
-
-
-def _format_permissions(permissions: int | None) -> str | None:
-    return None if permissions is None else f"{permissions:04o}"
 
 
 def _maybe_diff(

@@ -22,6 +22,79 @@ KNOWN_ASSET_MODES = frozenset({"file", "mirror"})
 KNOWN_LOCATION_MODES = frozenset({"first_existing_parent", "first_existing", "first", "required", "create_parent"})
 KNOWN_LOCATION_KINDS = frozenset({"file", "dir", "any"})
 KNOWN_SECTION_KEYS = frozenset({"files", "env", "shell", "assets", "locations"})
+FILE_TARGET_KEYS = frozenset(
+    {
+        "path",
+        "paths",
+        "location",
+        "path_append",
+        "format",
+        "priority",
+        "data",
+        "delete",
+        "managed_block_id",
+        "lines",
+        "text",
+        "text_from",
+        "platforms",
+        "arch",
+        "machine",
+        "tags",
+        "if_command_exists",
+    }
+)
+ENV_TARGET_KEYS = frozenset(
+    {
+        "name",
+        "value",
+        "prepend",
+        "append",
+        "path_prepend",
+        "path_append",
+        "materialize",
+        "platforms",
+        "arch",
+        "machine",
+        "shells",
+        "tags",
+        "if_command_exists",
+        "if_env_missing",
+    }
+)
+SHELL_TARGET_KEYS = frozenset(
+    {
+        "path",
+        "location",
+        "path_append",
+        "managed_block_id",
+        "shells",
+        "platforms",
+        "arch",
+        "machine",
+        "tags",
+    }
+)
+ASSET_TARGET_KEYS = frozenset(
+    {
+        "source",
+        "dest",
+        "dest_location",
+        "dest_append",
+        "mode",
+        "delete_extra",
+        "paths",
+        "replace",
+        "max_displace_bytes",
+        "allow_binary",
+        "platforms",
+        "arch",
+        "machine",
+        "tags",
+        "if_command_exists",
+    }
+)
+LOCATION_KEYS = frozenset({"candidates", "mode", "kind"})
+LOCATION_CANDIDATE_KEYS = frozenset({"path", "platforms", "arch", "machine", "if_command_exists"})
 
 
 class SpecError(Exception):
@@ -168,6 +241,7 @@ class SpecLoader:
                 raise SpecError(f"{ctx}: location name must be non-empty")
             if not isinstance(raw, Mapping):
                 raise SpecError(f"{ctx}: expected a table/object")
+            _validate_unknown_keys(raw, LOCATION_KEYS, ctx)
             raw_candidates = raw.get("candidates")
             if not isinstance(raw_candidates, list) or not raw_candidates:
                 raise SpecError(f"{ctx}: key 'candidates' must be a non-empty list")
@@ -211,6 +285,7 @@ class SpecLoader:
         ctx = f"spec {spec_path} files[{index}]"
         if not isinstance(raw, Mapping):
             raise SpecError(f"{ctx}: expected a table/object")
+        _validate_unknown_keys(raw, FILE_TARGET_KEYS, ctx)
 
         fmt = _require_format(raw, ctx)
 
@@ -256,7 +331,7 @@ class SpecLoader:
             ),
             format=fmt,
             priority=_coerce_optional_int(raw.get("priority"), ctx, "priority", default=0),
-            data=_coerce_mapping(raw.get("data", {}), ctx, "data"),
+            data=_coerce_mapping(raw.get("data", {}), ctx, "data", vars_dict=vars_dict),
             delete=_coerce_string_list(raw.get("delete", []), ctx, "delete"),
             managed_block_id=_coerce_optional_string(raw.get("managed_block_id"), ctx, "managed_block_id"),
             lines=lines,
@@ -281,6 +356,7 @@ class SpecLoader:
         ctx = f"spec {spec_path} env[{index}]"
         if not isinstance(raw, Mapping):
             raise SpecError(f"{ctx}: expected a table/object")
+        _validate_unknown_keys(raw, ENV_TARGET_KEYS, ctx)
 
         name = _coerce_required_string(raw.get("name"), ctx, "name")
 
@@ -333,6 +409,7 @@ class SpecLoader:
         ctx = f"spec {spec_path} shell[{index}]"
         if not isinstance(raw, Mapping):
             raise SpecError(f"{ctx}: expected a table/object")
+        _validate_unknown_keys(raw, SHELL_TARGET_KEYS, ctx)
 
         block_id = _coerce_required_string(raw.get("managed_block_id"), ctx, "managed_block_id")
 
@@ -384,6 +461,7 @@ class SpecLoader:
         ctx = f"spec {spec_path} assets[{index}]"
         if not isinstance(raw, Mapping):
             raise SpecError(f"{ctx}: expected a table/object")
+        _validate_unknown_keys(raw, ASSET_TARGET_KEYS, ctx)
 
         source = _coerce_required_string(raw.get("source"), ctx, "source")
         expanded_source = expand_spec_vars(source, vars_dict)
@@ -453,6 +531,7 @@ def _parse_location_candidate(
         machine: list[str] = []
         if_command_exists: list[str] = []
     elif isinstance(raw, Mapping):
+        _validate_unknown_keys(raw, LOCATION_CANDIDATE_KEYS, ctx)
         path = _coerce_required_string(raw.get("path"), ctx, "path")
         platforms = _coerce_platforms(raw.get("platforms", []), ctx)
         arch = _coerce_arch(raw.get("arch", []), ctx)
@@ -632,10 +711,24 @@ def _coerce_optional_int(value: Any, ctx: str, field_name: str, *, default: int)
     return cast(int, value)
 
 
-def _coerce_mapping(value: Any, context: str, field_name: str) -> dict[str, Any]:
+def _validate_unknown_keys(raw: Mapping[str, Any], allowed: frozenset[str], context: str) -> None:
+    unknown = sorted(str(key) for key in raw if str(key) not in allowed)
+    if unknown:
+        expected = ", ".join(sorted(allowed))
+        found = ", ".join(unknown)
+        raise SpecError(f"{context}: unknown key(s): {found}; expected one of: {expected}")
+
+
+def _coerce_mapping(
+    value: Any,
+    context: str,
+    field_name: str,
+    *,
+    vars_dict: dict[str, str] | None = None,
+) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise SpecError(f"{context}: key '{field_name}' must be a table/object")
-    return {str(key): _normalize_toml_value(inner) for key, inner in value.items()}
+    return {str(key): _normalize_toml_value(inner, vars_dict=vars_dict) for key, inner in value.items()}
 
 
 def _coerce_string_list(value: Any, context: str, field_name: str) -> list[str]:
@@ -735,16 +828,18 @@ def _text_to_lines(value: str) -> list[str]:
     return value.splitlines()
 
 
-def _normalize_toml_value(value: Any) -> Any:
+def _normalize_toml_value(value: Any, *, vars_dict: dict[str, str] | None = None) -> Any:
     if isinstance(value, Mapping):
-        return {str(key): _normalize_toml_value(inner) for key, inner in value.items()}
+        return {str(key): _normalize_toml_value(inner, vars_dict=vars_dict) for key, inner in value.items()}
     if isinstance(value, list):
-        return [_normalize_toml_value(item) for item in value]
+        return [_normalize_toml_value(item, vars_dict=vars_dict) for item in value]
     if isinstance(value, tuple):
-        return [_normalize_toml_value(item) for item in value]
+        return [_normalize_toml_value(item, vars_dict=vars_dict) for item in value]
     unwrap = getattr(value, "unwrap", None)
     if callable(unwrap):
-        return _normalize_toml_value(unwrap())
+        return _normalize_toml_value(unwrap(), vars_dict=vars_dict)
+    if vars_dict is not None and isinstance(value, str):
+        return _expand(expand_spec_vars(value, vars_dict))
     return value
 
 

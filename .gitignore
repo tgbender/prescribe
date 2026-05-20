@@ -607,6 +607,7 @@ docs/site/
 
 # AI tools
 .aider*
+.ai/
 
 # Local test scratch
 .tmp/

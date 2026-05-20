@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import sqlite3
 import sys
+import threading
+import time
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from prescribe.claims import compute_claims, detect_internal_claim_conflicts
 from prescribe.adapters.toml import TomlAdapter
+from prescribe.claims import compute_claims, detect_internal_claim_conflicts
 from prescribe.orchestrator import Orchestrator
 from prescribe.spec import AssetTarget, EnvTarget, FileTarget, ShellTarget, Spec, SpecLoader
+from prescribe.state import StateStore
 
 
 def test_run_lock_refuses_fresh_owner_and_allows_expired(memory_state_store) -> None:
@@ -31,6 +37,17 @@ def test_run_lock_refuses_fresh_owner_and_allows_expired(memory_state_store) -> 
     assert expired.owner == "two"
     assert expired.token is not None
     assert expired.token != first.token
+
+
+def test_run_lock_refuses_same_owner_without_current_token(memory_state_store) -> None:
+    now = datetime(2026, 5, 6, 12, 0, tzinfo=UTC)
+    first = memory_state_store.acquire_lock("global", owner="same", ttl=timedelta(minutes=1), now=now)
+    second = memory_state_store.acquire_lock("global", owner="same", ttl=timedelta(minutes=1), now=now)
+
+    assert first.owner == "same"
+    assert second.owner == "same"
+    assert second.token == first.token
+    assert second.acquired is False
 
 
 def test_run_lock_release_and_heartbeat_require_current_token(memory_state_store) -> None:
@@ -56,6 +73,108 @@ def test_run_lock_release_and_heartbeat_require_current_token(memory_state_store
 
     memory_state_store.release_lock("global", owner="one", token=first.token)
     assert memory_state_store.active_lock("global") is None
+
+
+def test_long_apply_heartbeats_global_lock(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.db"
+    store = StateStore(state_path)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_materialize(*, env_vars, dry_run=False) -> None:
+        started.set()
+        assert release.wait(timeout=2)
+
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[env]]\nname = 'EDITOR'\nvalue = 'nvim'\nmaterialize = true\n")
+    orch = Orchestrator(
+        store,
+        _materialize_fn=slow_materialize,
+        lock_ttl=timedelta(milliseconds=500),
+        lock_heartbeat_interval=timedelta(milliseconds=100),
+    )
+    result_holder: dict[str, list[Any]] = {}
+
+    def run_apply() -> None:
+        result_holder["results"] = orch.run(spec_path)
+
+    worker = threading.Thread(target=run_apply)
+    worker.start()
+    assert started.wait(timeout=2)
+    time.sleep(0.75)
+
+    competing = StateStore(state_path).acquire_lock("global", owner="other", ttl=timedelta(milliseconds=500))
+
+    release.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert competing.acquired is False
+    assert result_holder["results"][0].status == "applied"
+
+
+def test_same_process_concurrent_apply_is_rejected(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.db"
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_materialize(*, env_vars, dry_run=False) -> None:
+        started.set()
+        assert release.wait(timeout=2)
+
+    slow_spec = tmp_path / "slow.toml"
+    slow_spec.write_text("[[env]]\nname = 'EDITOR'\nvalue = 'nvim'\nmaterialize = true\n")
+    fast_spec = tmp_path / "fast.toml"
+    fast_spec.write_text("[[env]]\nname = 'PAGER'\nvalue = 'less'\n")
+    slow = Orchestrator(StateStore(state_path), _materialize_fn=slow_materialize)
+    fast = Orchestrator(StateStore(state_path))
+    slow_results: dict[str, list[Any]] = {}
+
+    worker = threading.Thread(target=lambda: slow_results.setdefault("results", slow.run(slow_spec)))
+    worker.start()
+    assert started.wait(timeout=2)
+
+    rejected = fast.run(fast_spec)
+
+    release.set()
+    worker.join(timeout=2)
+
+    assert rejected[0].status == "error"
+    assert "another prescribe write is active" in (rejected[0].error or "")
+    assert slow_results["results"][0].status == "applied"
+
+
+def test_rollback_release_uses_lock_token(memory_state_store) -> None:
+    first = memory_state_store.acquire_lock("global", owner="same", token="first", ttl=timedelta(minutes=1))
+    second = memory_state_store.acquire_lock("global", owner="same", token="second", ttl=timedelta(minutes=1))
+
+    memory_state_store.release_lock("global", owner="same", token="second")
+
+    assert first.acquired is True
+    assert second.acquired is False
+    assert memory_state_store.active_lock("global") is not None
+
+
+def test_rollback_dry_run_works_with_uri_state_store(tmp_path: Path) -> None:
+    import sqlite3
+    import uuid
+
+    uri = f"file:prescribe-{uuid.uuid4().hex}?mode=memory&cache=shared"
+    keeper = sqlite3.connect(uri, uri=True)
+    try:
+        store = StateStore(uri, connection_factory=lambda _: sqlite3.connect(uri, uri=True))
+        config = tmp_path / "config.toml"
+        config.write_text("count = 1\n")
+        spec = Spec(files=[FileTarget(path=config, format="toml", data={"count": 2})])
+
+        applied = Orchestrator(store).run(spec)
+        dry_run = Orchestrator(store).rollback(config, dry_run=True)
+
+        assert applied[0].status == "applied"
+        assert dry_run.status == "dry-run"
+        assert dry_run.changed is True
+    finally:
+        keeper.close()
 
 
 def test_managed_claim_requires_take_for_new_owner(memory_state_store) -> None:
@@ -249,6 +368,341 @@ def test_durable_claim_blocks_even_without_active_reservation(tmp_path: Path, me
     assert TomlAdapter().load(config).root["count"] == 1
 
 
+def test_durable_claim_blocks_dry_run_without_writing(tmp_path: Path, memory_state_store) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+    spec = SpecLoader().load(spec_path)
+    claim = compute_claims(spec)[0]
+    memory_state_store.upsert_claim(
+        target_type=claim.target_type,
+        subject=claim.subject,
+        address=claim.address,
+        owner_id="other-spec#files[0]",
+    )
+
+    result = Orchestrator(memory_state_store).run(spec_path, dry_run=True)
+
+    assert result[0].status == "error"
+    assert "claim conflict" in (result[0].error or "")
+    assert TomlAdapter().load(config).root["count"] == 1
+
+
+def test_materialize_failure_fails_apply(tmp_path: Path, memory_state_store) -> None:
+    def failing_materialize(*, env_vars, dry_run=False) -> None:
+        raise RuntimeError("materialize exploded")
+
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[env]]\nname = 'EDITOR'\nvalue = 'nvim'\nmaterialize = true\n")
+
+    results = Orchestrator(memory_state_store, _materialize_fn=failing_materialize).run(spec_path)
+
+    assert results[0].status == "error"
+    assert "materialize exploded" in (results[0].error or "")
+    assert results[0].materialize_errors == ["materialize exploded"]
+
+
+class SnapshotFailingStore(StateStore):
+    def record_snapshot(self, *args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("snapshot recording failed")
+
+
+class LostHeartbeatStore(StateStore):
+    def heartbeat_lock(self, *args: Any, **kwargs: Any) -> Any:
+        return None
+
+
+class LockLostAfterFirstSnapshotStore(StateStore):
+    def __init__(self, path: Path, *, first_path: Path) -> None:
+        super().__init__(path)
+        self.first_path = first_path.resolve()
+        self.lost = False
+
+    def record_snapshot(self, *args: Any, **kwargs: Any) -> Any:
+        result = super().record_snapshot(*args, **kwargs)
+        path = kwargs.get("path")
+        if path is not None and Path(path).resolve() == self.first_path:
+            self.lost = True
+        return result
+
+    def lock_is_current(self, *args: Any, **kwargs: Any) -> bool:
+        return False if self.lost else super().lock_is_current(*args, **kwargs)
+
+
+class LockLostAfterRecoveryBackupStore(StateStore):
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self.lost = False
+
+    def record_recovery_backup(self, *args: Any, **kwargs: Any) -> Any:
+        result = super().record_recovery_backup(*args, **kwargs)
+        self.lost = True
+        return result
+
+    def lock_is_current(self, *args: Any, **kwargs: Any) -> bool:
+        return False if self.lost else super().lock_is_current(*args, **kwargs)
+
+
+class RollbackEventFailingStore(StateStore):
+    def record_event(self, *args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("event_type") == "rollback":
+            raise RuntimeError("rollback event failed")
+        return super().record_event(*args, **kwargs)
+
+
+class ConnectionRequiredForDryRunRollbackStore(StateStore):
+    def change_batches(self, *args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("connection") is None:
+            raise RuntimeError("dry-run rollback did not pass read connection")
+        return super().change_batches(*args, **kwargs)
+
+
+class HeartbeatBlockedDuringTransactionStore(StateStore):
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self.in_write_transaction = threading.Event()
+        self.blocked_heartbeat = threading.Event()
+
+    @contextmanager
+    def transaction(self) -> Any:
+        with super().transaction() as connection:
+            self.in_write_transaction.set()
+            try:
+                yield connection
+            finally:
+                self.in_write_transaction.clear()
+
+    def heartbeat_lock(self, *args: Any, **kwargs: Any) -> Any:
+        if self.in_write_transaction.is_set():
+            self.blocked_heartbeat.set()
+            return None
+        return super().heartbeat_lock(*args, **kwargs)
+
+
+class LockUpdateBarrierConnectionFactory:
+    def __init__(self) -> None:
+        self.enabled = threading.Event()
+        self.barrier = threading.Barrier(2, timeout=1)
+
+    def __call__(self, path: Path) -> sqlite3.Connection:
+        connection = sqlite3.connect(path, timeout=5, check_same_thread=False)
+        waited = False
+
+        def trace(statement: str) -> None:
+            nonlocal waited
+            normalized = " ".join(statement.upper().split())
+            if self.enabled.is_set() and not waited and normalized.startswith("UPDATE RUN_LOCKS SET"):
+                waited = True
+                with suppress(threading.BrokenBarrierError):
+                    self.barrier.wait()
+
+        connection.set_trace_callback(trace)
+        return connection
+
+
+def test_post_write_state_failure_leaves_attempt_unfinished_for_recovery(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+    store = SnapshotFailingStore(tmp_path / "state.db")
+
+    results = Orchestrator(store).run(spec_path)
+
+    assert results[0].status == "error"
+    assert "snapshot recording failed" in (results[0].error or "")
+    assert "count = 2" in config.read_text()
+    attempts = store.unfinished_target_attempts()
+    assert len(attempts) == 1
+    assert attempts[0].phase == "attempting"
+
+
+def test_lost_lock_heartbeat_fails_apply_before_commit(tmp_path: Path) -> None:
+    def slow_materialize(*, env_vars: dict[str, str], dry_run: bool = False) -> None:
+        time.sleep(0.25)
+
+    store = LostHeartbeatStore(tmp_path / "state.db")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[env]]\nname = 'EDITOR'\nvalue = 'nvim'\nmaterialize = true\n")
+
+    results = Orchestrator(
+        store,
+        _materialize_fn=slow_materialize,
+        lock_ttl=timedelta(milliseconds=500),
+        lock_heartbeat_interval=timedelta(milliseconds=100),
+    ).run(spec_path)
+
+    assert results[0].status == "error"
+    assert "global lock was lost" in (results[0].error or "")
+    assert store.claims() == []
+
+
+def test_expired_lock_race_allows_only_one_acquirer(tmp_path: Path) -> None:
+    factory = LockUpdateBarrierConnectionFactory()
+    state_path = tmp_path / "state.db"
+    store = StateStore(state_path, connection_factory=factory)
+    store.initialize()
+    old_now = datetime.now(UTC) - timedelta(minutes=2)
+    race_now = datetime.now(UTC)
+    store.acquire_lock("global", owner="expired", ttl=timedelta(seconds=1), now=old_now)
+    factory.enabled.set()
+
+    start = threading.Barrier(3, timeout=2)
+    results: list[Any] = []
+    errors: list[BaseException] = []
+
+    def acquire(owner: str) -> None:
+        try:
+            start.wait()
+            results.append(
+                StateStore(state_path, connection_factory=factory).acquire_lock(
+                    "global",
+                    owner=owner,
+                    ttl=timedelta(minutes=1),
+                    now=race_now,
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=acquire, args=(owner,)) for owner in ("one", "two")]
+    for thread in threads:
+        thread.start()
+    start.wait()
+    for thread in threads:
+        thread.join(timeout=3)
+
+    assert not errors
+    assert len(results) == 2
+    assert sum(result.acquired for result in results) == 1
+    acquired = next(result for result in results if result.acquired)
+    blocked = next(result for result in results if not result.acquired)
+    assert blocked.owner == acquired.owner
+
+
+def test_rollback_does_not_block_its_own_heartbeat(tmp_path: Path) -> None:
+    store = HeartbeatBlockedDuringTransactionStore(tmp_path / "state.db")
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec = Spec(files=[FileTarget(path=config, format="toml", data={"count": 2})])
+    applied = Orchestrator(store).run(spec)
+    assert applied[0].status == "applied"
+    config.write_text("count = 3\n")
+
+    def slow_resolver(key: str) -> bool:
+        time.sleep(0.25)
+        return True
+
+    rolled_back = Orchestrator(
+        store,
+        lock_ttl=timedelta(milliseconds=500),
+        lock_heartbeat_interval=timedelta(milliseconds=100),
+    ).rollback(config, conflict_resolver=slow_resolver)
+
+    assert rolled_back.status == "rolled-back"
+    assert store.blocked_heartbeat.is_set() is False
+
+
+def test_lost_lock_stops_rollback_before_file_write(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.db"
+    store = StateStore(state_path)
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec = Spec(files=[FileTarget(path=config, format="toml", data={"count": 2})])
+    applied = Orchestrator(store).run(spec)
+    assert applied[0].status == "applied"
+    config.write_text("count = 3\n")
+
+    def slow_resolver(key: str) -> bool:
+        time.sleep(0.25)
+        return True
+
+    rolled_back = Orchestrator(
+        LostHeartbeatStore(state_path),
+        lock_ttl=timedelta(milliseconds=500),
+        lock_heartbeat_interval=timedelta(milliseconds=100),
+    ).rollback(config, conflict_resolver=slow_resolver)
+
+    assert rolled_back.status == "error"
+    assert "global lock was lost" in (rolled_back.error or "")
+    assert "count = 3" in config.read_text()
+
+
+def test_lost_lock_stops_apply_before_later_target_writes(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.db"
+    first = tmp_path / "first.toml"
+    second = tmp_path / "second.toml"
+    first.write_text("count = 1\n")
+    second.write_text("count = 1\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text(
+        "[[files]]\n"
+        "path = 'first.toml'\n"
+        "format = 'toml'\n"
+        "[files.data]\n"
+        "count = 2\n"
+        "\n"
+        "[[files]]\n"
+        "path = 'second.toml'\n"
+        "format = 'toml'\n"
+        "[files.data]\n"
+        "count = 2\n"
+    )
+
+    results = Orchestrator(LockLostAfterFirstSnapshotStore(state_path, first_path=first)).run(spec_path)
+
+    assert results[0].status == "error"
+    assert "global lock was lost" in (results[0].error or "")
+    assert "count = 2" in first.read_text()
+    assert "count = 1" in second.read_text()
+
+
+def test_lost_lock_after_recovery_backup_stops_apply_before_write(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.db"
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec_path = tmp_path / "spec.toml"
+    spec_path.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    results = Orchestrator(LockLostAfterRecoveryBackupStore(state_path)).run(spec_path)
+
+    assert results[0].status == "error"
+    assert "global lock was lost" in (results[0].error or "")
+    assert "count = 1" in config.read_text()
+
+
+def test_rollback_state_failure_returns_error_without_partial_ledger(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.db"
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec = Spec(files=[FileTarget(path=config, format="toml", data={"count": 2})])
+    applied = Orchestrator(StateStore(state_path)).run(spec)
+    assert applied[0].status == "applied"
+    before_batches = StateStore(state_path).change_batches(config)
+
+    rolled_back = Orchestrator(RollbackEventFailingStore(state_path)).rollback(config)
+
+    assert rolled_back.status == "error"
+    assert "rollback event failed" in (rolled_back.error or "")
+    assert "count = 1" in config.read_text()
+    after_batches = StateStore(state_path).change_batches(config)
+    assert len(after_batches) == len(before_batches)
+
+
+def test_rollback_dry_run_passes_read_connection(tmp_path: Path) -> None:
+    store = ConnectionRequiredForDryRunRollbackStore(tmp_path / "state.db")
+    config = tmp_path / "config.toml"
+    config.write_text("count = 1\n")
+    spec = Spec(files=[FileTarget(path=config, format="toml", data={"count": 2})])
+
+    applied = Orchestrator(store).run(spec)
+    dry_run = Orchestrator(store).rollback(config, dry_run=True)
+
+    assert applied[0].status == "applied"
+    assert dry_run.status == "dry-run"
+
+
 def test_completed_attempts_do_not_block_later_apply(tmp_path: Path, memory_state_store) -> None:
     config = tmp_path / "config.toml"
     config.write_text("count = 1\n")
@@ -309,7 +763,7 @@ def test_apply_metadata_failure_leaves_recoverable_attempt_without_claim(
     run_id = memory_state_store.latest_run_id()
     assert run_id is not None
     assert memory_state_store.claims() == []
-    assert memory_state_store.list_managed() == []
+    assert [record.path for record in memory_state_store.list_managed()] == [config.resolve()]
     attempts = memory_state_store.target_attempts(run_id)
     assert len(attempts) == 1
     assert attempts[0].phase == "attempting"

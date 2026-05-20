@@ -13,6 +13,7 @@ class PlannedOperation:
     value: Any = None
     before_value: Any = None
     before_exists: bool | None = None
+    created_parent_keys: list[str] = field(default_factory=list)
     reason: str | None = None
 
 
@@ -72,6 +73,7 @@ class Planner:
                             value=value,
                             before_value=None,
                             before_exists=False,
+                            created_parent_keys=_missing_parent_keys(current, dotted_key),
                             reason="missing",
                         )
                     )
@@ -93,14 +95,15 @@ class Planner:
             if key not in current:
                 operations.append(
                     PlannedOperation(
-                        kind="set",
-                        path=path,
-                        key=dotted_key,
-                        value=value,
-                        before_value=None,
-                        before_exists=False,
-                        reason="missing",
-                    )
+                    kind="set",
+                    path=path,
+                    key=dotted_key,
+                    value=value,
+                    before_value=None,
+                    before_exists=False,
+                    created_parent_keys=_missing_parent_keys(current, key, prefix=prefix),
+                    reason="missing",
+                )
                 )
                 continue
             current_value = current[key]
@@ -169,3 +172,34 @@ class Planner:
             return PlanResult(changed=True, operations=operations)
 
         return PlanResult(changed=False, operations=operations)
+
+
+def _missing_parent_keys(current: Any, dotted_key: str, prefix: list[str] | None = None) -> list[str]:
+    if not isinstance(current, dict):
+        return []
+    prefix = [] if prefix is None else prefix
+    if not prefix and dotted_key in current:
+        return []
+    if not prefix:
+        parts = dotted_key.split(".")
+        for split_at in range(len(parts) - 1, 0, -1):
+            flat_prefix = ".".join(parts[:split_at])
+            if flat_prefix in current and isinstance(current[flat_prefix], dict):
+                rest = ".".join(parts[split_at:])
+                return _missing_parent_keys(current[flat_prefix], rest, prefix=[flat_prefix])
+    parts = dotted_key.split(".")
+    if len(parts) <= 1:
+        return []
+    node = current
+    missing: list[str] = []
+    for index, part in enumerate(parts[:-1], start=1):
+        full_key = ".".join([*prefix, *parts[:index]])
+        if missing:
+            missing.append(full_key)
+            continue
+        if not isinstance(node, dict) or part not in node:
+            missing.append(full_key)
+            node = {}
+            continue
+        node = node[part]
+    return missing

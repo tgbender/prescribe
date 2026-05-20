@@ -112,21 +112,21 @@ def test_linux_empty_env_writes_minimal_conf(tmp_path: Path):
     assert "prescribe" in conf.read_text()
 
 
-# ── detect_platform (xfail on non-target platforms) ────
+# ── detect_platform (skip on non-target platforms) ────
 
 
-@pytest.mark.xfail(sys.platform != "darwin", reason="only meaningful on macOS")
+@pytest.mark.skipif(sys.platform != "darwin", reason="only meaningful on macOS")
 def test_detect_platform_returns_macos():
     assert detect_platform() == "macos"
 
 
-@pytest.mark.xfail(sys.platform != "linux", reason="only meaningful on Linux")
+@pytest.mark.skipif(sys.platform != "linux", reason="only meaningful on Linux")
 def test_detect_platform_returns_linux():
     expected = "wsl" if "microsoft" in Path("/proc/version").read_text().lower() else "linux"
     assert detect_platform() == expected
 
 
-@pytest.mark.xfail(sys.platform != "win32", reason="only meaningful on Windows")
+@pytest.mark.skipif(sys.platform != "win32", reason="only meaningful on Windows")
 def test_detect_platform_returns_windows():
     assert detect_platform() == "windows"
 
