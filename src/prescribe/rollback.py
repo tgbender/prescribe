@@ -486,7 +486,17 @@ def _rollback_mapping(
                 skipped.append(key)
             continue
         if kind == "delete":
-            if current_value is _MISSING:
+            key_parts = operation.get("before_key_parts")
+            if key_parts:
+                parent = document.root
+                for part in key_parts[:-1]:
+                    if not isinstance(parent, dict):
+                        break
+                    parent = parent.setdefault(part, {})
+                if isinstance(parent, dict) and key_parts[-1] not in parent:
+                    parent[key_parts[-1]] = operation.get("before_value")
+                    changed = True
+            elif current_value is _MISSING:
                 set_mapping_value(document.root, key, operation.get("before_value"))
                 changed = True
             continue

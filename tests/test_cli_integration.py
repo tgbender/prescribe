@@ -840,8 +840,8 @@ def test_validate_dir_reports_priority_alternatives_once(run, workdir: Path) -> 
     data = json.loads(result.stdout)
     assert data["valid"] is True
     assert [item["spec"] for item in data["specs"]] == [
-        "specs\\10-fallback.toml",
-        "specs\\20-preferred.toml",
+        str(Path("specs") / "10-fallback.toml"),
+        str(Path("specs") / "20-preferred.toml"),
     ]
     fallback_targets = data["specs"][0]["targets"]
     preferred_targets = data["specs"][1]["targets"]
@@ -1161,3 +1161,21 @@ def test_status_diff_shows_shell_target_diff(run, workdir: Path) -> None:
     assert result.returncode == 0
     assert "+# prescribe:begin prescribe-env" in result.stdout
     assert '+export EDITOR="nvim"' in result.stdout
+
+
+def test_apply_dry_run_reports_durable_claim_conflict(run, workdir: Path) -> None:
+    config = workdir / "config.toml"
+    config.write_text("count = 0\n")
+    first = workdir / "first.toml"
+    first.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 1\n")
+    second = workdir / "second.toml"
+    second.write_text("[[files]]\npath = 'config.toml'\nformat = 'toml'\n[files.data]\ncount = 2\n")
+
+    applied = run("apply", "first.toml")
+    assert applied.returncode == 0
+
+    result = run("apply", "--dry-run", "--on-claim-conflict", "fail", "second.toml")
+
+    assert result.returncode != 0
+    assert "claim conflict" in result.stdout
+    assert "count = 1" in config.read_text()

@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from prescribe._util import _MISSING, mapping_value
+from prescribe._util import _MISSING, mapping_key_parts, mapping_value
 
 
 @dataclass(slots=True)
@@ -14,6 +14,7 @@ class PlannedOperation:
     before_value: Any = None
     before_exists: bool | None = None
     reason: str | None = None
+    before_key_parts: list[str] | None = None
 
 
 @dataclass(slots=True)
@@ -127,23 +128,17 @@ class Planner:
         operations: list[PlannedOperation],
     ) -> None:
         for dotted_key in delete_keys:
-            parts = dotted_key.split(".")
-            node = root
-            found = True
-            for part in parts[:-1]:
-                if not isinstance(node, dict) or part not in node:
-                    found = False
-                    break
-                node = node[part]
-            if found and isinstance(node, dict) and parts[-1] in node:
+            current_value = mapping_value(root, dotted_key)
+            if current_value is not _MISSING:
                 operations.append(
                     PlannedOperation(
                         kind="delete",
                         path=path,
                         key=dotted_key,
-                        before_value=node[parts[-1]],
+                        before_value=current_value,
                         before_exists=True,
                         reason="requested",
+                        before_key_parts=mapping_key_parts(root, dotted_key),
                     )
                 )
 

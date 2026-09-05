@@ -42,6 +42,22 @@ def mapping_value(root: Any, dotted_key: str) -> Any:
     return node[parts[-1]]
 
 
+def mapping_key_parts(root: Any, dotted_key: str) -> list[str] | None:
+    """Capture the literal address of an existing key for lossless undo."""
+    if not isinstance(root, dict):
+        return None
+    if dotted_key in root:
+        return [dotted_key]
+    parts = dotted_key.split(".")
+    for split_at in range(len(parts) - 1, 0, -1):
+        prefix = ".".join(parts[:split_at])
+        if prefix in root:
+            suffix = mapping_key_parts(root[prefix], ".".join(parts[split_at:]))
+            if suffix is not None:
+                return [prefix, *suffix]
+    return None
+
+
 def resolve_parent(root: Any, dotted_key: str) -> tuple[Any, str]:
     """Resolve to (parent_dict, leaf_key), auto-creating intermediate dicts.
 

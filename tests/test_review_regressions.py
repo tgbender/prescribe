@@ -1,7 +1,6 @@
-"""Desired behavior for the correctness failures found in the repository review.
+"""Regression coverage for ownership, rollback, recovery, and shell PATH safety.
 
-These are ordinary regression tests, intentionally red until the corresponding
-fixes land. They use real temporary files and SQLite databases, without mocks.
+Tests use real temporary files and SQLite databases, without mocks.
 """
 
 from __future__ import annotations
@@ -186,8 +185,8 @@ def test_recovery_preserves_attempts_and_reservations_of_live_writer(tmp_path: P
 @pytest.mark.parametrize(
     "shell_type",
     [
-        pytest.param("pwsh", marks=pytest.mark.platform_windows),
-        pytest.param("bash", marks=pytest.mark.platform_posix),
+        pytest.param("pwsh", marks=pytest.mark.skipif(os.name != "nt", reason="requires Windows")),
+        pytest.param("bash", marks=pytest.mark.skipif(os.name == "nt", reason="requires POSIX")),
     ],
 )
 def test_shell_path_additions_preserve_runtime_path(

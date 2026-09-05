@@ -1,4 +1,5 @@
 import shutil
+import tempfile
 from pathlib import Path
 
 from prescribe._util import sha256_bytes
@@ -57,9 +58,7 @@ def copy_to_recovery_backup(
         original_path=path,
         content_hash=content_hash,
     )
-    backup_path.parent.mkdir(parents=True, exist_ok=True)
-    if backup_path.exists() or backup_path.is_symlink():
-        backup_path = backup_path.with_name(f"{backup_path.stem}-{stat.st_mtime_ns}{backup_path.suffix}")
+    backup_path = _allocate_backup_path(backup_path)
     shutil.copy2(path, backup_path)
     try:
         content_text = decode_utf8_bytes(payload, path=path)
@@ -91,11 +90,17 @@ def move_to_backup(
         original_path=path,
         content_hash=content_hash,
     )
-    backup_path.parent.mkdir(parents=True, exist_ok=True)
-    if backup_path.exists() or backup_path.is_symlink():
-        backup_path = backup_path.with_name(f"{backup_path.stem}-{path.stat().st_mtime_ns}{backup_path.suffix}")
+    backup_path = _allocate_backup_path(backup_path)
     shutil.move(str(path), str(backup_path))
     return backup_path, content_hash, size, mtime_ns, file_type
+
+
+def _allocate_backup_path(path: Path) -> Path:
+    """Reserve a distinct directory atomically, even for identical source metadata."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Keep the destination absent so a same-volume move can rename read-only
+    # originals directly, without falling back to copy-and-unlink on Windows.
+    return Path(tempfile.mkdtemp(dir=path.parent, prefix="entry-")) / path.name
 
 
 def restore_backup(*, backup_path: Path, original_path: Path) -> None:
