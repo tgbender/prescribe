@@ -359,15 +359,15 @@ directly to `Orchestrator.run`. Programmatic targets should use resolved paths;
 unlike spec loading, constructing `Path("~/...")` does not expand your home.
 Use `.expanduser()` and `.resolve()` when appropriate.
 
-Known Windows library limitation in 0.5.1: an existing-file apply can retain a
-SQLite connection until garbage collection or process exit, so deleting its
-state directory immediately in the same process can fail with a file-in-use
-error. The example leaves its directory for inspection; remove it after the
-Python process exits.
+The example leaves its directory for inspection; remove it when finished.
+Version 0.5.2 fixes an existing-file apply connection leak that could prevent
+immediate state-directory cleanup on Windows in 0.5.1.
 
 Other exported helpers include `render_shell_block`, `extract_shell_env_file`,
 `inspect_installed_tools`, and `inspect_tool_paths`. Tool inspection reports
 installed tools and manager-owned paths; it does not install packages.
 
-See [the changelog](CHANGELOG.md) for version history and
-[release instructions](docs/RELEASING.md) for publishing and dependency updates.
+See [the changelog](https://github.com/tgbender/prescribe/blob/main/CHANGELOG.md)
+for version history and
+[release instructions](https://github.com/tgbender/prescribe/blob/main/docs/RELEASING.md)
+for publishing and dependency updates.

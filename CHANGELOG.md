@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.2
+
+### Bug Fixes
+
+- Close owned SQLite connections after existing-file conflict checks, including
+  no-op and error paths, so state directories can be removed immediately on
+  Windows. Preserve caller-owned connections and transactions.
+
+### Documentation
+
+- Replace invalid Git-config-as-TOML examples with a verified scratch-directory
+  walkthrough and Python example.
+- Correct priority selection, shell environment, rollback, and interrupted-work
+  recovery guidance, and use README links that work on PyPI.
+
 ## 0.5.1
 
 ### Bug Fixes
