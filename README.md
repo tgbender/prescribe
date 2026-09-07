@@ -45,6 +45,8 @@ For mirrored assets with `replace = true`, rolling back the mirror destination d
 
 Mutating commands use a short-lived SQLite run lock to prevent concurrent writes. Prescribe also records durable ownership claims for managed keys, blocks, env vars, and assets; overlapping claims fail before writes unless ownership is explicitly taken with `--on-claim-conflict take` or approved interactively with `--on-claim-conflict prompt`.
 
+Overlap includes parent/child mapping keys, whole-file assets, mirror descendants, and shell/line targets sharing a block. After a successful takeover, conflicting claims are retired; unrelated claims remain owned by their original targets. `recover --force` also acquires the writer lock and refuses to clear an active writer's attempts.
+
 By default, prescribe refuses to place its SQLite state database on a network filesystem such as UNC, mapped network drives, SMB, SSHFS, or NFS. Keep state on a local disk for reliable locking. If you intentionally accept the risk, set `PRESCRIBE_ALLOW_NETWORK_STATE=1` or pass `--allow-network-state` to mutating commands.
 
 ---
@@ -237,6 +239,8 @@ shells = ["xonsh"]
 ```
 
 Prescribe writes a managed block with env var exports. Supported shells: `xonsh`, `bash`, `zsh`, `fish`, `nu`, `pwsh`, and `cmd`. The block is idempotent — re-applying replaces the entire block atomically. Existing content outside the block is never touched.
+
+PATH additions preserve the shell's runtime PATH. Managed entries are moved to the requested beginning or end when the block is sourced, so repeated sourcing does not add duplicate managed entries. An explicit `[[env]]` PATH `value` replaces PATH instead.
 
 ### Conditions
 

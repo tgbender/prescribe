@@ -433,15 +433,42 @@ class Orchestrator:
                 dry_run=dry_run,
                 error=_interrupted_work_message(attempts),
             )
-        with self.state_store.transaction() as connection:
-            self.state_store.update_target_attempt_ids(
-                {attempt.id for attempt in attempts},
-                phase="interrupted",
-                error="force-cleared by recover_interrupted",
-                connection=connection,
+        lock_owner = _lock_owner()
+        lock = self.state_store.acquire_lock("global", owner=lock_owner, ttl=self._lock_ttl)
+        if not lock.acquired:
+            return OrchestrationResult(
+                status="error",
+                applied=False,
+                changed=False,
+                error=f"another prescribe write is active: {lock.owner} until {lock.expires_at.isoformat()}",
             )
-            self.state_store.expire_claim_reservations_for_attempts(attempts, connection=connection)
-        return OrchestrationResult(status="applied", applied=True, changed=True)
+        try:
+            with LockHeartbeat(
+                self.state_store,
+                name="global",
+                owner=lock_owner,
+                token=lock.token,
+                ttl=self._lock_ttl,
+                interval=self._lock_heartbeat_interval,
+            ) as heartbeat:
+                with self.state_store.transaction() as connection:
+                    heartbeat.require_current()
+                    attempts = self.state_store.unfinished_target_attempts(connection=connection)
+                    if not attempts:
+                        return OrchestrationResult(status="noop", applied=False, changed=False)
+                    self.state_store.update_target_attempt_ids(
+                        {attempt.id for attempt in attempts},
+                        phase="interrupted",
+                        error="force-cleared by recover_interrupted",
+                        connection=connection,
+                    )
+                    self.state_store.expire_claim_reservations_for_attempts(attempts, connection=connection)
+                    heartbeat.require_current()
+                return OrchestrationResult(status="applied", applied=True, changed=True)
+        except LockLostError as exc:
+            return OrchestrationResult(status="error", applied=False, changed=False, error=str(exc))
+        finally:
+            self.state_store.release_lock("global", owner=lock_owner, token=lock.token)
 
     def _reserve_claims(
         self,
@@ -600,18 +627,21 @@ class Orchestrator:
         # ── shell blocks ──
         for shell_target in spec.shell:
             shell_type = _shell_type_for_target(shell_target)
+            path_edits: dict[str, list[str]] = {}
             shell_env, _ = self._resolve_env(
                 spec.env,
                 tags=tags,
                 skip_tags=skip_tags,
                 shell_type=shell_type,
                 include_current_path=False,
+                path_edits=path_edits,
             )
             result = self._handle_shell(
                 run_id,
                 spec_hash,
                 shell_target,
                 shell_env,
+                path_edits=path_edits,
                 dry_run=dry_run,
                 tags=tags,
                 skip_tags=skip_tags,
@@ -1218,6 +1248,7 @@ class Orchestrator:
         skip_tags: set[str] | None = None,
         shell_type: str | None = None,
         include_current_path: bool = True,
+        path_edits: dict[str, list[str]] | None = None,
     ) -> tuple[dict[str, str], set[str]]:
         """Filter, merge, and resolve env targets into a flat name→value dict.
 
@@ -1275,7 +1306,10 @@ class Orchestrator:
         # Build PATH from prepends + existing + appends
         if "PATH" in path_prepends or "PATH" in path_appends:
             current_path = local_env.get("PATH", "")
-            current_entries = [p for p in current_path.split(os.pathsep) if p] if include_current_path else []
+            explicit_path = "PATH" in resolved
+            current_entries = (
+                [p for p in current_path.split(os.pathsep) if p] if include_current_path or explicit_path else []
+            )
 
             prepend_entries = path_prepends.get("PATH", [])
             append_entries = path_appends.get("PATH", [])
@@ -1305,6 +1339,8 @@ class Orchestrator:
 
             new_path = deduped_prepends + deduped_current + deduped_appends
             resolved["PATH"] = os.pathsep.join(new_path)
+            if path_edits is not None and not explicit_path:
+                path_edits.update(prepend=deduped_prepends, append=deduped_appends)
 
         return resolved, materialize_names
 
@@ -1317,6 +1353,7 @@ class Orchestrator:
         target: ShellTarget,
         resolved_env: dict[str, str],
         *,
+        path_edits: dict[str, list[str]] | None = None,
         dry_run: bool = False,
         tags: set[str] | None = None,
         skip_tags: set[str] | None = None,
@@ -1336,11 +1373,20 @@ class Orchestrator:
                 else None,
             )
 
-        rendered = render_shell_block(
-            shell_type=_shell_type_for_target(target),
-            env_vars=dict(resolved_env),
-            managed_block_id=target.managed_block_id,
-        )
+        if path_edits:
+            rendered = render_shell_block(
+                shell_type=_shell_type_for_target(target),
+                env_vars=dict(resolved_env),
+                managed_block_id=target.managed_block_id,
+                path_prepend=path_edits.get("prepend"),
+                path_append=path_edits.get("append"),
+            )
+        else:
+            rendered = render_shell_block(
+                shell_type=_shell_type_for_target(target),
+                env_vars=dict(resolved_env),
+                managed_block_id=target.managed_block_id,
+            )
 
         return self._apply_shell_block(
             run_id=run_id,
@@ -1802,6 +1848,7 @@ def _operation_to_data(operation: PlannedOperation) -> dict[str, Any]:
         "before_value": _jsonable(operation.before_value),
         "before_exists": operation.before_exists,
         "created_parent_keys": list(operation.created_parent_keys),
+        "before_key_parts": operation.before_key_parts,
         "reason": operation.reason,
     }
 
@@ -1941,8 +1988,7 @@ def _interrupted_work_result(attempts: list[Any]) -> OrchestrationResult:
 
 def _interrupted_work_message(attempts: list[Any]) -> str:
     preview = "; ".join(
-        f"run={attempt.run_id} target={attempt.target_type} {attempt.subject} {attempt.address} "
-        f"phase={attempt.phase}"
+        f"run={attempt.run_id} target={attempt.target_type} {attempt.subject} {attempt.address} phase={attempt.phase}"
         for attempt in attempts[:3]
     )
     suffix = "" if len(attempts) <= 3 else f"; +{len(attempts) - 3} more"

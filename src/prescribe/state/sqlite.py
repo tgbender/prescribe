@@ -744,7 +744,13 @@ class StateStore:
                     return _managed_claim_record(existing)
             return _managed_claim_record(row)
 
-    def claims(self) -> list[ManagedClaimRecord]:
+    def claims(self, *, connection: sqlite3.Connection | None = None) -> list[ManagedClaimRecord]:
+        if connection is not None:
+            claim_rows = connection.execute(
+                "SELECT id, target_type, subject, address, owner_id, spec_path, target_id, created_at, last_seen_at "
+                "FROM managed_claims ORDER BY subject, address"
+            ).fetchall()
+            return [_managed_claim_record_from_row(row) for row in claim_rows]
         with self.orm_session() as session:
             rows = session.scalars(select(ManagedClaim).order_by(ManagedClaim.subject, ManagedClaim.address)).all()
             return [_managed_claim_record(row) for row in rows]
@@ -762,9 +768,33 @@ class StateStore:
         now: datetime | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> ClaimReservationRecord:
+        from prescribe.claim_scopes import ClaimAddress, claims_overlap
+
+        if connection is None:
+            with self.transaction() as write_conn:
+                return self.reserve_claim(
+                    target_type=target_type,
+                    subject=subject,
+                    address=address,
+                    owner_id=owner_id,
+                    run_id=run_id,
+                    token=token,
+                    ttl=ttl,
+                    now=now,
+                    connection=write_conn,
+                )
         current_time = _utcnow(now)
         expires_at = current_time + ttl
         with self._connection(connection) as conn:
+            incoming = ClaimAddress(target_type, subject, address)
+            for reserved in self.claim_reservations(connection=conn):
+                if (
+                    reserved.status == "reserved"
+                    and reserved.expires_at > current_time
+                    and reserved.token != token
+                    and claims_overlap(incoming, reserved)
+                ):
+                    return reserved
             row = conn.execute(
                 """
                 SELECT id, target_type, subject, address, owner_id, run_id, token, status, created_at, expires_at
@@ -1764,19 +1794,6 @@ def _run_lock_record(row: RunLock, *, acquired: bool = False) -> RunLockRecord:
     )
 
 
-def _run_lock_record_from_row(row: sqlite3.Row | tuple[Any, ...], *, acquired: bool = False) -> RunLockRecord:
-    return RunLockRecord(
-        name=str(row[0]),
-        owner=str(row[1]),
-        token=None if row[2] is None else str(row[2]),
-        run_id=None if row[3] is None else int(row[3]),
-        acquired_at=_parse_datetime(str(row[4])),
-        heartbeat_at=None if row[5] is None else _parse_datetime(str(row[5])),
-        expires_at=_parse_datetime(str(row[6])),
-        acquired=acquired,
-    )
-
-
 def _managed_claim_record(row: ManagedClaim) -> ManagedClaimRecord:
     return ManagedClaimRecord(
         id=int(row.id),
@@ -1866,4 +1883,17 @@ def _target_run_record(row: TargetRun) -> TargetRunRecord:
         status=str(row.status),
         skip_reason=None if row.skip_reason is None else str(row.skip_reason),
         changed=bool(row.changed),
+    )
+
+
+def _run_lock_record_from_row(row: sqlite3.Row | tuple[Any, ...], *, acquired: bool = False) -> RunLockRecord:
+    return RunLockRecord(
+        name=str(row[0]),
+        owner=str(row[1]),
+        token=None if row[2] is None else str(row[2]),
+        run_id=None if row[3] is None else int(row[3]),
+        acquired_at=_parse_datetime(str(row[4])),
+        heartbeat_at=None if row[5] is None else _parse_datetime(str(row[5])),
+        expires_at=_parse_datetime(str(row[6])),
+        acquired=acquired,
     )

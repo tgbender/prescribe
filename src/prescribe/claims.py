@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from prescribe.claim_scopes import claims_overlap
 from prescribe.spec import Spec
 from prescribe.state import ManagedClaimRecord, StateStore
 
@@ -131,16 +132,19 @@ def compute_claims(spec: Spec, *, include: Callable[[object], bool] | None = Non
 
 
 def detect_internal_claim_conflicts(claims: list[Claim]) -> list[ClaimConflict]:
-    seen: dict[tuple[str, str, str], Claim] = {}
-    conflicts: list[ClaimConflict] = []
+    seen: list[Claim] = []
+    conflicts = _detect_portable_path_collisions(claims)
+    reported = {(claim_key(conflict.claim), conflict.existing_owner) for conflict in conflicts}
     for claim in claims:
-        key = (claim.target_type, claim.subject, claim.address)
-        existing = seen.get(key)
-        if existing is not None and existing.owner_id != claim.owner_id:
-            conflicts.append(ClaimConflict(claim=claim, existing_owner=existing.owner_id))
-            continue
-        seen[key] = claim
-    conflicts.extend(_detect_portable_path_collisions(claims))
+        for existing in seen:
+            if (
+                existing.owner_id != claim.owner_id
+                and claims_overlap(claim, existing)
+                and (claim_key(claim), existing.owner_id) not in reported
+            ):
+                conflicts.append(ClaimConflict(claim=claim, existing_owner=existing.owner_id))
+                reported.add((claim_key(claim), existing.owner_id))
+        seen.append(claim)
     return conflicts
 
 
@@ -148,11 +152,31 @@ def persist_claims(
     store: StateStore,
     claims: list[Claim],
     *,
-    resolver: Any = None,
+    resolver: ClaimResolver | None = None,
     connection: sqlite3.Connection | None = None,
 ) -> list[ClaimConflict]:
+    if connection is None:
+        with store.transaction() as write_conn:
+            return persist_claims(store, claims, resolver=resolver, connection=write_conn)
     conflicts: list[ClaimConflict] = []
     for claim in claims:
+        # Validate every overlapping owner before retiring any claims. All
+        # changes share the caller's transaction with target-state promotion.
+        overlaps = [
+            current
+            for current in store.claims(connection=connection)
+            if current.owner_id != claim.owner_id and claims_overlap(claim, current)
+        ]
+        rejected = [
+            ClaimConflict(claim=claim, existing_owner=current.owner_id, existing=current)
+            for current in overlaps
+            if resolver is None or not resolver(ClaimConflict(claim, current.owner_id, current))
+        ]
+        if rejected:
+            conflicts.extend(rejected)
+            continue
+        for current in overlaps:
+            connection.execute("DELETE FROM managed_claims WHERE id = ?", (current.id,))
         existing = store.upsert_claim(
             target_type=claim.target_type,
             subject=claim.subject,
@@ -164,21 +188,7 @@ def persist_claims(
         )
         if existing.owner_id == claim.owner_id:
             continue
-        conflict = ClaimConflict(claim=claim, existing_owner=existing.owner_id, existing=existing)
-        should_take = bool(resolver(conflict)) if resolver is not None else False
-        if should_take:
-            store.upsert_claim(
-                target_type=claim.target_type,
-                subject=claim.subject,
-                address=claim.address,
-                owner_id=claim.owner_id,
-                spec_path=claim.spec_path,
-                target_id=claim.target_id,
-                take=True,
-                connection=connection,
-            )
-            continue
-        conflicts.append(conflict)
+        conflicts.append(ClaimConflict(claim=claim, existing_owner=existing.owner_id, existing=existing))
     return conflicts
 
 
@@ -197,19 +207,18 @@ def check_claim_conflicts_against(
     *,
     resolver: ClaimResolver | None,
 ) -> ClaimCheckResult:
-    existing = {claim_key(claim): claim for claim in existing_claims}
     conflicts: list[ClaimConflict] = []
     take_keys: set[ClaimKey] = set()
     for claim in claims:
         key = claim_key(claim)
-        current = existing.get(key)
-        if current is None or current.owner_id == claim.owner_id:
-            continue
-        conflict = ClaimConflict(claim=claim, existing_owner=current.owner_id, existing=current)
-        if resolver is not None and resolver(conflict):
-            take_keys.add(key)
-            continue
-        conflicts.append(conflict)
+        for current in existing_claims:
+            if current.owner_id == claim.owner_id or not claims_overlap(claim, current):
+                continue
+            conflict = ClaimConflict(claim=claim, existing_owner=current.owner_id, existing=current)
+            if resolver is not None and resolver(conflict):
+                take_keys.add(key)
+                continue
+            conflicts.append(conflict)
     return ClaimCheckResult(conflicts=conflicts, take_keys=take_keys)
 
 
