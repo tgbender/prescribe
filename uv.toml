@@ -1,2 +1,2 @@
 exclude-newer = "3day"
-exclude-newer-package = { safe-fs-ops = "2026-05-19T00:00:00Z" }
+exclude-newer-package = { safe-fs-ops = false }

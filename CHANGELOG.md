@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.1
+
+### Bug Fixes
+
+- Reject overlapping ownership claims and reservations before changing files,
+  including parent-key deletions and whole-file replacements.
+- Preserve literal dotted JSON keys and newly created parent metadata during
+  rollback, and retain independent backups for identical displaced files.
+- Refuse forced recovery while another writer holds the live run lock.
+- Preserve the runtime PATH when sourcing managed shell prepend/append blocks.
+- Require safe-fs-ops 0.1.1 for durable capture identity, native path handling,
+  and released-lease recovery fixes.
+
+### Development
+
+- Create release tags at the commit used by the publishing workflow.
+
 ## 0.5.0
 
 ### Features

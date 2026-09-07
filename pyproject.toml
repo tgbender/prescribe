@@ -1,6 +1,6 @@
 [project]
 name = "prescribe"
-version = "0.5.0"
+version = "0.5.1"
 description = "Declarative dotfile, shell, and environment configuration management."
 authors = [{ name = "Travis Bender" }]
 readme = "README.md"
@@ -22,7 +22,7 @@ classifiers = [
 dependencies = [
   "platformdirs>=4.0,<5.0",
   "ruamel-yaml>=0.19.1,<0.20.0",
-  "safe-fs-ops>=0.1.0,<0.2.0",
+  "safe-fs-ops>=0.1.1,<0.2.0",
   "sqlalchemy>=2.0.49",
   "tomlkit>=0.14.0,<0.15.0",
   "typer>=0.9,<1.0",
