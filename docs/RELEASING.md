@@ -12,7 +12,7 @@ For Prescribe 0.5.1, safe-fs-ops 0.1.1 must exist on PyPI before finalizing the
 registry lockfile:
 
 ```console
-uv lock --upgrade-package safe-fs-ops
+uv lock --upgrade-package safe-fs-ops --refresh-package safe-fs-ops
 uv sync --locked
 uv run pytest -q
 uv run mypy src
@@ -25,10 +25,10 @@ paths in the committed metadata. The package-specific exclusion in `uv.toml`
 allows this first-party release to be consumed immediately; the general
 dependency age policy remains in effect.
 
-Until safe-fs-ops 0.1.1 is published, the existing registry lockfile remains at
-the preceding release. A locally built wheel can validate the integration, but
-does not replace the final registry lock refresh. Do not use a frozen lockfile
-to validate the final published dependency combination.
+A locally built dependency wheel can validate integration before publication,
+but does not replace the final registry lock refresh. Refresh the package index
+when consuming a newly published version so cached metadata does not hide it.
+Do not use a frozen lockfile to validate the final published dependency combination.
 
 ## Publication checks
 

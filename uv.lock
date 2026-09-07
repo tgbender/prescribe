@@ -3,11 +3,11 @@ revision = 3
 requires-python = ">=3.12"
 
 [options]
-exclude-newer = "2026-05-16T14:22:53.7278317Z"
+exclude-newer = "2026-09-04T06:36:56.7379525Z"
 exclude-newer-span = "P3D"
 
 [options.exclude-newer-package]
-safe-fs-ops = "2026-05-19T00:00:00Z"
+safe-fs-ops = false
 
 [[package]]
 name = "annotated-doc"
@@ -258,7 +258,7 @@ wheels = [
 
 [[package]]
 name = "prescribe"
-version = "0.5.0"
+version = "0.5.1"
 source = { editable = "." }
 dependencies = [
     { name = "platformdirs" },
@@ -281,7 +281,7 @@ dev = [
 requires-dist = [
     { name = "platformdirs", specifier = ">=4.0,<5.0" },
     { name = "ruamel-yaml", specifier = ">=0.19.1,<0.20.0" },
-    { name = "safe-fs-ops", specifier = ">=0.1.0,<0.2.0" },
+    { name = "safe-fs-ops", specifier = ">=0.1.1,<0.2.0" },
     { name = "sqlalchemy", specifier = ">=2.0.49" },
     { name = "tomlkit", specifier = ">=0.14.0,<0.15.0" },
     { name = "typer", specifier = ">=0.9,<1.0" },
@@ -353,14 +353,14 @@ wheels = [
 
 [[package]]
 name = "safe-fs-ops"
-version = "0.1.0"
+version = "0.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "sqlalchemy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7a/25/713cab6445c0f22fd923ba045baac1f6b631644192b6a3678e667a5f89d3/safe_fs_ops-0.1.0.tar.gz", hash = "sha256:d6fed8784c81596d6c661758486d803029e03cd0930e4314808de4bb1285beb1", size = 150964, upload-time = "2026-05-18T07:02:24.199Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/24/51/d2a9145069471162313dee350d53e7912e6499411b2ff986242209797a38/safe_fs_ops-0.1.1.tar.gz", hash = "sha256:ca5373c4533bb1b285e1360ad3750d120a8d449e96b015b8127aac8544545ab3", size = 158889, upload-time = "2026-09-07T06:35:53.798Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e8/06/6236a641cce6559fb0643d98825c0af4d6d65226f0e1cb3f5e0fe1175d0d/safe_fs_ops-0.1.0-py3-none-any.whl", hash = "sha256:4f377dbab17225958a513930269921a64a8c6781dfb361826cf918d3aa6cc1d8", size = 202449, upload-time = "2026-05-18T07:02:22.712Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/ce/9e9a384cadde64d80b32dced32f06cd47fec646f4cc7f865567bfa4b98a9/safe_fs_ops-0.1.1-py3-none-any.whl", hash = "sha256:2002d2a13b2f9bb4cbef455d789cfe0b51dd56a685df94074d5c554c7e2485fb", size = 212361, upload-time = "2026-09-07T06:35:52.712Z" },
 ]
 
 [[package]]
