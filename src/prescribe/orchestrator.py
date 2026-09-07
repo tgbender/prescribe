@@ -1168,7 +1168,11 @@ class Orchestrator:
         plan = self.planner.plan(document, _file_desired(target))
         managed_conflict: ConflictResult | None = None
         if run_id is not None:
-            ctx = self.state_store.connect() if connection is None else contextlib.nullcontext(connection)
+            ctx = (
+                contextlib.closing(self.state_store.connect())
+                if connection is None
+                else contextlib.nullcontext(connection)
+            )
             with ctx as read_conn:
                 managed_conflict = self._check_managed_conflict(document, plan, target, before, read_conn)
         elif dry_run:
